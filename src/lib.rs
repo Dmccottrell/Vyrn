@@ -1,6 +1,6 @@
 //! Front end of the Vyrn compiler.
 //!
-//! Implemented so far, against `docs/grammar.ebnf` v0.3:
+//! Implemented so far, against `docs/grammar.ebnf` v0.4:
 //!
 //! - [`span`]: source positions with line and column tracking
 //! - [`token`]: the token vocabulary

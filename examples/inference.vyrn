@@ -1,28 +1,26 @@
 # Example D (AI engineer): a tensor loop over layers spread across GPUs.
 
-struct Layer[D]
+struct Layer[D]:
     w_up: tensor[f16; D, 4 * D]
     w_down: tensor[f16; 4 * D, D]
     gain: tensor[f16; D]
 end
 
 # `@` is the matrix product, `*` is element-wise. B, T and D are shape variables.
-kernel fn feed_forward(x: tensor[f16; B, T, D], w: Layer[D]) returns tensor[f16; B, T, D]
+kernel fn feed_forward(x: tensor[f16; B, T, D], w: Layer[D]) -> tensor[f16; B, T, D]:
     let h = gelu(x @ w.w_up)                  # (B, T, D) @ (D, 4D) -> (B, T, 4D)
     return (x + h @ w.w_down) * w.gain
 end
 
-main
+main:
     let model = load_model("sml-14b.weights") on gpu[0 to 3]
     let tokens = encode("The capital of France is")
 
     var h = model.embed[tokens]
-    for layer in model.layers
-        on layer.device                       # run where this layer's weights live
-            h = feed_forward(h, layer)
-        end
+    for layer in model.layers:
+        on layer.device: h = feed_forward(h, layer)    # run where the weights live
     end
 
-    let logits = h[all, last] @ model.unembed'
+    let logits = h[:, -1] @ model.unembed.T
     print(decode(argmax(logits) on cpu))
 end

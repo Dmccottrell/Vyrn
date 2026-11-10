@@ -1,4 +1,4 @@
-//! The token vocabulary of Vyrn (grammar v0.3, sections 7 and 9).
+//! The token vocabulary of Vyrn (grammar v0.4, sections 7 and 9).
 
 use crate::span::Span;
 use std::fmt;
@@ -43,9 +43,9 @@ spelled_enum! {
     /// Hard keywords. These are never identifiers, except directly after `.`
     /// or `?.`, where the lexer produces [`TokenKind::Ident`] instead.
     ///
-    /// The HTTP method names (`GET`, `POST`, ...) and the subscript words
-    /// `all` and `last` are contextual. The lexer emits them as identifiers
-    /// and the parser gives them meaning by position.
+    /// The HTTP method names (`GET`, `POST`, ...) are contextual. The lexer
+    /// emits them as identifiers and the parser recognises them after
+    /// `route`.
     Keyword {
         And => "and",
         Any => "any",
@@ -57,7 +57,7 @@ spelled_enum! {
         Class => "class",
         Const => "const",
         Defer => "defer",
-        Div => "div",
+        Elif => "elif",
         Else => "else",
         /// Closes every block.
         End => "end",
@@ -80,7 +80,6 @@ spelled_enum! {
         Loop => "loop",
         Main => "main",
         Match => "match",
-        Mod => "mod",
         Move => "move",
         Mut => "mut",
         None => "none",
@@ -95,7 +94,6 @@ spelled_enum! {
         Ref => "ref",
         Region => "region",
         Return => "return",
-        Returns => "returns",
         Route => "route",
         Routes => "routes",
         Shared => "shared",
@@ -105,7 +103,6 @@ spelled_enum! {
         Strict => "strict",
         Struct => "struct",
         Tensor => "tensor",
-        Then => "then",
         To => "to",
         Trait => "trait",
         True => "true",
@@ -133,8 +130,6 @@ impl Keyword {
                 | Keyword::To
                 | Keyword::Until
                 | Keyword::By
-                | Keyword::Div
-                | Keyword::Mod
                 | Keyword::In
         )
     }
@@ -150,6 +145,8 @@ spelled_enum! {
         LBrace => "{",
         RBrace => "}",
         Comma => ",",
+        /// Ends a header line (`fn f():`), and separates names from types,
+        /// map keys from values, and the parts of a slice.
         Colon => ":",
         Semicolon => ";",
         Dot => ".",
@@ -158,8 +155,8 @@ spelled_enum! {
         QuestionQuestion => "??",
         Ellipsis => "...",
         Underscore => "_",
-        /// Postfix transpose: `A'`.
-        Apostrophe => "'",
+        /// Return type: `fn f() -> int:`.
+        Arrow => "->",
         FatArrow => "=>",
         PipeGt => "|>",
         Plus => "+",
@@ -168,6 +165,9 @@ spelled_enum! {
         Star => "*",
         StarStar => "**",
         Slash => "/",
+        /// Floor division.
+        SlashSlash => "//",
+        Percent => "%",
         /// Matrix multiplication. Also introduces a decorator at the start of
         /// a line; the parser tells the two apart by position.
         At => "@",
@@ -188,6 +188,8 @@ spelled_enum! {
         MinusEq => "-=",
         StarEq => "*=",
         SlashEq => "/=",
+        SlashSlashEq => "//=",
+        PercentEq => "%=",
         AtEq => "@=",
         StarStarEq => "**=",
         AmpEq => "&=",
@@ -209,6 +211,8 @@ impl Punct {
                 | Punct::MinusEq
                 | Punct::StarEq
                 | Punct::SlashEq
+                | Punct::SlashSlashEq
+                | Punct::PercentEq
                 | Punct::AtEq
                 | Punct::StarStarEq
                 | Punct::AmpEq
@@ -230,6 +234,7 @@ impl Punct {
                     | Punct::Dot
                     | Punct::QuestionDot
                     | Punct::QuestionQuestion
+                    | Punct::Arrow
                     | Punct::FatArrow
                     | Punct::PipeGt
                     | Punct::Plus
@@ -237,6 +242,8 @@ impl Punct {
                     | Punct::Star
                     | Punct::StarStar
                     | Punct::Slash
+                    | Punct::SlashSlash
+                    | Punct::Percent
                     | Punct::At
                     | Punct::Amp
                     | Punct::Pipe

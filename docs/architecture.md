@@ -1,6 +1,6 @@
 # Vyrn Master Architecture: Tiered Compiler and Data-Oriented Runtime
 
-Status: draft v0.1, code samples updated to grammar v0.3. Nothing described here is implemented yet. Numbers marked
+Status: draft v0.1, code samples updated to grammar v0.4. Nothing described here is implemented yet. Numbers marked
 "target" are design budgets, not measurements.
 
 Companion documents: [`grammar.ebnf`](grammar.ebnf) defines the syntax used in
@@ -198,7 +198,7 @@ Consequences:
 ```vyrn
 const GRAVITY = vec3(0.0, -9.81, 0.0)
 
-struct Entity
+struct Entity:
     pos: vec3
     vel: vec3
     health: f32 = 100.0
@@ -206,15 +206,15 @@ struct Entity
     alive: bool = true
 end
 
-strict fn step(mut world: [Entity], dt: f32)
-    for mut e in world
-        if not e.alive then skip
+strict fn step(mut world: [Entity], dt: f32):
+    for mut e in world:
+        if not e.alive: skip
         e.vel += GRAVITY * dt
         e.pos += e.vel * dt
     end
 end
 
-fn lowest_point(world: [Entity]) returns f32 = min(world.pos[all, 1])
+fn lowest_point(world: [Entity]) -> f32: return min(world.pos[:, 1])
 ```
 
 What the compiler does with it:
@@ -224,7 +224,7 @@ What the compiler does with it:
 - `alive` is a bitset, so the skip test processes 64 entities per word.
 - The loop body has no aliasing (exclusive borrow) and no calls, so the release
   backend vectorizes it.
-- `world.pos[all, 1]` is a strided view over the `pos` column. No copy is made.
+- `world.pos[:, 1]` is a strided view over the `pos` column. No copy is made.
 
 No layout annotation appears in the source.
 
@@ -236,10 +236,10 @@ OOP is supported, with defaults chosen so that it does not undo the layout model
 - Polymorphism is through `trait`. Calls on a concrete type are static. Calls
   through a trait-typed value use a vtable, and the release tier devirtualizes
   them when the set of implementers is known.
-- Recommended decision: **single implementation inheritance for `class` only, no
-  inheritance for `struct`.** Struct layouts stay flat and predictable; classes
-  keep the modelling tool people expect. The v0.3 grammar has no inheritance
-  clause yet, so this needs a grammar addition (`class Enemy(Actor)`).
+- **Single implementation inheritance for `class` only, no inheritance for
+  `struct`.** Struct layouts stay flat and predictable; classes keep the
+  modelling tool people expect. Grammar v0.4 spells it as in Python:
+  `class Enemy(Actor):`.
 - Guidance enforced by lints, not by the type system: classes for long-lived
   objects with identity (scenes, services, connections), structs in collections
   for anything that exists in the thousands.
@@ -289,8 +289,8 @@ is an empirical workstream, not something this document can settle.
 ### 4.2 Devices in the type system
 
 - A tensor type carries its device: `tensor[f16; V, D] on gpu[0]`.
-- `on gpu[i] ... end` sets the device for allocations and kernels in a block.
-  The same keyword names a memory region: `on frame ... end`.
+- `on gpu[i]:` ... `end` sets the device for allocations and kernels in a
+  block. The same keyword names a memory region: `on frame:` ... `end`.
 - `x on gpu[1]` is an explicit transfer. Mixing devices in one operation without
   a transfer is a compile error in strict code and a trap in dynamic code, so
   hidden host-device copies cannot occur.
@@ -341,19 +341,17 @@ kernel fn attention(
     k: tensor[f16; B, H, T, D],
     v: tensor[f16; B, H, T, D],
     mask: tensor[bool; T, T],
-) returns tensor[f16; B, H, T, D]
-    let scores = (q @ k') / sqrt(D)
+) -> tensor[f16; B, H, T, D]:
+    let scores = (q @ k.mT) / sqrt(D)
     return softmax(where(mask, scores, -inf), axis = -1) @ v
 end
 
-strict fn generate(model: Model on gpu[0 to 3], prompt: tensor[i32; B, T]) returns tensor[i32; B]
+strict fn generate(model: Model on gpu[0 to 3], prompt: tensor[i32; B, T]) -> tensor[i32; B]:
     var h = model.embed[prompt]
-    for layer in model.layers
-        on layer.device
-            h = layer.forward(h)
-        end
+    for layer in model.layers:
+        on layer.device: h = layer.forward(h)
     end
-    return argmax(h[all, last] @ model.unembed, axis = -1) on cpu
+    return argmax(h[:, -1] @ model.unembed, axis = -1) on cpu
 end
 ```
 
@@ -363,7 +361,7 @@ What the compiler does with it:
   the softmax are fused where profitable and emitted as PTX. A mismatch between
   the shapes of `q`, `k` and `v` is a compile error.
 - `model.embed[prompt]` is a gather, a native indexing form.
-- `on layer.device` moves `h` only when consecutive layers are on different
+- `on layer.device:` moves `h` only when consecutive layers are on different
   devices.
 - The final `on cpu` is the only host transfer, and it moves `B` integers.
 
@@ -405,7 +403,7 @@ common causes statically and detects the rest.
 | Cause | Handling |
 |---|---|
 | Holding a lock across `await` | Compile error |
-| Acquiring two locks in inconsistent order | `with a.lock(), b.lock()` acquires in a canonical order. Nested acquisition of two `Mutex` values requires declared lock levels, checked at compile time |
+| Acquiring two locks in inconsistent order | `with a.lock(), b.lock():` acquires in a canonical order. Nested acquisition of two `Mutex` values requires declared lock levels, checked at compile time |
 | Re-locking a held mutex | Compile error when visible in one function; dev-tier trap otherwise |
 | Tasks waiting on each other through channels | Not prevented statically. The dev tier maintains a wait-for graph and reports the cycle with task backtraces |
 | Forgotten task that never completes | Prevented by structured concurrency |
@@ -428,11 +426,11 @@ code that compiles, and channel deadlocks diagnosed in development.
   time; a missing provider is a compile error.
 
 ```vyrn
-route GET "/users/{id}" (id: u64, db: Db) returns User, fails NotFound
+route GET "/users/{id}" (id: u64, db: Db) -> User fails NotFound:
     return try await db.users.find(id)
 end
 
-route POST "/generate" (req: Prompt, model: Model) returns Completion
+route POST "/generate" (req: Prompt, model: Model) -> Completion:
     let tokens = await model.generate(req.tokens)
     return Completion(text = decode(tokens))
 end
@@ -466,7 +464,8 @@ end
    checks. Their cost and their error messages need a dedicated design.
 6. **GPU portability.** PTX is NVIDIA-only. SPIR-V coverage for the full tensor
    operation set, and AMD and Apple targets, are unscheduled.
-7. **Class inheritance** needs a decision and a grammar change (section 3.4).
+7. **Class inheritance** is limited to one base class (section 3.4); whether
+   that is enough for real game and UI code needs validating.
 
 ## 7. Build order
 

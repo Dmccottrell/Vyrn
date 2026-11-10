@@ -1,4 +1,4 @@
-# Exercises every construct in the v0.3 grammar. Not meant to be meaningful.
+# Exercises every construct in the v0.4 grammar. Not meant to be meaningful.
 
 use std.io as io
 use std.math (sqrt, pow as power)
@@ -7,105 +7,113 @@ pub type Id = u64
 pub const LIMIT: u32 = 0xFF_FFu32
 
 ## A shape with a few variants.
-enum Shape
+enum Shape:
     Circle(radius: f32)
     Rect(f32, f32)
     Empty
 
-    fn area(self) returns f32
-        match self
-            is Shape.Circle(r) then return 3.14 * r ** 2
-            is Shape.Rect(w, h) if w > 0.0
+    fn area(self) -> f32:
+        match self:
+            is Shape.Circle(r): return 3.14 * r ** 2
+            is Shape.Rect(w, h) if w > 0.0:
                 return w * h
-            else return 0.0
+            else: return 0.0
         end
     end
 end
 
-trait Drawable(Sized)
+trait Drawable(Sized):
     fn draw(self, mut frame: Frame)
 end
 
-impl Drawable for Shape
-    fn draw(self, mut frame: Frame)
+impl Drawable for Shape:
+    fn draw(self, mut frame: Frame):
     end
 end
 
-class Node[T: Ord + Hash]
+class Actor:
+    name = "actor"
+end
+
+class Node[T: Ord + Hash](Actor):
     value: T
     next: shared Node[T]?
     parent: weak Node[T]
     count = 0
 end
 
-extern "js"
+extern "js":
     fn log(msg: str)
 end
 
-extern "c" fn puts(s: ptr u8) returns i32
+extern "c" fn puts(s: ptr u8) -> i32
 
-fn square(x) = x * x
+fn square(x): return x * x
 
-export "wasm" fn render(own scene: Scene, canvas: ref mut Canvas) returns int, fails RenderError
-    let xs = [x * 2 for x in 0 until 10 if x mod 2 == 0]
+export "wasm" fn render(own scene: Scene, canvas: ref mut Canvas) -> int fails RenderError:
+    let xs = [x * 2 for x in 0 until 10 if x % 2 == 0]
     let m = {k: v for k, v in pairs}
     let f = fn(a, b = 1) => a + b
     var y = xs |> sum
-    let name = user?.name ?? "anon"
-    let size = if y > 3 then "big" else "small"
-    let step = range.end div 2
-    if let Shape.Circle(r) = shape
+    let name = user?.name ?? 'anon'
+    let size = "big" if y > 3 else "small"
+    let half = range.end // 2
+    if let Shape.Circle(r) = shape:
         log("r={r} \{literal\}")
-    else if y in 0 to 5
+    elif y in 0 to 5:
         y -= 1
-    else
+    elif y > 100: y = 100
+    else:
         fail Bad(r"raw {text}")
     end
-    try
-        with open(p) as fh, lock
+    try:
+        with open(p) as fh, lock:
             defer fh.close()
         end
-    catch IoError as e
+    catch IoError as e:
         return -1
-    catch
-        return -2
-    finally
+    catch: return -2
+    finally:
         y = 0
     end
-    match command
-        is "n" or "north" then y += 1
-        is 1 to 9 as digit then y = digit
-        is [first, ...rest] then y = first
-        is (a, _) then y = a
-        is Point(x = 0, y = py) then y = py
-        else stop
+    match command:
+        is "n" or "north": y += 1
+        is 1 to 9 as digit: y = digit
+        is [first, ...rest]: y = first
+        is (a, _): y = a
+        is Point(x = 0, y = py):
+            y = py
+        else: stop
     end
-    loop
-        if y > 10 then stop else skip
+    loop:
+        if y > 10: stop
+        y //= 2
+        y %= 7
+        skip
     end
     return 0
 end
 
-async fn train(model, data, w: tensor[f32; ..., _, 3] on gpu[0 to 3])
-    par for dev, batch in zip(gpu[0 until 4], data)
-        on dev
+async fn train(model, data, w: tensor[f32; ..., _, 3] on gpu[0 to 3]):
+    par for dev, batch in zip(gpu[0 until 4], data):
+        on dev:
             let t = spawn step(mut model, move batch)
             var loss = await t
             loss **= 2
         end
     end
-    async for ev in stream
-        x[1 until 9 by 2, ..., _] @= w[mask]'
-    end
+    async for ev in stream: x[1:9:2, ..., none] @= w[mask].mT
     let total = 1.5e-3f32 +
         2f64 +
         0b1010 + 0o17 + 1_000_000
-    unsafe
+    let tail = xs[-3:] + xs[::2] + xs[:]
+    unsafe:
         var p: ptr u8 = raw
     end
 end
 
-main(args)
+main(args):
     print("""multi
 line {args.count}""")
+    print('''single 'quoted' "block"''')
 end

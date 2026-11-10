@@ -60,23 +60,22 @@ fn all_sources_tokenize() {
     }
 }
 
-/// Block openers and `end` must balance in the example programs. This is a
-/// cheap stand-in for parsing until the parser exists.
+/// In the examples, every header that opens a block (a `:` at the end of a
+/// line) has exactly one `end`. The examples use no elif/else/catch chains,
+/// whose clauses share their chain's `end`, so the counts must match exactly.
+/// This is a cheap stand-in for parsing until the parser exists.
 #[test]
-fn examples_have_one_end_per_block() {
+fn examples_close_every_block_with_end() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
-    for (file, ends) in [
-        ("grade.vyrn", 5),
-        ("game.vyrn", 8),
-        ("api.vyrn", 6),
-        ("inference.vyrn", 5),
-    ] {
+    for file in ["grade.vyrn", "game.vyrn", "api.vyrn", "inference.vyrn"] {
         let kinds = lex(&root.join(file));
-        assert_eq!(
-            count(&kinds, &TokenKind::Keyword(Keyword::End)),
-            ends,
-            "{file}"
-        );
+        let openers = kinds
+            .windows(2)
+            .filter(|w| w[0] == TokenKind::Punct(Punct::Colon) && w[1] == TokenKind::Newline)
+            .count();
+        let ends = count(&kinds, &TokenKind::Keyword(Keyword::End));
+        assert!(ends > 0, "{file}");
+        assert_eq!(openers, ends, "{file}: block headers vs `end`");
     }
 }
 
@@ -86,7 +85,14 @@ fn inference_example_uses_both_products_and_placement() {
     let kinds = lex(&root.join("inference.vyrn"));
     assert_eq!(count(&kinds, &TokenKind::Punct(Punct::At)), 3);
     assert_eq!(count(&kinds, &TokenKind::Punct(Punct::Star)), 3);
-    assert_eq!(count(&kinds, &TokenKind::Punct(Punct::Apostrophe)), 1);
+    // `h[:, -1]`: a Python slice taking the last position.
+    let slice = [
+        TokenKind::Punct(Punct::LBracket),
+        TokenKind::Punct(Punct::Colon),
+        TokenKind::Punct(Punct::Comma),
+        TokenKind::Punct(Punct::Minus),
+    ];
+    assert!(kinds.windows(4).any(|w| w == slice));
     assert_eq!(count(&kinds, &TokenKind::Keyword(Keyword::On)), 3);
 }
 

@@ -1,4 +1,4 @@
-//! Abstract syntax tree for Vyrn (grammar v0.3).
+//! Abstract syntax tree for Vyrn (grammar v0.4).
 //!
 //! The parser will build these nodes; nothing here parses anything. The tree
 //! is organised in five layers, each mirroring a section of the grammar:
@@ -273,7 +273,7 @@ pub struct Param {
     pub ty: TypeSlot,
 }
 
-/// `returns T`, `fails E`, or both.
+/// `-> T`, `fails E`, or `-> T fails E`.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct ResultSpec {
     pub returns: Option<TypeExpr>,
@@ -282,10 +282,9 @@ pub struct ResultSpec {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum FnBody {
-    /// `fn f() ... end`
+    /// `fn f(): stmt` or `fn f():` ... `end`. The one-line form is a block
+    /// holding a single statement.
     Block(Block),
-    /// `fn f() = expr`
-    Expr(Box<Expr>),
     /// A signature with no body, in a `trait` or `extern` declaration.
     Signature,
 }
@@ -317,6 +316,8 @@ pub struct AggregateDecl {
     pub kind: AggregateKind,
     pub name: Ident,
     pub generics: Vec<GenericParam>,
+    /// The base class in `class Enemy(Actor):`. Always `None` for a struct.
+    pub base: Option<TypeExpr>,
     pub fields: Vec<FieldDecl>,
     /// Each is an [`ItemKind::Fn`].
     pub methods: Vec<Item>,
@@ -518,7 +519,7 @@ impl RoutePath {
     }
 }
 
-/// `route GET "/users/{id}" (id: u64, db: Db) returns User, fails NotFound`.
+/// `route GET "/users/{id}" (id: u64, db: Db) -> User fails NotFound:`.
 ///
 /// A route body is implicitly async.
 #[derive(Clone, Debug, PartialEq)]
@@ -568,7 +569,9 @@ pub enum StmtKind {
     /// An expression evaluated for its effect.
     Expr(Expr),
     /// `target = value` or `target op= value`. A multiple assignment has
-    /// [`ExprKind::Tuple`] on either side.
+    /// [`ExprKind::Tuple`] on either side. As in Python, assigning to a
+    /// name not yet in scope declares it; semantic analysis decides which
+    /// case applies and rejects it in `strict` code.
     Assign {
         target: Expr,
         op: AssignOp,
@@ -643,6 +646,10 @@ pub enum AssignOp {
     /// `*=`: element-wise.
     Mul,
     Div,
+    /// `//=`
+    FloorDiv,
+    /// `%=`
+    Rem,
     /// `@=`: matrix product in place.
     MatMul,
     Pow,
@@ -655,7 +662,7 @@ pub enum AssignOp {
     Coalesce,
 }
 
-/// What follows `if`, `else if` or `while`.
+/// What follows `if`, `elif` or `while`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Condition {
     Expr(Expr),
@@ -668,7 +675,7 @@ pub enum Condition {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IfStmt {
-    /// The `if` branch followed by each `else if`, in source order.
+    /// The `if` branch followed by each `elif`, in source order.
     pub branches: Vec<(Condition, Block)>,
     pub else_body: Option<Block>,
 }
@@ -702,7 +709,7 @@ pub struct MatchStmt {
     pub else_body: Option<Block>,
 }
 
-/// `is pattern [if guard] then stmt` or `is pattern [if guard]` plus a block.
+/// `is pattern [if guard]: stmt`, or the same header followed by a block.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MatchArm {
     pub span: Span,
@@ -789,7 +796,7 @@ pub enum TypeExprKind {
     },
     /// `(A, B)`; `()` is the unit type.
     Tuple(Vec<TypeExpr>),
-    /// `fn(A, B) returns C`
+    /// `fn(A, B) -> C`
     Fn {
         params: Vec<TypeExpr>,
         returns: Option<Box<TypeExpr>>,
@@ -878,7 +885,7 @@ impl Expr {
     pub fn is_tensor_op(&self) -> bool {
         matches!(
             self.kind,
-            ExprKind::MatMul { .. } | ExprKind::Transpose(_) | ExprKind::Placement { .. }
+            ExprKind::MatMul { .. } | ExprKind::Placement { .. }
         )
     }
 }
@@ -959,8 +966,6 @@ pub enum ExprKind {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
-    /// `a'`: swaps the last two dimensions.
-    Transpose(Box<Expr>),
     /// `value on target`: the value placed on a device or in a region.
     Placement {
         value: Box<Expr>,
@@ -972,8 +977,6 @@ pub enum ExprKind {
         base: Box<Expr>,
         subscripts: Vec<Subscript>,
     },
-    /// `last` inside a subscript: the final index along that dimension.
-    Last,
 
     // ---- access and calls ----
     /// `base.name`, or `base?.name` when `optional` is set.
@@ -995,10 +998,10 @@ pub enum ExprKind {
     Move(Box<Expr>),
 
     // ---- control ----
-    /// `if c then a else b`
+    /// `a if cond else b`
     If {
-        condition: Box<Expr>,
         then_value: Box<Expr>,
+        condition: Box<Expr>,
         else_value: Box<Expr>,
     },
     /// `fn(x, y) => body`
@@ -1032,9 +1035,9 @@ pub enum BinaryOp {
     Mul,
     /// `/`: true division.
     Div,
-    /// `div`: integer division.
-    IntDiv,
-    /// `mod`
+    /// `//`: floor division.
+    FloorDiv,
+    /// `%`
     Rem,
     /// `**`
     Pow,
@@ -1062,15 +1065,19 @@ pub enum CompareOp {
 /// One entry between `[` and `]`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Subscript {
-    /// An index, a range (`1 until 9 by 2`), a boolean mask, or an index
-    /// tensor. Which one is decided by the type of the expression.
+    /// An index (negative counts from the end), a boolean mask, an index
+    /// tensor, or `none` to insert a new axis. Which one is decided by the
+    /// type of the expression.
     Index(Expr),
-    /// `all`: the whole dimension.
-    All(Span),
+    /// `start:stop:step`, any part optional: `:`, `1:`, `:-1`, `::2`.
+    Slice {
+        start: Option<Box<Expr>>,
+        stop: Option<Box<Expr>>,
+        step: Option<Box<Expr>>,
+        span: Span,
+    },
     /// `...`: all remaining leading dimensions.
     Ellipsis(Span),
-    /// `_`: insert a dimension of size one.
-    NewAxis(Span),
 }
 
 /// A call argument: `x`, `mut x`, or `name = x`.
@@ -1192,18 +1199,54 @@ mod tests {
         assert_eq!(PlaceSlot::default(), PlaceSlot::Pending);
     }
 
-    /// `(h @ w') on cpu`, built by hand the way the parser will build it.
+    /// `(h[:, -1] @ w.T) on cpu`, built by hand the way the parser will
+    /// build it.
     #[test]
     fn tensor_nodes_compose() {
-        let transpose = Expr::new(
+        let minus_one = Expr::new(
             NodeId(2),
-            ExprKind::Transpose(Box::new(name(1, "w"))),
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                operand: Box::new(Expr::new(
+                    NodeId(1),
+                    ExprKind::Int {
+                        value: 1,
+                        suffix: None,
+                    },
+                    Span::default(),
+                )),
+            },
+            Span::default(),
+        );
+        let last_row = Expr::new(
+            NodeId(3),
+            ExprKind::Index {
+                base: Box::new(name(0, "h")),
+                subscripts: vec![
+                    Subscript::Slice {
+                        start: None,
+                        stop: None,
+                        step: None,
+                        span: Span::default(),
+                    },
+                    Subscript::Index(minus_one),
+                ],
+            },
+            Span::default(),
+        );
+        let transpose = Expr::new(
+            NodeId(5),
+            ExprKind::Field {
+                base: Box::new(name(4, "w")),
+                name: ident("T"),
+                optional: false,
+            },
             Span::default(),
         );
         let matmul = Expr::new(
-            NodeId(3),
+            NodeId(6),
             ExprKind::MatMul {
-                lhs: Box::new(name(0, "h")),
+                lhs: Box::new(last_row),
                 rhs: Box::new(transpose),
             },
             Span::default(),

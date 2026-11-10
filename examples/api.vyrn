@@ -3,18 +3,18 @@
 use std.web
 use app.storage (Db)
 
-struct User
+struct User:
     id: u64
     name: str
     email: str?
 end
 
 # `id` comes from the URL, `db` from a registered provider.
-route GET "/users/{id}" (id: u64, db: Db) returns User, fails NotFound
+route GET "/users/{id}" (id: u64, db: Db) -> User fails NotFound:
     return try await db.users.find(id)
 end
 
-route GET "/users/{id}/summary" (id: u64, db: Db)
+route GET "/users/{id}/summary" (id: u64, db: Db):
     # Both queries run concurrently.
     let user, orders = await join(
         db.users.find(id),
@@ -28,14 +28,14 @@ route GET "/users/{id}/summary" (id: u64, db: Db)
     }
 end
 
-routes "/admin"
+routes "/admin":
     @require(role = "admin")
-    route POST "/users" (body: User, db: Db) returns (int, User)
+    route POST "/users" (body: User, db: Db) -> (int, User):
         let created = try await db.users.insert(body)
         return 201, created
     end
 end
 
-main
+main:
     web.serve(port = 8080)
 end

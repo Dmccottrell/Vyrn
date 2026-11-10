@@ -3,12 +3,13 @@
 A gradually typed, garbage-collector-free language for machine learning, web
 services and WebAssembly, and games and systems code.
 
-Status: grammar v0.3, with a lexer and AST definitions in Rust. There is no
+Status: grammar v0.4, with a lexer and AST definitions in Rust. There is no
 parser yet.
 
 ## Documents
 
-- [`docs/grammar.ebnf`](docs/grammar.ebnf): the complete EBNF grammar (v0.3)
+- [`docs/syntax.md`](docs/syntax.md): the syntax at a glance, and how it maps from Python
+- [`docs/grammar.ebnf`](docs/grammar.ebnf): the complete EBNF grammar (v0.4)
 - [`docs/architecture.md`](docs/architecture.md): compiler tiers, memory model, GPU bridge and concurrency design
 
 ## Examples

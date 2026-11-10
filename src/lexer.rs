@@ -1,4 +1,4 @@
-//! Converts source text into tokens (grammar v0.3, section 9).
+//! Converts source text into tokens (grammar v0.4, section 9).
 //!
 //! The lexer never stops at the first problem. It records an error, recovers,
 //! and keeps going, so one run reports every lexical mistake in a file.
@@ -27,6 +27,8 @@ pub enum LexErrorKind {
     },
     /// A string with no closing quote.
     UnterminatedString,
+    /// Python's `f"..."`. Every Vyrn string already interpolates.
+    NeedlessStringPrefix(char),
     /// A `{` inside a string with no matching `}`.
     UnterminatedInterpolation,
     /// `{}` inside a string.
@@ -67,6 +69,9 @@ impl LexError {
                 format!("`{found}` is not a Vyrn operator")
             }
             LexErrorKind::UnterminatedString => "this string is never closed".to_string(),
+            LexErrorKind::NeedlessStringPrefix(prefix) => {
+                format!("strings do not take a `{prefix}` prefix")
+            }
             LexErrorKind::UnterminatedInterpolation => {
                 "this `{` inside a string is never closed".to_string()
             }
@@ -98,13 +103,17 @@ impl LexError {
         match &self.kind {
             LexErrorKind::UnsupportedOperator { hint, .. } => Some((*hint).to_string()),
             LexErrorKind::UnterminatedString => Some(
-                "add a closing `\"`; use `\"\"\"` for text that spans several lines".to_string(),
+                "add the closing quote; use `\"\"\"` for text that spans several lines".to_string(),
             ),
+            LexErrorKind::NeedlessStringPrefix(_) => {
+                Some("every string interpolates `{expr}` already; remove the prefix".to_string())
+            }
             LexErrorKind::UnterminatedInterpolation | LexErrorKind::EmptyInterpolation => {
                 Some("write `\\{` for a literal brace".to_string())
             }
             LexErrorKind::InvalidEscape(_) => Some(
-                "valid escapes are \\n \\t \\r \\0 \\\\ \\\" \\{ \\} \\xHH \\u{HEX}".to_string(),
+                "valid escapes are \\n \\t \\r \\0 \\\\ \\\" \\' \\{ \\} \\xHH \\u{HEX}"
+                    .to_string(),
             ),
             LexErrorKind::InvalidNumber(_) => Some(
                 "number suffixes are i8 i16 i32 i64 u8 u16 u32 u64 f16 f32 f64 bf16".to_string(),
@@ -220,10 +229,20 @@ impl<'src> Lexer<'src> {
                     self.bump();
                 }
                 '#' => self.comment(start),
-                '"' => self.string(start, false),
-                'r' if self.peek_at(1) == Some('"') => {
+                '"' | '\'' => self.string(start, false),
+                'r' if matches!(self.peek_at(1), Some('"' | '\'')) => {
                     self.bump();
                     self.string(start, true);
+                }
+                'f' if matches!(self.peek_at(1), Some('"' | '\'')) => {
+                    // Python habit. Report it, then lex the string normally
+                    // so the rest of the line is unaffected.
+                    self.bump();
+                    self.error(
+                        LexErrorKind::NeedlessStringPrefix('f'),
+                        Span::new(start, self.pos),
+                    );
+                    self.string(start, false);
                 }
                 c if is_ident_start(c) => self.word(start),
                 c if c.is_ascii_digit() => self.number(start),
@@ -485,11 +504,13 @@ impl<'src> Lexer<'src> {
 
     // ---- strings --------------------------------------------------------
 
-    /// Lexes a string whose opening quote is the next character. `raw`
-    /// strings have no escapes and no interpolation.
+    /// Lexes a string whose opening quote (`"` or `'`) is the next
+    /// character. `raw` strings have no escapes and no interpolation.
     fn string(&mut self, start: Pos, raw: bool) {
-        let quote = Span::new(self.pos, self.pos.advance('"'));
-        let triple = self.rest().starts_with("\"\"\"");
+        let q = self.peek().unwrap_or('"');
+        let quote = Span::new(self.pos, self.pos.advance(q));
+        let triple_quote: &str = if q == '"' { "\"\"\"" } else { "\'\'\'" };
+        let triple = self.rest().starts_with(triple_quote);
         self.bump_n(if triple { 3 } else { 1 });
 
         let mut parts = Vec::new();
@@ -511,17 +532,17 @@ impl<'src> Lexer<'src> {
                     self.delimiters.retain(|(_, span)| span.start.line != line);
                     break;
                 }
-                Some('"') => {
+                Some(c) if c == q => {
                     if !triple {
                         self.bump();
                         break;
                     }
-                    if self.rest().starts_with("\"\"\"") {
+                    if self.rest().starts_with(triple_quote) {
                         self.bump_n(3);
                         break;
                     }
                     self.bump();
-                    text.push('"');
+                    text.push(c);
                 }
                 Some('\\') if !raw => self.escape(&mut text),
                 Some('{') if !raw => {
@@ -552,25 +573,30 @@ impl<'src> Lexer<'src> {
         let from = self.index;
         let inner_start = self.pos;
         let mut depth = 1usize;
-        let mut in_string = false;
+        // The quote character of a string literal nested in the expression.
+        let mut in_string: Option<char> = None;
 
         loop {
             match self.peek() {
                 None => break,
                 Some('\n') if !multiline => break,
-                Some('\\') if in_string => {
+                Some('\\') if in_string.is_some() => {
                     self.bump();
                     self.bump();
                 }
-                Some('"') => {
-                    in_string = !in_string;
+                Some(c @ ('"' | '\'')) => {
+                    match in_string {
+                        None => in_string = Some(c),
+                        Some(open) if open == c => in_string = None,
+                        Some(_) => {}
+                    }
                     self.bump();
                 }
-                Some('{') if !in_string => {
+                Some('{') if in_string.is_none() => {
                     depth += 1;
                     self.bump();
                 }
-                Some('}') if !in_string => {
+                Some('}') if in_string.is_none() => {
                     depth -= 1;
                     if depth == 0 {
                         let source = &self.src[from..self.index];
@@ -611,7 +637,7 @@ impl<'src> Lexer<'src> {
             't' => out.push('\t'),
             'r' => out.push('\r'),
             '0' => out.push('\0'),
-            '\\' | '"' | '{' | '}' => out.push(c),
+            '\\' | '"' | '\'' | '{' | '}' => out.push(c),
             'x' => {
                 let digits: String = self.rest().chars().take(2).collect();
                 match u8::from_str_radix(&digits, 16) {
@@ -655,12 +681,6 @@ impl<'src> Lexer<'src> {
 
         // Spellings from other languages get a specific message.
         let foreign = match (c, next) {
-            ('-', Some('>')) => Some(("->", 2, "write `returns T` after the parameter list")),
-            ('/', Some('/')) => Some((
-                "//",
-                2,
-                "use `div` for integer division; comments start with `#`",
-            )),
             ('&', Some('&')) => Some(("&&", 2, "use `and`")),
             ('|', Some('|')) => Some(("||", 2, "use `or`")),
             ('.', Some('.')) if third != Some('.') => Some((
@@ -668,7 +688,6 @@ impl<'src> Lexer<'src> {
                 2,
                 "use `a to b` (inclusive) or `a until b` (exclusive)",
             )),
-            ('%', _) => Some(("%", 1, "use `mod` for the remainder")),
             ('!', n) if n != Some('=') => Some(("!", 1, "use `not`")),
             _ => None,
         };
@@ -684,12 +703,15 @@ impl<'src> Lexer<'src> {
         // Longest match first.
         let (punct, len) = match (c, next, third) {
             ('.', Some('.'), Some('.')) => (Punct::Ellipsis, 3),
+            ('/', Some('/'), Some('=')) => (Punct::SlashSlashEq, 3),
             ('*', Some('*'), Some('=')) => (Punct::StarStarEq, 3),
             ('<', Some('<'), Some('=')) => (Punct::ShlEq, 3),
             ('>', Some('>'), Some('=')) => (Punct::ShrEq, 3),
             ('?', Some('?'), Some('=')) => (Punct::QuestionQuestionEq, 3),
 
             ('*', Some('*'), _) => (Punct::StarStar, 2),
+            ('/', Some('/'), _) => (Punct::SlashSlash, 2),
+            ('-', Some('>'), _) => (Punct::Arrow, 2),
             ('<', Some('<'), _) => (Punct::Shl, 2),
             ('>', Some('>'), _) => (Punct::Shr, 2),
             ('?', Some('?'), _) => (Punct::QuestionQuestion, 2),
@@ -704,6 +726,7 @@ impl<'src> Lexer<'src> {
             ('-', Some('='), _) => (Punct::MinusEq, 2),
             ('*', Some('='), _) => (Punct::StarEq, 2),
             ('/', Some('='), _) => (Punct::SlashEq, 2),
+            ('%', Some('='), _) => (Punct::PercentEq, 2),
             ('@', Some('='), _) => (Punct::AtEq, 2),
             ('&', Some('='), _) => (Punct::AmpEq, 2),
             ('|', Some('='), _) => (Punct::PipeEq, 2),
@@ -720,11 +743,11 @@ impl<'src> Lexer<'src> {
             (';', ..) => (Punct::Semicolon, 1),
             ('.', ..) => (Punct::Dot, 1),
             ('?', ..) => (Punct::Question, 1),
-            ('\'', ..) => (Punct::Apostrophe, 1),
             ('+', ..) => (Punct::Plus, 1),
             ('-', ..) => (Punct::Minus, 1),
             ('*', ..) => (Punct::Star, 1),
             ('/', ..) => (Punct::Slash, 1),
+            ('%', ..) => (Punct::Percent, 1),
             ('@', ..) => (Punct::At, 1),
             ('&', ..) => (Punct::Amp, 1),
             ('|', ..) => (Punct::Pipe, 1),
@@ -882,14 +905,69 @@ mod tests {
     }
 
     #[test]
-    fn apostrophe_is_transpose() {
+    fn python_arithmetic_operators() {
         assert_eq!(
-            kinds("h @ w'")[..4],
+            kinds("a // b % c\na //= 2\na %= 3")
+                .into_iter()
+                .filter(|k| matches!(k, T::Punct(_)))
+                .collect::<Vec<_>>(),
+            vec![
+                T::Punct(P::SlashSlash),
+                T::Punct(P::Percent),
+                T::Punct(P::SlashSlashEq),
+                T::Punct(P::PercentEq),
+            ]
+        );
+    }
+
+    #[test]
+    fn header_lines_end_with_a_colon_and_a_newline() {
+        assert_eq!(
+            kinds("fn area(w, h) -> f32:\n    return w * h\nend"),
+            vec![
+                T::Keyword(K::Fn),
+                ident("area"),
+                T::Punct(P::LParen),
+                ident("w"),
+                T::Punct(P::Comma),
+                ident("h"),
+                T::Punct(P::RParen),
+                T::Punct(P::Arrow),
+                ident("f32"),
+                T::Punct(P::Colon),
+                T::Newline,
+                T::Keyword(K::Return),
+                ident("w"),
+                T::Punct(P::Star),
+                ident("h"),
+                T::Newline,
+                T::Keyword(K::End),
+                T::Newline,
+                T::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn elif_is_a_keyword_and_then_is_not() {
+        assert_eq!(
+            kinds("elif then")[..2],
+            [T::Keyword(K::Elif), ident("then")]
+        );
+    }
+
+    #[test]
+    fn python_slices() {
+        assert_eq!(
+            kinds("h[:, -1]")[..7],
             [
                 ident("h"),
-                T::Punct(P::At),
-                ident("w"),
-                T::Punct(P::Apostrophe)
+                T::Punct(P::LBracket),
+                T::Punct(P::Colon),
+                T::Punct(P::Comma),
+                T::Punct(P::Minus),
+                int(1),
+                T::Punct(P::RBracket),
             ]
         );
     }
@@ -968,10 +1046,11 @@ mod tests {
     #[test]
     fn transpose_and_optional_do_end_a_line() {
         assert_eq!(
-            kinds("w'\nx: str?\ny"),
+            kinds("w.T\nx: str?\ny"),
             vec![
                 ident("w"),
-                T::Punct(P::Apostrophe),
+                T::Punct(P::Dot),
+                ident("T"),
                 T::Newline,
                 ident("x"),
                 T::Punct(P::Colon),
@@ -1012,8 +1091,8 @@ mod tests {
     #[test]
     fn contextual_words_stay_identifiers() {
         assert_eq!(
-            kinds("GET all last")[..3],
-            [ident("GET"), ident("all"), ident("last")]
+            kinds("GET POST self")[..3],
+            [ident("GET"), ident("POST"), ident("self")]
         );
     }
 
@@ -1071,6 +1150,43 @@ mod tests {
             [int(1), T::Punct(P::Dot), ident("max")]
         );
         assert_eq!(kinds("0 to 3")[..3], [int(0), T::Keyword(K::To), int(3)]);
+    }
+
+    #[test]
+    fn single_and_double_quotes_are_equivalent() {
+        assert_eq!(kinds("'it\\'s'")[0], T::Str(vec![text("it's")]));
+        assert_eq!(kinds("'say \"hi\"'")[0], T::Str(vec![text("say \"hi\"")]));
+        assert_eq!(kinds("\"it's\"")[0], T::Str(vec![text("it's")]));
+        let T::Str(parts) = &kinds("'{name}!'")[0] else {
+            panic!()
+        };
+        assert!(matches!(&parts[0], StrPart::Interp { source, .. } if source == "name"));
+        assert_eq!(kinds("r'C:\\{x}'")[0], T::Str(vec![text("C:\\{x}")]));
+    }
+
+    #[test]
+    fn triple_single_quoted_strings() {
+        let tokens = tokenize("'''a 'b' \"c\"\nd'''").unwrap();
+        assert_eq!(tokens[0].kind, T::Str(vec![text("a 'b' \"c\"\nd")]));
+    }
+
+    #[test]
+    fn interpolation_may_hold_the_other_quote() {
+        let T::Str(parts) = &kinds("\"{d['k']}\"")[0] else {
+            panic!()
+        };
+        assert!(matches!(&parts[0], StrPart::Interp { source, .. } if source == "d['k']"));
+    }
+
+    #[test]
+    fn python_f_prefix_is_reported_but_the_string_still_lexes() {
+        let (tokens, errs) = Lexer::new("print(f\"x = {x}\")").run();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].kind, LexErrorKind::NeedlessStringPrefix('f'));
+        assert!(errs[0].hint().is_some());
+        assert!(matches!(&tokens[2].kind, T::Str(parts) if parts.len() == 2));
+        // A name `f` followed by a space is fine.
+        assert_eq!(kinds("f \"x\"")[0], ident("f"));
     }
 
     #[test]
@@ -1218,9 +1334,6 @@ mod tests {
     #[test]
     fn foreign_operators_get_hints() {
         for (src, found) in [
-            ("a -> b", "->"),
-            ("a // b", "//"),
-            ("a % b", "%"),
             ("a && b", "&&"),
             ("a || b", "||"),
             ("!a", "!"),
@@ -1300,15 +1413,15 @@ mod tests {
 
     #[test]
     fn rendered_error_shows_the_line_and_a_marker() {
-        let src = "main\n    let rate = total % count\nend\n";
+        let src = "main:\n    if passed && on_time: print(\"ok\")\nend\n";
         let rendered = errors(src)[0].render("grade.vyrn", src);
         let expected = "\
-error: `%` is not a Vyrn operator
- --> grade.vyrn:2:22
+error: `&&` is not a Vyrn operator
+ --> grade.vyrn:2:15
   |
-2 |     let rate = total % count
-  |                      ^
-  = help: use `mod` for the remainder
+2 |     if passed && on_time: print(\"ok\")
+  |               ^^
+  = help: use `and`
 ";
         assert_eq!(rendered, expected);
     }

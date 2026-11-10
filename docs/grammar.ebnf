@@ -1,5 +1,5 @@
 (* ============================================================================
-   Vyrn Language Grammar -- v0.3
+   Vyrn Language Grammar -- v0.4
    File extension: .vyrn
 
    Notation
@@ -9,7 +9,12 @@
      "x"    terminal              UPPER  token produced by the lexer (section 9)
 
    Layout
-     Indentation is not significant. Every block is closed by `end`.
+     A compound statement starts with a header line ending in ":". After the
+     colon comes either
+       - a single simple statement on the same line, with no `end`:
+             if lives == 0: stop
+       - a line break, a block of statements, and a closing `end`.
+     Indentation is not significant; it is for readers and the formatter.
      A statement ends at NEWLINE. The lexer emits at most one NEWLINE between
      tokens and none at the start of a file. It emits no NEWLINE
        - inside ( ), [ ] or { }
@@ -45,7 +50,7 @@ use_decl      = "use" dotted_name
 use_name      = IDENT [ "as" IDENT ] ;
 dotted_name   = IDENT { "." IDENT } ;
 
-main_decl     = "main" [ "(" [ params ] ")" ] NEWLINE block "end" NEWLINE ;
+main_decl     = "main" [ "(" [ params ] ")" ] suite ;
 
 const_decl    = "const" IDENT [ ":" type ] "=" expression NEWLINE ;
 type_alias    = "type" IDENT [ generic_params ] "=" type NEWLINE ;
@@ -53,6 +58,15 @@ type_alias    = "type" IDENT [ generic_params ] "=" type NEWLINE ;
 decorator     = "@" dotted_name [ "(" [ arguments ] ")" ] NEWLINE ;
 
 block         = { statement } ;
+
+(* The body of every compound statement and declaration that holds code. *)
+suite         = ":" ( simple_stmt NEWLINE
+                    | NEWLINE block "end" NEWLINE ) ;
+
+(* A clause body inside a chain (elif, else, is, catch, finally). The chain
+   as a whole closes with one `end`, so a clause has no `end` of its own.     *)
+clause_body   = simple_stmt NEWLINE
+              | NEWLINE block ;
 
 
 (* ---- 2. Declarations ----------------------------------------------------- *)
@@ -62,13 +76,15 @@ block         = { statement } ;
      strict  every binding must be statically typed; no dynamic dispatch
      kernel  strict + compiled for CPU SIMD / GPU execution
      export  exposed to the host ABI, e.g. export "wasm" fn render()          *)
-fn_decl       = fn_head ( NEWLINE block "end" NEWLINE
-                        | "=" expression NEWLINE ) ;
+fn_decl       = fn_head suite ;
 fn_sig        = fn_head NEWLINE ;
 fn_head       = { fn_modifier } "fn" IDENT [ generic_params ]
                 "(" [ params ] ")" [ result ] ;
+
+(* `-> T` is the return type. `fails E` names the error the function may
+   pass to its caller: fn find(id: u64) -> User fails NotFound:              *)
 fn_modifier   = "async" | "strict" | "kernel" | "export" [ STRING ] ;
-result        = "returns" type [ "," "fails" type ]
+result        = "->" type [ "fails" type ]
               | "fails" type ;
 
 (* Parameter passing. No lifetime annotations exist in the language.
@@ -83,27 +99,29 @@ pass_mode     = "mut" | "own" ;
 generic_params = "[" generic_param { "," generic_param } "]" ;
 generic_param  = IDENT [ ":" type { "+" type } ] ;
 
-(* struct: value type, statically sized, stored inline.
-   class:  reference type, heap allocated, automatically reference counted.   *)
-struct_decl   = "struct" IDENT [ generic_params ] NEWLINE { member } "end" NEWLINE ;
-class_decl    = "class" IDENT [ generic_params ] NEWLINE { member } "end" NEWLINE ;
+(* struct: value type, statically sized, stored inline. No inheritance.
+   class:  reference type, heap allocated, automatically reference counted.
+           May extend one base class: class Enemy(Actor):                    *)
+struct_decl   = "struct" IDENT [ generic_params ] ":" NEWLINE { member } "end" NEWLINE ;
+class_decl    = "class" IDENT [ generic_params ] [ "(" type ")" ] ":" NEWLINE
+                { member } "end" NEWLINE ;
 member        = field_decl
               | method_decl ;
 field_decl    = [ "pub" ] IDENT ( ":" type [ "=" expression ]
                                 | "=" expression ) NEWLINE ;
 method_decl   = { DOC_COMMENT } { decorator } [ "pub" ] fn_decl ;
 
-enum_decl     = "enum" IDENT [ generic_params ] NEWLINE
+enum_decl     = "enum" IDENT [ generic_params ] ":" NEWLINE
                 { variant | method_decl } "end" NEWLINE ;
 variant       = IDENT [ "(" variant_field { "," variant_field } ")"
                       | "=" expression ] NEWLINE ;
 variant_field = [ IDENT ":" ] type ;
 
-(* Trait members are signatures only in v0.3. *)
-trait_decl    = "trait" IDENT [ generic_params ] [ "(" type { "," type } ")" ] NEWLINE
+(* Trait members are signatures only in v0.4. *)
+trait_decl    = "trait" IDENT [ generic_params ] [ "(" type { "," type } ")" ] ":" NEWLINE
                 { fn_sig } "end" NEWLINE ;
 
-impl_decl     = "impl" [ generic_params ] type [ "for" type ] NEWLINE
+impl_decl     = "impl" [ generic_params ] type [ "for" type ] ":" NEWLINE
                 { method_decl } "end" NEWLINE ;
 
 (* HTTP routing. The path is an ordinary string token. Each {name} in it is a
@@ -112,16 +130,15 @@ impl_decl     = "impl" [ generic_params ] type [ "for" type ] NEWLINE
    A route body is implicitly async; its result is serialized (JSON by
    default). The HTTP method names are contextual: they are keywords only
    directly after `route`.                                                     *)
-route_decl    = "route" http_method STRING [ "(" [ params ] ")" ] [ result ] NEWLINE
-                block "end" NEWLINE ;
-route_group   = "routes" STRING NEWLINE { route_item } "end" NEWLINE ;
+route_decl    = "route" http_method STRING [ "(" [ params ] ")" ] [ result ] suite ;
+route_group   = "routes" STRING ":" NEWLINE { route_item } "end" NEWLINE ;
 route_item    = { DOC_COMMENT } { decorator } ( route_decl | route_group ) ;
 http_method   = "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
               | "HEAD" | "OPTIONS" | "WS" | "SSE" ;
 
 (* Foreign functions: extern "c", extern "js" (WebAssembly host imports). *)
 extern_decl   = "extern" STRING ( fn_sig
-                                | NEWLINE { fn_sig } "end" NEWLINE ) ;
+                                | ":" NEWLINE { fn_sig } "end" NEWLINE ) ;
 
 
 (* ---- 3. Statements ------------------------------------------------------- *)
@@ -137,8 +154,12 @@ simple_stmt   = binding_stmt
               | "stop"
               | "skip" ;
 
-(* let = immutable, var = mutable, const = compile-time constant.
-   Names must be introduced with one of these before they are assigned.        *)
+(* As in Python, assigning to a new name declares a variable: total = 0.
+   let = fixed (cannot be reassigned), var = explicitly mutable, const =
+   evaluated at compile time. Inside `strict` and `kernel` functions every
+   new name must be declared with let, var or const, so a typo cannot
+   silently create a variable. This is a semantic rule, checked after
+   parsing.                                                                    *)
 binding_stmt  = ( "let" | "var" | "const" ) bind_target
                 [ ":" type ] [ "=" expression_list ] ;
 bind_target   = bind_name { "," bind_name } ;
@@ -147,7 +168,7 @@ bind_name     = IDENT | "_" | "(" bind_target ")" ;
 (* The left side of an assignment must be an assignable place (name, field,
    subscript, or a tuple of those); this is checked after parsing.             *)
 expr_stmt     = expression_list [ ( "=" | assign_op ) expression_list ] ;
-assign_op     = "+=" | "-=" | "*=" | "/=" | "@=" | "**="
+assign_op     = "+=" | "-=" | "*=" | "/=" | "//=" | "%=" | "@=" | "**="
               | "&=" | "|=" | "^=" | "<<=" | ">>=" | "??=" ;
 
 return_stmt   = "return" [ expression_list ] ;
@@ -166,55 +187,61 @@ compound_stmt = if_stmt
               | unsafe_stmt
               | { decorator } fn_decl ;
 
-(* Two forms. The one-line form takes single statements and has no `end`:
-       if lives == 0 then stop
-   The block form always closes with `end`. `else if` on one line continues
-   the chain and shares the single closing `end`.                              *)
-if_stmt       = "if" condition
-                ( "then" simple_stmt [ "else" simple_stmt ] NEWLINE
+(* Two forms.
+     One line, no `end`, no elif/else:      if lives == 0: stop
+     A chain closed by a single `end`:      if a:
+                                                ...
+                                            elif b: return 2
+                                            else:
+                                                ...
+                                            end
+   The first branch of a chain must be in block form. This removes the
+   "dangling else" ambiguity without relying on indentation. For a one-line
+   choice between two values use the expression form `a if cond else b`.    *)
+if_stmt       = "if" condition ":"
+                ( simple_stmt NEWLINE
                 | NEWLINE block
-                  { "else" "if" condition NEWLINE block }
-                  [ "else" NEWLINE block ]
+                  { "elif" condition ":" clause_body }
+                  [ "else" ":" clause_body ]
                   "end" NEWLINE ) ;
 condition     = expression
               | "let" pattern "=" expression ;
 
-while_stmt    = "while" condition NEWLINE block "end" NEWLINE ;
-loop_stmt     = "loop" NEWLINE block "end" NEWLINE ;
+while_stmt    = "while" condition suite ;
+loop_stmt     = "loop" suite ;
 
 (* `in` is used for iteration and membership only.
    `for mut e in xs` borrows each element mutably; `for own e in xs` consumes
    the collection. `par for` runs iterations in parallel; `async for` awaits
    an async stream.                                                            *)
 for_stmt      = [ "async" | "par" ] "for" [ pass_mode ] bind_target
-                "in" expression NEWLINE block "end" NEWLINE ;
+                "in" expression suite ;
 
-match_stmt    = "match" expression NEWLINE
+(* Arms run until the next `is`, `else` or `end`. No arm falls through. *)
+match_stmt    = "match" expression ":" NEWLINE
                 { match_arm }
-                [ "else" ( simple_stmt NEWLINE | NEWLINE block ) ]
+                [ "else" ":" clause_body ]
                 "end" NEWLINE ;
-match_arm     = "is" pattern [ "if" expression ] arm_body ;
-arm_body      = "then" simple_stmt NEWLINE
-              | NEWLINE block ;
+match_arm     = "is" pattern [ "if" expression ] ":" clause_body ;
 
-try_stmt      = "try" NEWLINE block
-                { "catch" [ type [ "as" IDENT ] ] NEWLINE block }
-                [ "finally" NEWLINE block ]
+try_stmt      = "try" ":" NEWLINE block
+                { "catch" [ type [ "as" IDENT ] ] ":" clause_body }
+                [ "finally" ":" clause_body ]
                 "end" NEWLINE ;
 
-with_stmt     = [ "async" ] "with" with_item { "," with_item } NEWLINE block "end" NEWLINE ;
+with_stmt     = [ "async" ] "with" with_item { "," with_item } suite ;
 with_item     = expression [ "as" IDENT ] ;
 
 (* `on` is the single placement keyword. Its target is either a device
    (cpu, gpu[0], gpu[0 to 3]) or a memory region (frame). Inside the block,
    allocations and tensor kernels use that target.                             *)
-on_stmt       = "on" coalesce NEWLINE block "end" NEWLINE ;
+on_stmt       = "on" coalesce suite ;
 
 (* Declares a memory arena named IDENT. Everything placed `on` it is released
    in one step when the block ends.                                            *)
-region_stmt   = "region" IDENT NEWLINE block "end" NEWLINE ;
+region_stmt   = "region" IDENT suite ;
 
-unsafe_stmt   = "unsafe" NEWLINE block "end" NEWLINE ;
+unsafe_stmt   = "unsafe" suite ;
 
 
 (* ---- 4. Types ------------------------------------------------------------ *)
@@ -231,7 +258,7 @@ primary_type  = "any"
               | "[" type [ ";" expression ] "]"
               | "{" type ":" type "}"
               | "(" [ type { "," type } ] ")"
-              | "fn" "(" [ type { "," type } ] ")" [ "returns" type ]
+              | "fn" "(" [ type { "," type } ] ")" [ "->" type ]
               | ownership primary_type ;
 
 (* [T]      growable list          [T; N]   fixed array, stored inline
@@ -260,10 +287,11 @@ ownership     = "ref" [ "mut" ] | "shared" | "weak" | "ptr" ;
 expression_list = expression { "," expression } [ "," ] ;
 
 expression    = lambda
-              | if_expr
-              | pipeline ;
+              | conditional ;
 lambda        = [ "async" ] "fn" "(" [ params ] ")" "=>" expression ;
-if_expr       = "if" expression "then" expression "else" expression ;
+
+(* Python's conditional expression: "big" if size > 3 else "small" *)
+conditional   = pipeline [ "if" pipeline "else" expression ] ;
 pipeline      = placement { "|>" placement } ;
 
 (* `x on gpu[1]` yields x placed on that device; `x on frame` allocates the
@@ -285,11 +313,11 @@ bit_and       = shift { "&" shift } ;
 shift         = sum { ( "<<" | ">>" ) sum } ;
 sum           = term { ( "+" | "-" ) term } ;
 
-(* Tensor arithmetic follows NumPy and PyTorch:
+(* Arithmetic follows Python, and tensor arithmetic follows NumPy/PyTorch:
      *   element-wise product (with broadcasting)
      @   matrix product, batched over leading dimensions
-     /   true division;  div  integer division;  mod  remainder               *)
-term          = unary { ( "*" | "/" | "div" | "mod" | "@" ) unary } ;
+     /   true division     //  floor division     %   remainder               *)
+term          = unary { ( "*" | "/" | "//" | "%" | "@" ) unary } ;
 unary         = ( "-" | "+" | "~" ) unary
               | "await" unary
               | "spawn" unary
@@ -303,33 +331,29 @@ power         = postfix [ "**" unary ] ;
     try e     unwrap a result, passing a failure up to the caller
     move e    give up ownership of e                                           *)
 
-(* A postfix apostrophe transposes the last two dimensions: A' *)
+(* Transpose is an ordinary property, as in PyTorch: w.T, batch.mT *)
 postfix       = atom { trailer } ;
 trailer       = "." IDENT
               | "?." IDENT
               | "(" [ arguments ] ")"
-              | "[" subscripts "]"
-              | "'" ;
+              | "[" subscripts "]" ;
 
 (* `mut` at the call site makes mutation visible: step(mut world, dt) *)
 arguments     = argument { "," argument } [ "," ] ;
 argument      = [ "mut" ] expression
               | IDENT "=" expression ;
 
-(* Indexing and slicing for lists, arrays and tensors:
-     t[i, j]             element          t[all, 0]          first column
-     t[1 until 9 by 2]   strided slice    t[all, last]       last column
-     t[..., _]           add a new axis   t[mask]  t[idx]    mask / gather
-   `all` and `last` are contextual: they have these meanings only inside [ ]. *)
+(* Python / NumPy indexing and slicing for lists, arrays and tensors:
+     t[i, j]        element           t[:, 0]           first column
+     t[1:9:2]       strided slice     t[:, -1]          last column
+     t[..., none]   add a new axis    t[mask]  t[idx]   mask / gather       *)
 subscripts    = subscript { "," subscript } [ "," ] ;
 subscript     = expression
-              | "all"
-              | "..."
-              | "_" ;
+              | [ expression ] ":" [ expression ] [ ":" [ expression ] ]
+              | "..." ;
 
 atom          = IDENT
               | literal
-              | "last"
               | "(" [ expression_list ] ")"
               | "[" [ expression_list | expression comp_clauses ] "]"
               | "{" [ map_items | map_item comp_clauses ] "}" ;
@@ -367,32 +391,37 @@ seq_pat       = pattern
 (* ---- 7. Reserved words --------------------------------------------------- *)
 
 (* Hard keywords:
-     and any as async await by catch class const defer div else end enum
+     and any as async await by catch class const defer elif else end enum
      export extern fail fails false finally fn for if impl in is kernel let
-     loop main match mod move mut none not on or own par ptr pub ref region
-     return returns route routes shared skip spawn stop strict struct tensor
-     then to trait true try type unsafe until use var weak while with
+     loop main match move mut none not on or own par ptr pub ref region return
+     route routes shared skip spawn stop strict struct tensor to trait true
+     try type unsafe until use var weak while with
 
    A word directly after `.` or `?.` is always an identifier, so fields and
    methods may use these names (range.end, player.move).
 
    Contextual keywords:
      GET POST PUT PATCH DELETE HEAD OPTIONS WS SSE     directly after `route`
-     all last                                          inside [ ] subscripts
 
    Ordinary predeclared names (not keywords): self, cpu, gpu, int, float, str,
    bool, i8..i64, u8..u64, f16, f32, f64, bf16, vec2, vec3, vec4, mat4, ...    *)
 
 
-(* ---- 8. Changes from v0.2 ------------------------------------------------ *)
+(* ---- 8. Changes from v0.3 ------------------------------------------------ *)
 
-(* 1. `*` is element-wise; `@` is the matrix product. The dotted operators
-      (.* ./ .^) are removed; `**` is power.
-   2. Blocks close with `end`. Indentation is not significant.
-   3. `on` is the only placement keyword, for devices and regions alike.
-      `in` means iteration and membership only.
-   4. Route paths are quoted strings; path parameters are typed in the
-      parameter list.                                                          *)
+(* Python's shape, Vyrn's words.
+   1. Headers end with ":" (fn, if, for, struct, route, main, ...). A body is
+      either one statement on the same line, or a block closed by `end`.
+   2. `then` is removed. `elif` continues an if chain. The conditional
+      expression is Python's `a if cond else b`.
+   3. `returns T` becomes `-> T`; `fails E` follows it with no comma.
+   4. `div` and `mod` become `//` and `%`.
+   5. Slicing is Python/NumPy: t[:, -1], t[1:9:2], t[..., none]. The
+      contextual words `all` and `last` and the `_` new-axis marker are gone.
+   6. The postfix `'` transpose is removed in favour of `.T` / `.mT`, which
+      frees `'` for single-quoted strings.
+   7. The `fn f(x) = expr` form is removed; write `fn f(x): return expr`.
+   8. A class may extend one base class: class Enemy(Actor):              *)
 
 
 (* ---- 9. Lexical grammar -------------------------------------------------- *)
@@ -413,14 +442,18 @@ EXPONENT      = ( "e" | "E" ) [ "+" | "-" ] DEC_DIGITS ;
 INT_SUFFIX    = "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" ;
 FLOAT_SUFFIX  = "f16" | "f32" | "f64" | "bf16" ;
 
-(* Every string interpolates: "{expr}" evaluates expr. Write \{ for a literal
-   brace. The r prefix makes a raw string: no escapes, no interpolation.
-   A route path is a STRING whose {name} holes name path parameters.           *)
+(* Every string interpolates, like a Python f-string without the f:
+   "{expr}" evaluates expr. Write \{ for a literal brace. Single and double
+   quotes are equivalent. The r prefix makes a raw string: no escapes, no
+   interpolation. A route path is a STRING whose {name} holes name path
+   parameters.                                                                 *)
 STRING        = [ "r" ] ( SHORT_STRING | LONG_STRING ) ;
-SHORT_STRING  = '"' { STRING_CHAR | ESCAPE | INTERPOLATION } '"' ;
-LONG_STRING   = '"""' { ANY_CHAR | ESCAPE | INTERPOLATION } '"""' ;
+SHORT_STRING  = '"' { STRING_CHAR | ESCAPE | INTERPOLATION } '"'
+              | "'" { STRING_CHAR | ESCAPE | INTERPOLATION } "'" ;
+LONG_STRING   = '"""' { ANY_CHAR | ESCAPE | INTERPOLATION } '"""'
+              | "'''" { ANY_CHAR | ESCAPE | INTERPOLATION } "'''" ;
 INTERPOLATION = "{" source text of one expression "}" ;
-ESCAPE        = "\" ( "n" | "t" | "r" | "0" | "\" | '"' | "{" | "}"
+ESCAPE        = "\" ( "n" | "t" | "r" | "0" | "\" | '"' | "'" | "{" | "}"
                     | "x" HEX_DIGIT HEX_DIGIT
                     | "u{" HEX_DIGIT { HEX_DIGIT } "}" ) ;
 
