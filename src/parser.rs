@@ -33,7 +33,18 @@ pub fn parse(src: &str) -> Result<Module, Vec<Diagnostic>> {
 /// A syntax error on a line that already has a lexical error is almost always
 /// a consequence of it, so only the lexical error is kept for that line.
 pub fn parse_recovering(src: &str) -> (Module, Vec<Diagnostic>) {
-    let (tokens, lex_errors) = Lexer::new(src).run();
+    parse_at(src, 0)
+}
+
+/// Like [`parse_recovering`], with every offset starting at `base`. A
+/// program of several files gives each its own range of offsets, so a span
+/// identifies its file.
+pub fn parse_at(src: &str, base: u32) -> (Module, Vec<Diagnostic>) {
+    let start = Pos {
+        offset: base,
+        ..Pos::START
+    };
+    let (tokens, lex_errors) = Lexer::new_at(src, start).run();
     let (module, syntax_errors) = Parser::new(tokens).parse_module();
     let lex_lines: HashSet<u32> = lex_errors.iter().map(|e| e.span.start.line).collect();
     let mut diagnostics: Vec<Diagnostic> = lex_errors.iter().map(Diagnostic::from).collect();
@@ -601,7 +612,36 @@ impl Parser {
 
     fn use_decl(&mut self) -> PResult<UseDecl> {
         self.bump();
-        let path = self.dotted_name("a module name after `use`")?;
+        let mut url = None;
+        let path = if let Tk::Str(parts) = self.kind() {
+            let parts = parts.clone();
+            let span = self.span();
+            self.bump();
+            let text = match parts.as_slice() {
+                [StrPart::Text(t)] => t.clone(),
+                _ => {
+                    return Err(self.error(
+                        "a module URL cannot contain `{...}`".to_string(),
+                        span,
+                        None,
+                    ))
+                }
+            };
+            let name = url_module_name(&text).ok_or_else(|| {
+                self.error(
+                    format!("`{text}` is not a module URL"),
+                    span,
+                    Some("write it as \"host/owner/repo@version\", for example \"github.com/ann/neural@v1\""),
+                )
+            })?;
+            url = Some(text);
+            Path {
+                segments: vec![Ident { name, span }],
+                span,
+            }
+        } else {
+            self.dotted_name("a module name after `use`")?
+        };
         let kind = if self.eat_kw(K::As) {
             UseKind::Module {
                 alias: Some(self.expect_ident("a name after `as`")?),
@@ -629,7 +669,7 @@ impl Parser {
             UseKind::Module { alias: None }
         };
         self.expect_newline()?;
-        Ok(UseDecl { path, kind })
+        Ok(UseDecl { path, kind, url })
     }
 
     fn main_decl(&mut self) -> PResult<MainDecl> {
@@ -3038,4 +3078,32 @@ fn line_effect(line: &[Token]) -> i32 {
         _ => false,
     };
     i32::from(opens)
+}
+
+/// The name a URL import is bound to: the last path segment before the
+/// version, as a valid identifier (`neural-net` becomes `neural_net`).
+/// `None` when the text is not `host/owner/repo...@version`.
+pub fn url_module_name(url: &str) -> Option<String> {
+    let (path, version) = url.split_once('@')?;
+    if version.is_empty()
+        || path.split('/').filter(|s| !s.is_empty()).count() < 3
+        || !path.contains('.')
+    {
+        return None;
+    }
+    let last = path.trim_end_matches('/').rsplit('/').next()?;
+    let name: String = last
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if name.is_empty() || name.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(name)
 }

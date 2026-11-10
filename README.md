@@ -20,18 +20,39 @@ The type checker, borrow checker and native backends do not exist yet.
 - [`examples/api.vyrn`](examples/api.vyrn): web, async routes returning JSON
 - [`examples/inference.vyrn`](examples/inference.vyrn): ML, tensor layers spread across GPUs
 
+## Getting started
+
+```bash
+cargo install --path .
+```
+
+```bash
+vyrn new hello
+```
+
+```bash
+cd hello && vyrn run
+```
+
+| Command | Does |
+|---|---|
+| `vyrn new <name>` | Creates a project: `vyrn.toml`, `main.vyrn`, a module and a test |
+| `vyrn run [file]` | Runs the project (or one file) |
+| `vyrn check [file]` | Finds type, `let`, `strict` and borrow errors without running |
+| `vyrn test` | Runs every `fn test_...()` in `tests/` |
+| `vyrn fmt [--check]` | Formats every file in the one Vyrn style |
+| `vyrn add github.com/ann/neural@v1` | Fetches a module and locks its exact commit and content hash in `vyrn.lock` |
+| `vyrn fetch` | Downloads every locked module, to work offline |
+| `vyrn build` | Makes one executable file that runs anywhere, with nothing to install |
+
+Files of a project use each other with `use geo.shapes` (loads `geo/shapes.vyrn`),
+and modules from any git host with `use "github.com/ann/neural@v1"`. There is no
+central registry: `docs/ffi.md` describes the resolver.
+
 ## Compiler
 
 ```bash
 cargo test
-```
-
-```bash
-cargo run --release -- run examples/grade.vyrn
-```
-
-```bash
-cargo run -- bytecode examples/grade.vyrn
 ```
 
 To run `gpu[...]` blocks on a real GPU (Vulkan, Metal or DirectX 12):
@@ -39,8 +60,6 @@ To run `gpu[...]` blocks on a real GPU (Vulkan, Metal or DirectX 12):
 ```bash
 cargo run --release --features gpu -- run program.vyrn
 ```
-
-`vyrn check` reports type and borrow errors without running, `vyrn parse` prints the syntax tree and `vyrn lex` the tokens.
 
 | Module | Contents |
 |---|---|
@@ -51,6 +70,8 @@ cargo run --release --features gpu -- run program.vyrn
 | `src/parser.rs` | Recursive-descent parser with error recovery and hints |
 | `src/pretty.rs` | Compact text form of the syntax tree |
 | `src/check.rs` | Gradual type checks, `let`/`strict` rules and borrow checks (`vyrn check <file>`) |
+| `src/fmt.rs` | The formatter (`vyrn fmt`) |
+| `src/project/` | Multi-file programs, the URL module resolver, `vyrn.lock`, single-file builds |
 | `src/vm/` | Bytecode compiler, register VM, tensor backends and builtins (see `docs/architecture.md` section 2.4) |
 
 Only `examples/grade.vyrn` runs as is: the other examples call functions

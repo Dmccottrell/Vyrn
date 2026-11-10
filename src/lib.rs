@@ -15,9 +15,11 @@
 pub mod ast;
 pub mod check;
 pub mod diagnostic;
+pub mod fmt;
 pub mod lexer;
 pub mod parser;
 pub mod pretty;
+pub mod project;
 pub mod span;
 pub mod token;
 pub mod vm;

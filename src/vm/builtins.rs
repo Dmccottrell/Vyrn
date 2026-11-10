@@ -98,6 +98,7 @@ pub static NATIVES: &[Native] = &[
     fixed("sleep", &["seconds"], 1, sleep),
     fixed("channel", &[], 0, channel),
     fixed("now", &[], 0, now),
+    fixed("assert", &["condition", "message"], 1, assert),
     fixed("Clock", &["hz", "frames"], 0, clock),
     fixed("web.serve", &["port", "host", "requests"], 0, web_serve),
     fixed("web.provide", &["name", "value"], 2, web_provide),
@@ -488,6 +489,20 @@ fn web_provide(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     };
     ctx.providers.insert(name.to_string(), args[1].clone());
     Ok(Value::None)
+}
+
+/// `assert(condition, message)`: fails with `AssertionError` when the
+/// condition is false.
+fn assert(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    if args[0].truthy() {
+        return Ok(Value::None);
+    }
+    let message = match opt(args, 1) {
+        Some(Value::Str(s)) => s.to_string(),
+        Some(other) => format!("{other:?}"),
+        None => "the assertion is false".to_string(),
+    };
+    Err(err("AssertionError", message))
 }
 
 /// `channel()`: a queue for passing values between tasks.

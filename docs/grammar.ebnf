@@ -45,7 +45,9 @@ declaration   = const_decl
               | route_group
               | extern_decl ;
 
-use_decl      = "use" dotted_name
+(* `use "github.com/ann/neural@v1"` fetches a module from any git host over
+   HTTPS; see docs/ffi.md. It is bound to the last path segment (`neural`). *)
+use_decl      = "use" ( dotted_name | STRING )
                 [ "as" IDENT | "(" use_name { "," use_name } [ "," ] ")" ] NEWLINE ;
 use_name      = IDENT [ "as" IDENT ] ;
 dotted_name   = IDENT { "." IDENT } ;

@@ -186,8 +186,12 @@ pub enum ItemKind {
 /// `use std.web`, `use std.web as w`, `use app.storage (Db, Cache as C)`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UseDecl {
+    /// The module path. For a URL import this is the name it is bound
+    /// to: `use "github.com/ann/neural@v1"` gives `neural`.
     pub path: Path,
     pub kind: UseKind,
+    /// `use "github.com/ann/neural@v1"`: a module fetched from a URL.
+    pub url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

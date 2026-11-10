@@ -10,6 +10,8 @@ pub struct Diagnostic {
     pub message: String,
     pub span: Span,
     pub hint: Option<String>,
+    /// The file the span points into, when a program has several.
+    pub file: Option<String>,
 }
 
 impl Diagnostic {
@@ -18,6 +20,7 @@ impl Diagnostic {
             message: message.into(),
             span,
             hint: None,
+            file: None,
         }
     }
 

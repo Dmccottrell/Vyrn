@@ -144,6 +144,7 @@ impl From<&LexError> for Diagnostic {
             message: error.message(),
             span: error.span,
             hint: error.hint(),
+            file: None,
         }
     }
 }

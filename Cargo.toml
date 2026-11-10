@@ -14,10 +14,17 @@ name = "vyrn"
 path = "src/main.rs"
 
 [dependencies]
+# The module resolver: archives, content hashes, HTTPS.
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
+sha2 = "0.10"
+ureq = { version = "3", optional = true }
 wgpu = { version = "30", optional = true, default-features = false, features = ["vulkan", "metal", "dx12", "wgsl"] }
 pollster = { version = "0.4", optional = true }
 
 [features]
-default = []
+default = ["net"]
+# Fetching `use "host/owner/repo@version"` modules over HTTPS.
+net = ["dep:ureq"]
 # Runs tensor work on a real GPU through wgpu (Vulkan, Metal or DirectX 12).
 gpu = ["dep:wgpu", "dep:pollster"]

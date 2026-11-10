@@ -347,7 +347,11 @@ impl Printer {
                         )
                     ),
                 };
-                self.line(format!("{vis}use {}{tail}", path(&u.path)));
+                let target = match &u.url {
+                    Some(url) => format!("{url:?}"),
+                    None => path(&u.path),
+                };
+                self.line(format!("{vis}use {target}{tail}"));
             }
             ItemKind::Main(main) => {
                 if main.params.is_empty() {
