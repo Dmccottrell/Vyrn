@@ -11,6 +11,7 @@
 //! - A word directly after `.` or `?.` is an identifier even if it is spelled
 //!   like a keyword, so `range.end` and `player.move()` work.
 
+use crate::diagnostic::Diagnostic;
 use crate::span::{Pos, Span};
 use crate::token::{FloatSuffix, IntSuffix, Keyword, Punct, StrPart, Token, TokenKind};
 use std::fmt;
@@ -133,32 +134,17 @@ impl LexError {
     ///   = help: add a closing `"`; use `"""` for text that spans several lines
     /// ```
     pub fn render(&self, file: &str, src: &str) -> String {
-        let start = self.span.start;
-        let line_text = src.lines().nth(start.line as usize - 1).unwrap_or("");
-        let gutter = start.line.to_string().len();
-        let pad = " ".repeat(gutter);
+        Diagnostic::from(self).render(file, src)
+    }
+}
 
-        let width = if self.span.end.line == start.line {
-            (self.span.end.column.saturating_sub(start.column)).max(1) as usize
-        } else {
-            1
-        };
-        // Keep tabs in the indent so the marker lines up in any tab width.
-        let indent: String = line_text
-            .chars()
-            .take(start.column as usize - 1)
-            .map(|c| if c == '\t' { '\t' } else { ' ' })
-            .collect();
-
-        let mut out = format!("error: {}\n", self.message());
-        out.push_str(&format!("{pad}--> {file}:{start}\n"));
-        out.push_str(&format!("{pad} |\n"));
-        out.push_str(&format!("{} | {line_text}\n", start.line));
-        out.push_str(&format!("{pad} | {indent}{}\n", "^".repeat(width)));
-        if let Some(hint) = self.hint() {
-            out.push_str(&format!("{pad} = help: {hint}\n"));
+impl From<&LexError> for Diagnostic {
+    fn from(error: &LexError) -> Diagnostic {
+        Diagnostic {
+            message: error.message(),
+            span: error.span,
+            hint: error.hint(),
         }
-        out
     }
 }
 
@@ -330,9 +316,16 @@ impl<'src> Lexer<'src> {
 
     fn comment(&mut self, start: Pos) {
         let text = self.take_while(|c| c != '\n');
-        // `##` is documentation. `###` and longer are ordinary comments, so
-        // banner lines do not become docs. Docs inside brackets are dropped.
-        let is_doc = text.starts_with("##") && !text.starts_with("###");
+        // `##` is documentation when it starts a line. `###` and longer are
+        // ordinary comments, so banner lines do not become docs. A `##` after
+        // code on the same line is an ordinary comment too; otherwise it
+        // would swallow that statement's line break. Docs inside brackets
+        // are dropped.
+        let starts_line = matches!(
+            self.tokens.last().map(|t| &t.kind),
+            None | Some(TokenKind::Newline) | Some(TokenKind::DocComment(_))
+        );
+        let is_doc = starts_line && text.starts_with("##") && !text.starts_with("###");
         if is_doc && self.delimiters.is_empty() {
             let body = &text[2..];
             let body = body.strip_prefix(' ').unwrap_or(body).trim_end();
@@ -1296,6 +1289,14 @@ mod tests {
                 T::Newline,
                 T::Eof,
             ]
+        );
+    }
+
+    #[test]
+    fn a_doc_marker_after_code_is_an_ordinary_comment() {
+        assert_eq!(
+            kinds("x = 1 ## note\ny")[..5],
+            [ident("x"), T::Punct(P::Eq), int(1), T::Newline, ident("y"),]
         );
     }
 
