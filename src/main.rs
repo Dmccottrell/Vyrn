@@ -87,11 +87,35 @@ fn bytecode(file: &str, src: &str) -> ExitCode {
     }
 }
 
+/// Runs `gpu[...]` blocks on a real GPU when there is one. Set
+/// `VYRN_GPU=off` to keep everything on the CPU.
+#[cfg(feature = "gpu")]
+fn use_gpu(machine: &mut Vm, src: &str) {
+    if std::env::var("VYRN_GPU").is_ok_and(|v| v == "off") {
+        return;
+    }
+    match vyrn::vm::gpu::WgpuBackend::new() {
+        Ok(backend) => {
+            if std::env::var_os("VYRN_VERBOSE").is_some() {
+                eprintln!("using {}", vyrn::vm::TensorBackend::name(&backend));
+            }
+            machine.set_gpu_backend(Box::new(backend));
+        }
+        // Only worth mentioning to programs that ask for a GPU.
+        Err(e) if src.contains("gpu") => {
+            eprintln!("note: {e}; `gpu` blocks run on the CPU");
+        }
+        Err(_) => {}
+    }
+}
+
 fn run(file: &str, src: &str, args: &[String]) -> ExitCode {
     let Some(program) = compile(file, src) else {
         return ExitCode::FAILURE;
     };
     let mut machine = Vm::new(program);
+    #[cfg(feature = "gpu")]
+    use_gpu(&mut machine, src);
     let result = machine.run_main(args);
     for warning in vyrn::vm::task::take_unobserved() {
         eprintln!("warning: {warning}");

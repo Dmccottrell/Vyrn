@@ -14,3 +14,10 @@ name = "vyrn"
 path = "src/main.rs"
 
 [dependencies]
+wgpu = { version = "30", optional = true, default-features = false, features = ["vulkan", "metal", "dx12", "wgsl"] }
+pollster = { version = "0.4", optional = true }
+
+[features]
+default = []
+# Runs tensor work on a real GPU through wgpu (Vulkan, Metal or DirectX 12).
+gpu = ["dep:wgpu", "dep:pollster"]

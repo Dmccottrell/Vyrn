@@ -165,8 +165,19 @@ dominates interpreter time. Lua 5 made the same move for the same reason.
 
 **Tensor backends.** `ReferenceBackend` runs every tensor instruction on the
 CPU and is installed for all devices by default, so GPU-targeted code runs
-anywhere with placement rules still enforced. A CUDA, Metal or WebGPU backend
-implements the same trait and is installed with `Vm::set_gpu_backend`.
+anywhere with placement rules still enforced. Built with `--features gpu`,
+`vyrn run` installs `WgpuBackend` (Vulkan, Metal or DirectX 12 through
+wgpu) for `gpu[...]` devices when a GPU is present, and falls back to the
+CPU otherwise (`VYRN_GPU=off` forces the CPU). Matrix products, element-wise
+arithmetic, maps and softmax are WGSL compute shaders; `f16`, `bf16`, `q8`
+and `q4` weights are uploaded packed and decoded in the shader, and weight
+matrices of 256 KB or more stay resident on the GPU until the program drops
+them, so a 4-bit model takes 4-bit memory in VRAM. Activations are copied
+back after each operation, reductions run on the CPU, and work under 4096
+elements stays on the CPU. The shaders are checked against the reference
+backend in every format (`cargo test --features gpu`, which also runs on a
+software Vulkan driver such as lavapipe). Other backends implement the same
+trait and are installed with `Vm::set_gpu_backend`.
 
 **Closures and calls.** Variables that closures use live in shared cells,
 so assignments are seen on both sides and nested functions can recurse;

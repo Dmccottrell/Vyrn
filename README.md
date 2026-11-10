@@ -33,6 +33,12 @@ cargo run --release -- run examples/grade.vyrn
 cargo run -- bytecode examples/grade.vyrn
 ```
 
+To run `gpu[...]` blocks on a real GPU (Vulkan, Metal or DirectX 12):
+
+```bash
+cargo run --release --features gpu -- run program.vyrn
+```
+
 `vyrn parse` prints the syntax tree and `vyrn lex` the tokens.
 
 | Module | Contents |
@@ -45,5 +51,5 @@ cargo run -- bytecode examples/grade.vyrn
 | `src/pretty.rs` | Compact text form of the syntax tree |
 | `src/vm/` | Bytecode compiler, register VM, tensor backends and builtins (see `docs/architecture.md` section 2.4) |
 
-Only `examples/grade.vyrn` runs as is: the other examples call library
-functions (`load_level`, `load_model`, `web.serve`, ...) that do not exist yet.
+Only `examples/grade.vyrn` runs as is: the other examples call functions
+from packages that do not exist yet (`load_level`, `load_model`, `app.storage`).

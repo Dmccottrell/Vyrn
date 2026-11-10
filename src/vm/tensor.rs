@@ -408,6 +408,8 @@ impl Clone for DeviceTensor {
 
 impl Drop for DeviceTensor {
     fn drop(&mut self) {
+        #[cfg(feature = "gpu")]
+        super::gpu::release(&self.0.storage);
         track(self.0.device, self.0.nbytes(), false);
     }
 }
@@ -422,6 +424,9 @@ impl Deref for DeviceTensor {
 /// Changes in place keep the size and the device, so the count stays right.
 impl DerefMut for DeviceTensor {
     fn deref_mut(&mut self) -> &mut Tensor {
+        // A copy of the old contents may be resident on a GPU.
+        #[cfg(feature = "gpu")]
+        super::gpu::release(&self.0.storage);
         &mut self.0
     }
 }
@@ -538,7 +543,7 @@ pub fn broadcast_shapes(a: &[usize], b: &[usize]) -> Result<Vec<usize>, TensorEr
 
 /// For each position of `out_shape`, the offset into a tensor of `shape`
 /// broadcast to it.
-fn broadcast_offsets(shape: &[usize], out_shape: &[usize]) -> Vec<usize> {
+pub fn broadcast_offsets(shape: &[usize], out_shape: &[usize]) -> Vec<usize> {
     let total: usize = out_shape.iter().product();
     let pad = out_shape.len() - shape.len();
     let source_strides = strides(shape);
@@ -597,6 +602,71 @@ pub enum Reduce {
     ArgMax,
 }
 
+/// The shapes of a matrix product `a @ b`: `[.., m, k] @ [.., k, n]`, with
+/// the leading (batch) dimensions broadcast.
+pub struct MatmulPlan {
+    pub m: usize,
+    pub k: usize,
+    pub n: usize,
+    /// For each batch of the result, the batch of `a` and of `b` it uses.
+    pub a_offsets: Vec<usize>,
+    pub b_offsets: Vec<usize>,
+    pub out_shape: Vec<usize>,
+}
+
+impl MatmulPlan {
+    pub fn new(a: &Tensor, b: &Tensor) -> Result<MatmulPlan, TensorError> {
+        if a.ndim() == 0 || b.ndim() == 0 {
+            return Err(TensorError::Shape(
+                "`@` needs tensors with at least one dimension; use `*` for scalars".into(),
+            ));
+        }
+        // A vector on the left is a row, a vector on the right a column.
+        let a_shape: Vec<usize> = if a.ndim() == 1 {
+            vec![1, a.shape[0]]
+        } else {
+            a.shape.clone()
+        };
+        let b_shape: Vec<usize> = if b.ndim() == 1 {
+            vec![b.shape[0], 1]
+        } else {
+            b.shape.clone()
+        };
+        let (m, k) = (a_shape[a_shape.len() - 2], a_shape[a_shape.len() - 1]);
+        let (k2, n) = (b_shape[b_shape.len() - 2], b_shape[b_shape.len() - 1]);
+        if k != k2 {
+            return Err(TensorError::Shape(format!(
+                "cannot multiply {:?} @ {:?}: inner dimensions {k} and {k2} differ",
+                a.shape, b.shape
+            )));
+        }
+        let a_batch = &a_shape[..a_shape.len() - 2];
+        let b_batch = &b_shape[..b_shape.len() - 2];
+        let batch = broadcast_shapes(a_batch, b_batch)?;
+        let a_offsets = broadcast_offsets(a_batch, &batch);
+        let b_offsets = broadcast_offsets(b_batch, &batch);
+        let mut out_shape = batch;
+        if a.ndim() > 1 {
+            out_shape.push(m);
+        }
+        if b.ndim() > 1 {
+            out_shape.push(n);
+        }
+        Ok(MatmulPlan {
+            m,
+            k,
+            n,
+            a_offsets,
+            b_offsets,
+            out_shape,
+        })
+    }
+
+    pub fn batches(&self) -> usize {
+        self.a_offsets.len()
+    }
+}
+
 /// Executes tensor instructions for one kind of device.
 pub trait TensorBackend {
     fn name(&self) -> &str;
@@ -647,37 +717,10 @@ impl TensorBackend for ReferenceBackend {
     }
 
     fn matmul(&self, a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError> {
-        if a.ndim() == 0 || b.ndim() == 0 {
-            return Err(TensorError::Shape(
-                "`@` needs tensors with at least one dimension; use `*` for scalars".into(),
-            ));
-        }
-        // A vector on the left is a row, a vector on the right a column.
-        let a_shape: Vec<usize> = if a.ndim() == 1 {
-            vec![1, a.shape[0]]
-        } else {
-            a.shape.clone()
-        };
-        let b_shape: Vec<usize> = if b.ndim() == 1 {
-            vec![b.shape[0], 1]
-        } else {
-            b.shape.clone()
-        };
-        let (m, k) = (a_shape[a_shape.len() - 2], a_shape[a_shape.len() - 1]);
-        let (k2, n) = (b_shape[b_shape.len() - 2], b_shape[b_shape.len() - 1]);
-        if k != k2 {
-            return Err(TensorError::Shape(format!(
-                "cannot multiply {:?} @ {:?}: inner dimensions {k} and {k2} differ",
-                a.shape, b.shape
-            )));
-        }
-        let a_batch = &a_shape[..a_shape.len() - 2];
-        let b_batch = &b_shape[..b_shape.len() - 2];
-        let batch = broadcast_shapes(a_batch, b_batch)?;
-        let batches: usize = batch.iter().product();
-        let a_offsets = broadcast_offsets(a_batch, &batch);
-        let b_offsets = broadcast_offsets(b_batch, &batch);
-
+        let plan = MatmulPlan::new(a, b)?;
+        let (m, k, n) = (plan.m, plan.k, plan.n);
+        let batches = plan.batches();
+        let (a_offsets, b_offsets) = (&plan.a_offsets, &plan.b_offsets);
         let mut out = vec![0.0f32; batches * m * n];
         let a_values = a.values();
         // Weights stored at lower precision are converted one row at a
@@ -715,14 +758,7 @@ impl TensorBackend for ReferenceBackend {
             }
         }
 
-        let mut shape = batch;
-        if a.ndim() > 1 {
-            shape.push(m);
-        }
-        if b.ndim() > 1 {
-            shape.push(n);
-        }
-        Tensor::new(shape, out, a.device)
+        Tensor::new(plan.out_shape, out, a.device)
     }
 
     fn elementwise(&self, op: ElemOp, a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError> {
