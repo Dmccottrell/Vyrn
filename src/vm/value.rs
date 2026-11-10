@@ -13,6 +13,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use super::program::Proto;
+use super::task::{Channel, TaskHandle};
 use super::tensor::{Device, DeviceTensor, Tensor};
 use super::tokenizer::Tokenizer;
 
@@ -77,8 +78,10 @@ pub enum Value {
     /// by reference counting when the values are dropped.
     Region,
     Iter(Rc<RefCell<Iter>>),
-    /// The result of `spawn`.
-    Task(Rc<Value>),
+    /// A running or finished task: what calling an `async fn` returns.
+    Task(Rc<TaskHandle>),
+    /// A queue between tasks.
+    Channel(Rc<RefCell<Channel>>),
     /// A runtime error raised by the VM itself.
     Error(Rc<ErrorValue>),
     Tokenizer(Rc<Tokenizer>),
@@ -129,6 +132,7 @@ impl Value {
             Value::Region => "region",
             Value::Iter(_) => "iterator",
             Value::Task(_) => "task",
+            Value::Channel(_) => "channel",
             Value::Error(_) => "error",
             Value::Tokenizer(_) => "tokenizer",
             Value::Cell(_) => "cell",

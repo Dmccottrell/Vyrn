@@ -431,6 +431,7 @@ impl Compiler {
                         required: 0,
                         num_regs: 1,
                         captures: Vec::new(),
+                        is_async: false,
                     })
                 })
             })
@@ -714,7 +715,8 @@ impl Compiler {
         match plan {
             Plan::Function { slot, decl } => {
                 self.set_pos(decl.name.span);
-                let proto = self.function(decl.name.name.clone(), &decl.params, &decl.body);
+                let mut proto = self.function(decl.name.name.clone(), &decl.params, &decl.body);
+                proto.is_async = decl.modifiers.is_async;
                 self.set_proto(slot, proto);
             }
             Plan::Main { slot, decl } => {
@@ -742,11 +744,12 @@ impl Compiler {
                     );
                 }
                 let type_name = self.symbols.name(self.types[ty as usize].name).to_string();
-                let proto = self.function(
+                let mut proto = self.function(
                     format!("{type_name}.{}", decl.name.name),
                     &decl.params,
                     &decl.body,
                 );
+                proto.is_async = decl.modifiers.is_async;
                 self.set_proto(slot, proto);
             }
             Plan::Ctor { slot, ty } => {
@@ -875,14 +878,6 @@ impl Compiler {
         Fail
     }
 
-    fn unsupported(&mut self, what: &str, span: Span) -> Fail {
-        self.error_hint(
-            format!("{what} are not supported by the interpreter yet"),
-            span,
-            "this compiles for the release backend; the interpreter runs everything else",
-        )
-    }
-
     fn set_pos(&mut self, span: Span) {
         self.span = span;
         self.line = span.start.line;
@@ -969,6 +964,7 @@ impl Compiler {
             required: f.required,
             num_regs: f.max_reg.max(1),
             captures: f.captures.into_iter().map(|(_, c, _)| c).collect(),
+            is_async: false,
         }
     }
 
@@ -1439,7 +1435,8 @@ impl Compiler {
         let cells = nested_names(&body.stmts, &params);
         self.begin_fn(f.name.name.clone(), &params, cells);
         self.stmts(&body.stmts);
-        let proto = self.end_fn();
+        let mut proto = self.end_fn();
+        proto.is_async = f.modifiers.is_async;
         let index = self.add_proto(proto)?;
         if recursive {
             let closure = self.alloc()?;
@@ -1902,13 +1899,25 @@ impl Compiler {
     }
 
     fn begin_iteration(&mut self, target: &BindTarget, iter: &Expr) -> CResult<IterLoop> {
+        self.begin_iteration_mode(target, iter, false)
+    }
+
+    fn begin_iteration_mode(
+        &mut self,
+        target: &BindTarget,
+        iter: &Expr,
+        is_async: bool,
+    ) -> CResult<IterLoop> {
         self.push_scope();
-        if let ExprKind::Range {
-            start,
-            end,
-            inclusive,
-            step,
-        } = &iter.kind
+        if let (
+            false,
+            ExprKind::Range {
+                start,
+                end,
+                inclusive,
+                step,
+            },
+        ) = (is_async, &iter.kind)
         {
             if matches!(target, BindTarget::Name(_) | BindTarget::Discard(_)) {
                 // A counted loop: two instructions of overhead per iteration.
@@ -1953,7 +1962,11 @@ impl Compiler {
         self.hide(it);
         let mark = self.mark();
         let src = self.expr_any(iter)?;
-        self.emit(Op::IterInit { dst: it, src });
+        if is_async {
+            self.emit(Op::AsyncIterInit { dst: it, src });
+        } else {
+            self.emit(Op::IterInit { dst: it, src });
+        }
         self.release(mark);
         let item = self.alloc()?;
         match target {
@@ -1961,10 +1974,17 @@ impl Compiler {
             _ => self.hide(item),
         }
         let top = self.here();
-        self.emit(Op::IterNext {
-            iter: it,
-            dst: item,
-        });
+        if is_async {
+            self.emit(Op::AsyncIterNext {
+                iter: it,
+                dst: item,
+            });
+        } else {
+            self.emit(Op::IterNext {
+                iter: it,
+                dst: item,
+            });
+        }
         let exit = self.emit(Op::Jump { offset: 0 });
         if let BindTarget::Tuple(..) = target {
             self.destructure(target, item)?;
@@ -1989,15 +2009,13 @@ impl Compiler {
     }
 
     fn for_stmt(&mut self, stmt: &ForStmt) -> CResult<()> {
-        if stmt.mode == ForMode::Async {
-            return Err(self.unsupported("`async for` loops", self.span));
-        }
         // `par for` runs its iterations one after another here; the result
         // is the same, because iterations of a `par for` are independent.
-        if stmt.pass == PassMode::Mut {
+        let is_async = stmt.mode == ForMode::Async;
+        if stmt.pass == PassMode::Mut && !is_async {
             return self.for_mut(stmt);
         }
-        let lp = self.begin_iteration(&stmt.target, &stmt.iter)?;
+        let lp = self.begin_iteration_mode(&stmt.target, &stmt.iter, is_async)?;
         self.push_loop();
         self.stmts(&stmt.body.stmts);
         let ctx = self.pop_loop();
@@ -2904,7 +2922,11 @@ impl Compiler {
                 self.expr_to(else_value, dst)?;
                 self.patch_here(done);
             }
-            ExprKind::Lambda { params, body, .. } => {
+            ExprKind::Lambda {
+                params,
+                body,
+                is_async,
+            } => {
                 let list: Vec<(String, Option<&Expr>)> = params
                     .iter()
                     .map(|p| (p.name.name.clone(), p.default.as_ref()))
@@ -2920,7 +2942,8 @@ impl Compiler {
                 if let Ok(r) = self.expr_any(body) {
                     self.emit(Op::Return { src: r });
                 }
-                let proto = self.end_fn();
+                let mut proto = self.end_fn();
+                proto.is_async = *is_async;
                 let index = self.add_proto(proto)?;
                 self.emit(Op::MakeClosure { dst, proto: index });
             }

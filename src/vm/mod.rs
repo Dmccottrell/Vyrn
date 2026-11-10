@@ -14,6 +14,7 @@ pub mod machine;
 pub mod op;
 pub mod ops;
 pub mod program;
+pub mod task;
 pub mod tensor;
 pub mod tokenizer;
 pub mod value;

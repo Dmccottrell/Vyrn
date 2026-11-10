@@ -408,6 +408,18 @@ pub enum Op {
         dst: u8,
         src: u8,
     },
+    /// Like `IterInit`, but a channel is kept as is so `AsyncIterNext` can
+    /// wait on it.
+    AsyncIterInit {
+        dst: u8,
+        src: u8,
+    },
+    /// Like `IterNext`, but suspends the task while a channel is empty and
+    /// still open.
+    AsyncIterNext {
+        iter: u8,
+        dst: u8,
+    },
 }
 
 #[cfg(test)]

@@ -43,6 +43,12 @@ pub struct Ctx {
     pub cpu: Box<dyn TensorBackend>,
     pub gpu: Box<dyn TensorBackend>,
     pub rng: u64,
+    /// Timers started by `sleep`, each finishing its task when it expires.
+    pub timers: Vec<(std::time::Instant, Rc<super::task::TaskHandle>)>,
+    /// Tasks made ready by builtins, such as a channel receiving a value.
+    pub wakeups: Vec<super::task::TaskId>,
+    /// The next task id to hand out.
+    pub next_task: super::task::TaskId,
 }
 
 impl Ctx {
@@ -55,6 +61,11 @@ impl Ctx {
             Device::Cpu => self.cpu.as_ref(),
             Device::Gpu(_) => self.gpu.as_ref(),
         }
+    }
+
+    pub fn new_task_id(&mut self) -> super::task::TaskId {
+        self.next_task += 1;
+        self.next_task
     }
 
     /// A pseudo-random number in [0, 1), from a fixed seed so runs are
@@ -1180,7 +1191,13 @@ fn write_value(program: &Program, value: &Value, quoted: bool, out: &mut String)
         }
         Value::Region => out.push_str("<region>"),
         Value::Iter(_) => out.push_str("<iterator>"),
-        Value::Task(_) => out.push_str("<task>"),
+        Value::Task(t) => {
+            let state = if t.is_done() { "done" } else { "running" };
+            let _ = write!(out, "<task {} {state}>", t.name);
+        }
+        Value::Channel(c) => {
+            let _ = write!(out, "<channel with {} waiting>", c.borrow().queue.len());
+        }
         Value::Error(e) => {
             let _ = write!(out, "{}: {}", e.kind, e.message);
         }

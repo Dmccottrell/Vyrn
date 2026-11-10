@@ -92,7 +92,11 @@ fn run(file: &str, src: &str, args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let mut machine = Vm::new(program);
-    match machine.run_main(args) {
+    let result = machine.run_main(args);
+    for warning in vyrn::vm::task::take_unobserved() {
+        eprintln!("warning: {warning}");
+    }
+    match result {
         Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");

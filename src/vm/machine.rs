@@ -13,7 +13,7 @@
 //! in the loop; everything else goes through [`super::ops`].
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::io::Write;
 use std::rc::Rc;
@@ -22,6 +22,7 @@ use super::builtins;
 use super::op::Op;
 use super::ops::{self, err, type_error, Arith, Cmp, Ctx, VmResult};
 use super::program::{Capture, GlobalInit, ParamSource, Program, TypeKind};
+use super::task::{TaskHandle, TaskId, ROOT_TASK};
 use super::tensor::{ReferenceBackend, TensorBackend};
 use super::value::{Closure, Instance, Symbol, Value};
 use crate::ast::{HttpMethod, PathSegment};
@@ -100,6 +101,43 @@ pub struct Vm {
     functions: Vec<Rc<Closure>>,
     ctx: Ctx,
     initialized: bool,
+    /// The task whose state is in `stack`, `frames` and `handlers`.
+    current: TaskId,
+    /// The current task's handle; `None` for the task the host called into.
+    current_handle: Option<Rc<TaskHandle>>,
+    /// Frames below this depth belong to whoever called into the current
+    /// task, so a return or failure below it ends the task.
+    entry_depth: usize,
+    /// Tasks that are not running: ready to resume, or waiting.
+    suspended: HashMap<TaskId, Suspended>,
+    /// Tasks ready to resume, in order.
+    ready: VecDeque<TaskId>,
+}
+
+/// The state of a task that is not running.
+struct Suspended {
+    stack: Vec<Value>,
+    frames: Vec<Frame>,
+    handlers: Vec<Handler>,
+    devices: Vec<super::tensor::Device>,
+    entry_depth: usize,
+    handle: Option<Rc<TaskHandle>>,
+}
+
+/// How `await` came out.
+enum Awaited {
+    Ready(Value),
+    Failed(Value),
+    /// The current task was registered as a waiter and must suspend.
+    Blocked,
+}
+
+/// What became of a failure.
+enum Unwound {
+    /// A handler in the current task took it.
+    Handled,
+    /// Nothing in the current task handles it.
+    Unhandled(Value),
 }
 
 impl Vm {
@@ -151,6 +189,9 @@ impl Vm {
             cpu: Box::new(ReferenceBackend),
             gpu: Box::new(ReferenceBackend),
             rng: 0x9E37_79B9_7F4A_7C15,
+            timers: Vec::new(),
+            wakeups: Vec::new(),
+            next_task: super::task::ROOT_TASK,
         };
         Vm {
             program,
@@ -162,6 +203,11 @@ impl Vm {
             functions,
             ctx,
             initialized: false,
+            current: ROOT_TASK,
+            current_handle: None,
+            entry_depth: 1,
+            suspended: HashMap::new(),
+            ready: VecDeque::new(),
         }
     }
 
@@ -205,7 +251,49 @@ impl Vm {
             Vec::new()
         };
         let main = Value::Function(self.functions[main].clone());
-        self.call_value(main, args)
+        let result = self.call_value(main, args);
+        // The program ends with `main`; tasks still running are cancelled.
+        self.cancel_tasks();
+        result
+    }
+
+    /// Drops every task other than the current one.
+    pub fn cancel_tasks(&mut self) {
+        self.suspended.clear();
+        self.ready.clear();
+        self.ctx.timers.clear();
+        self.ctx.wakeups.clear();
+    }
+
+    /// Runs tasks left by earlier calls until none can make progress, for
+    /// hosts that keep a program alive between requests.
+    pub fn run_pending(&mut self) -> Result<(), RuntimeError> {
+        loop {
+            self.ready.extend(self.ctx.wakeups.drain(..));
+            self.fire_timers();
+            if self.ready.is_empty() {
+                let Some(when) = self.ctx.timers.iter().map(|(t, _)| *t).min() else {
+                    // Tasks still suspended wait on something only the host
+                    // can provide; they stay until then.
+                    return Ok(());
+                };
+                let now = std::time::Instant::now();
+                if when > now {
+                    std::thread::sleep(when - now);
+                }
+                continue;
+            }
+            // Queue the host's task behind the others: by the time it is
+            // resumed, every task ahead of it has had a turn.
+            let root = self.current;
+            let saved = self.save_current();
+            self.suspended.insert(root, saved);
+            self.ready.push_back(root);
+            self.resume_next()?;
+            if self.current != root {
+                self.execute(root)?;
+            }
+        }
     }
 
     /// Calls a top-level function by name.
@@ -296,23 +384,235 @@ impl Vm {
         let devices = self.ctx.devices.len();
         self.stack.push(callee.clone());
         self.stack.extend(args);
+        let saved_entry = self.entry_depth;
+        self.entry_depth = depth + 1;
+        let root = self.current;
         let result = match callee {
             Value::Function(closure) => match self.push_frame(closure, slot, slot + 1, argc) {
-                Ok(()) => self.execute(depth + 1),
-                Err(e) => Err(self.runtime_error(e, depth + 1)),
+                Ok(()) => self.execute(root),
+                Err(e) => Err(self.runtime_error(e)),
             },
             Value::Native(id) => builtins::call(id, &mut self.ctx, &self.stack[slot + 1..])
-                .map_err(|e| self.runtime_error(e, depth + 1)),
+                .map_err(|e| self.runtime_error(e)),
             other => Err(RuntimeError::new(
                 "TypeError",
                 format!("{} is not callable", other.type_name()),
             )),
         };
+        self.entry_depth = saved_entry;
         self.frames.truncate(depth);
         self.handlers.truncate(handlers);
         self.ctx.devices.truncate(devices);
         self.stack.truncate(slot);
         result
+    }
+
+    // ==== tasks ============================================================
+
+    /// Takes the current task's state out of the VM.
+    fn save_current(&mut self) -> Suspended {
+        Suspended {
+            stack: std::mem::take(&mut self.stack),
+            frames: std::mem::take(&mut self.frames),
+            handlers: std::mem::take(&mut self.handlers),
+            devices: std::mem::take(&mut self.ctx.devices),
+            entry_depth: self.entry_depth,
+            handle: self.current_handle.take(),
+        }
+    }
+
+    fn load(&mut self, id: TaskId, state: Suspended) {
+        self.stack = state.stack;
+        self.frames = state.frames;
+        self.handlers = state.handlers;
+        self.ctx.devices = state.devices;
+        self.entry_depth = state.entry_depth;
+        self.current_handle = state.handle;
+        self.current = id;
+    }
+
+    /// Calls `closure`: in the current task, or, for an `async fn`, as a new
+    /// task. A new task starts at once and runs until it first waits; the
+    /// caller then resumes with the task's handle in `ret`.
+    #[inline]
+    fn enter(
+        &mut self,
+        closure: Rc<Closure>,
+        ret: usize,
+        base: usize,
+        argc: usize,
+    ) -> VmResult<()> {
+        if closure.proto.is_async {
+            return self.start_task(closure, ret, base, argc);
+        }
+        self.push_frame(closure, ret, base, argc)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn start_task(
+        &mut self,
+        closure: Rc<Closure>,
+        ret: usize,
+        base: usize,
+        argc: usize,
+    ) -> VmResult<()> {
+        let id = self.ctx.new_task_id();
+        let handle = Rc::new(TaskHandle::new(id, closure.proto.name.clone()));
+        let mut stack = Vec::with_capacity(argc + closure.proto.num_regs + 1);
+        stack.push(Value::Function(closure.clone()));
+        stack.extend(self.stack[base..base + argc].iter().cloned());
+        self.stack[ret] = Value::Task(handle.clone());
+        // New tasks start on the device the caller is using.
+        let devices = self.ctx.devices.clone();
+        let caller = self.current;
+        let state = self.save_current();
+        self.suspended.insert(caller, state);
+        self.ready.push_front(caller);
+        self.load(
+            id,
+            Suspended {
+                stack,
+                frames: Vec::new(),
+                handlers: Vec::new(),
+                devices,
+                entry_depth: 1,
+                handle: Some(handle),
+            },
+        );
+        self.push_frame(closure, 0, 1, argc)
+    }
+
+    /// Ends the current task with `result` and wakes the tasks awaiting it.
+    fn complete_task(&mut self, result: Result<Value, Value>) {
+        if let Some(handle) = self.current_handle.take() {
+            let waiters = handle.finish(result);
+            self.ready.extend(waiters);
+        }
+        self.stack.clear();
+        self.frames.clear();
+        self.handlers.clear();
+        self.ctx.devices.clear();
+    }
+
+    /// Switches to the next task that can run, waiting for timers if
+    /// nothing is ready. The current task's state must already be saved or
+    /// finished.
+    fn resume_next(&mut self) -> Result<(), RuntimeError> {
+        loop {
+            self.ready.extend(self.ctx.wakeups.drain(..));
+            self.fire_timers();
+            while let Some(id) = self.ready.pop_front() {
+                if let Some(state) = self.suspended.remove(&id) {
+                    self.load(id, state);
+                    return Ok(());
+                }
+            }
+            let next_timer = self.ctx.timers.iter().map(|(t, _)| *t).min();
+            match next_timer {
+                Some(when) => {
+                    let now = std::time::Instant::now();
+                    if when > now {
+                        std::thread::sleep(when - now);
+                    }
+                }
+                None => {
+                    // Nothing can run and nothing will wake: report it from
+                    // the task the host is waiting on.
+                    if let Some(state) = self.suspended.remove(&ROOT_TASK) {
+                        self.load(ROOT_TASK, state);
+                    }
+                    self.cancel_tasks();
+                    let mut error = RuntimeError::new(
+                        "Deadlock",
+                        "every task is waiting for another, so none can continue",
+                    );
+                    error.trace = self.trace();
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    fn fire_timers(&mut self) {
+        let now = std::time::Instant::now();
+        let mut i = 0;
+        while i < self.ctx.timers.len() {
+            if self.ctx.timers[i].0 <= now {
+                let (_, handle) = self.ctx.timers.swap_remove(i);
+                let waiters = handle.finish(Ok(Value::None));
+                self.ready.extend(waiters);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Waits for `value`: a task, a channel, or a tuple or list of tasks.
+    fn await_value(&mut self, value: &Value) -> Awaited {
+        match value {
+            Value::Task(handle) => match &*handle.result.borrow() {
+                Some(Ok(v)) => {
+                    handle.observed.set(true);
+                    Awaited::Ready(v.clone())
+                }
+                Some(Err(e)) => {
+                    handle.observed.set(true);
+                    Awaited::Failed(e.clone())
+                }
+                None => {
+                    handle.waiters.borrow_mut().push(self.current);
+                    Awaited::Blocked
+                }
+            },
+            Value::Channel(ch) => {
+                let mut ch = ch.borrow_mut();
+                match ch.queue.pop_front() {
+                    Some(v) => Awaited::Ready(v),
+                    None if ch.closed => Awaited::Ready(Value::None),
+                    None => {
+                        ch.waiters.push(self.current);
+                        Awaited::Blocked
+                    }
+                }
+            }
+            Value::Tuple(items) => match self.await_all(items) {
+                Ok(Some(values)) => Awaited::Ready(Value::tuple(values)),
+                Ok(None) => Awaited::Blocked,
+                Err(e) => Awaited::Failed(e),
+            },
+            Value::List(items) => {
+                let items = items.borrow().clone();
+                match self.await_all(&items) {
+                    Ok(Some(values)) => Awaited::Ready(Value::list(values)),
+                    Ok(None) => Awaited::Blocked,
+                    Err(e) => Awaited::Failed(e),
+                }
+            }
+            other => Awaited::Ready(other.clone()),
+        }
+    }
+
+    /// Results of every task in `items`, or `None` after registering as a
+    /// waiter on the first unfinished one.
+    fn await_all(&mut self, items: &[Value]) -> Result<Option<Vec<Value>>, Value> {
+        for item in items {
+            if let Value::Task(handle) = item {
+                if !handle.is_done() {
+                    handle.waiters.borrow_mut().push(self.current);
+                    return Ok(None);
+                }
+            }
+        }
+        let mut values = Vec::with_capacity(items.len());
+        for item in items {
+            match self.await_value(item) {
+                Awaited::Ready(v) => values.push(v),
+                Awaited::Failed(e) => return Err(e),
+                Awaited::Blocked => return Ok(None),
+            }
+        }
+        Ok(Some(values))
     }
 
     #[inline]
@@ -440,7 +740,8 @@ impl Vm {
     }
 
     #[inline]
-    fn finish_frame(&mut self, value: Value, entry_depth: usize) -> Option<Value> {
+    fn finish_frame(&mut self, value: Value) -> Option<Value> {
+        let entry_depth = self.entry_depth;
         let Some(frame) = self.frames.pop() else {
             return Some(value);
         };
@@ -467,7 +768,8 @@ impl Vm {
 
     /// Transfers control to the innermost handler, or reports the failure if
     /// no handler inside this `execute` call can take it.
-    fn unwind(&mut self, thrown: Value, entry_depth: usize) -> Result<(), RuntimeError> {
+    fn unwind(&mut self, thrown: Value) -> Unwound {
+        let entry_depth = self.entry_depth;
         if self
             .handlers
             .last()
@@ -488,13 +790,32 @@ impl Vm {
                 }
                 self.stack[handler.err_slot] = thrown;
                 self.ctx.devices.truncate(handler.device_depth);
-                return Ok(());
+                return Unwound::Handled;
             }
         }
-        Err(self.runtime_error(thrown, entry_depth))
+        Unwound::Unhandled(thrown)
     }
 
-    fn runtime_error(&self, thrown: Value, entry_depth: usize) -> RuntimeError {
+    fn trace(&self) -> Vec<TraceLine> {
+        let first = self.entry_depth.saturating_sub(1).min(self.frames.len());
+        self.frames[first..]
+            .iter()
+            .rev()
+            .map(|frame| TraceLine {
+                function: frame.closure.proto.name.clone(),
+                line: frame
+                    .closure
+                    .proto
+                    .lines
+                    .get(frame.ip.saturating_sub(1))
+                    .copied()
+                    .unwrap_or(0),
+            })
+            .collect()
+    }
+
+    fn runtime_error(&self, thrown: Value) -> RuntimeError {
+        let entry_depth = self.entry_depth;
         let (kind, message) = match &thrown {
             Value::Error(e) => (e.kind.to_string(), e.message.clone()),
             Value::Struct(inst) => (self.type_name(inst.ty), self.display(&thrown)),
@@ -574,7 +895,9 @@ impl Vm {
 
     // ==== the dispatch loop ================================================
 
-    fn execute(&mut self, entry_depth: usize) -> Result<Value, RuntimeError> {
+    /// Runs until task `root`, the one the host called into, returns.
+    /// Other tasks run whenever `root` waits for something.
+    fn execute(&mut self, root: TaskId) -> Result<Value, RuntimeError> {
         'frames: loop {
             let Some(frame) = self.frames.last() else {
                 return Ok(Value::None);
@@ -601,9 +924,18 @@ impl Vm {
                 ($error:expr) => {{
                     let error = $error;
                     save_ip!();
-                    match self.unwind(error, entry_depth) {
-                        Ok(()) => continue 'frames,
-                        Err(e) => return Err(e),
+                    match self.unwind(error) {
+                        Unwound::Handled => continue 'frames,
+                        Unwound::Unhandled(failure) => {
+                            if self.current == root {
+                                return Err(self.runtime_error(failure));
+                            }
+                            // A spawned task failed: whoever awaits it gets
+                            // the failure.
+                            self.complete_task(Err(failure));
+                            self.resume_next()?;
+                            continue 'frames;
+                        }
                     }
                 }};
             }
@@ -983,7 +1315,7 @@ impl Vm {
                             Value::Function(callee) => {
                                 let callee = callee.clone();
                                 save_ip!();
-                                check!(self.push_frame(callee, at, at + 1, argc as usize));
+                                check!(self.enter(callee, at, at + 1, argc as usize));
                                 continue 'frames;
                             }
                             Value::Native(id) => {
@@ -1047,7 +1379,7 @@ impl Vm {
                         match callee {
                             Value::Function(c) => {
                                 save_ip!();
-                                check!(self.push_frame(c, at, at + 1, count));
+                                check!(self.enter(c, at, at + 1, count));
                                 continue 'frames;
                             }
                             Value::Native(id) => {
@@ -1096,7 +1428,7 @@ impl Vm {
                             &name
                         ));
                         save_ip!();
-                        check!(self.push_frame(method, result_at, receiver, count + 1));
+                        check!(self.enter(method, result_at, receiver, count + 1));
                         continue 'frames;
                     }
                     Op::CallMethod {
@@ -1116,7 +1448,7 @@ impl Vm {
                             match self.methods.get(&(ty, symbol)).cloned() {
                                 Some(method) => {
                                     save_ip!();
-                                    check!(self.push_frame(
+                                    check!(self.enter(
                                         method,
                                         result_at,
                                         receiver,
@@ -1143,14 +1475,22 @@ impl Vm {
                     }
                     Op::Return { src } => {
                         let value = reg!(src).clone();
-                        if let Some(value) = self.finish_frame(value, entry_depth) {
-                            return Ok(value);
+                        if let Some(value) = self.finish_frame(value) {
+                            if self.current == root {
+                                return Ok(value);
+                            }
+                            self.complete_task(Ok(value));
+                            self.resume_next()?;
                         }
                         continue 'frames;
                     }
                     Op::ReturnNone => {
-                        if let Some(value) = self.finish_frame(Value::None, entry_depth) {
-                            return Ok(value);
+                        if let Some(value) = self.finish_frame(Value::None) {
+                            if self.current == root {
+                                return Ok(value);
+                            }
+                            self.complete_task(Ok(value));
+                            self.resume_next()?;
                         }
                         continue 'frames;
                     }
@@ -1361,23 +1701,111 @@ impl Vm {
                     }
 
                     // ---- tasks ----
-                    // The interpreter runs a spawned call to completion
-                    // immediately; `await` then just takes its result.
+                    // Calling an `async fn` already started a task; `spawn`
+                    // makes that explicit, and wraps any other value in a
+                    // finished task.
                     Op::Spawn { dst, src } => {
-                        let value = reg!(src).clone();
-                        reg!(dst) = Value::Task(Rc::new(value));
-                    }
-                    Op::Await { dst, src } => {
                         let value = match &reg!(src) {
-                            Value::Task(result) => (**result).clone(),
-                            other => other.clone(),
+                            task @ Value::Task(_) => task.clone(),
+                            other => Value::Task(Rc::new(TaskHandle::done(other.clone()))),
                         };
                         reg!(dst) = value;
+                    }
+                    Op::Await { dst, src } => {
+                        let value = reg!(src).clone();
+                        match self.await_value(&value) {
+                            Awaited::Ready(v) => reg!(dst) = v,
+                            Awaited::Failed(e) => throw!(e),
+                            Awaited::Blocked => {
+                                if self.entry_depth > 1 {
+                                    throw!(waiting_in_callback());
+                                }
+                                // Suspend, and run this `await` again when woken.
+                                ip -= 1;
+                                save_ip!();
+                                let id = self.current;
+                                let state = self.save_current();
+                                self.suspended.insert(id, state);
+                                self.resume_next()?;
+                                continue 'frames;
+                            }
+                        }
+                    }
+                    Op::AsyncIterInit { dst, src } => {
+                        let iter = match &reg!(src) {
+                            ch @ Value::Channel(_) => ch.clone(),
+                            other => check!(ops::make_iter(other)),
+                        };
+                        reg!(dst) = iter;
+                    }
+                    Op::AsyncIterNext { iter, dst } => {
+                        let channel = match &reg!(iter) {
+                            Value::Channel(ch) => Some(ch.clone()),
+                            _ => None,
+                        };
+                        match channel {
+                            Some(ch) => {
+                                let next = {
+                                    let mut ch = ch.borrow_mut();
+                                    match ch.queue.pop_front() {
+                                        Some(v) => Some(Some(v)),
+                                        None if ch.closed => Some(None),
+                                        None => {
+                                            ch.waiters.push(self.current);
+                                            None
+                                        }
+                                    }
+                                };
+                                match next {
+                                    Some(Some(v)) => {
+                                        reg!(dst) = v;
+                                        ip += 1;
+                                    }
+                                    // Closed and empty: fall through to the exit.
+                                    Some(None) => {}
+                                    None => {
+                                        if self.entry_depth > 1 {
+                                            throw!(waiting_in_callback());
+                                        }
+                                        ip -= 1;
+                                        save_ip!();
+                                        let id = self.current;
+                                        let state = self.save_current();
+                                        self.suspended.insert(id, state);
+                                        self.resume_next()?;
+                                        continue 'frames;
+                                    }
+                                }
+                            }
+                            None => {
+                                let next = match &reg!(iter) {
+                                    Value::Iter(it) => it.borrow_mut().next_value(),
+                                    other => throw!(type_error(format!(
+                                        "cannot loop over {}",
+                                        other.type_name()
+                                    ))),
+                                };
+                                if let Some(value) = next {
+                                    reg!(dst) = value;
+                                    ip += 1;
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
+}
+
+/// A task can only be suspended at its own level: a function called back
+/// by a built-in (such as the one passed to `map`) runs on the host's
+/// stack, which cannot be saved.
+fn waiting_in_callback() -> Value {
+    ops::err(
+        "AsyncError",
+        "cannot wait inside a function called by a built-in; await outside the callback",
+    )
 }
 
 /// Drops what dead registers refer to. Registers holding scalars are left

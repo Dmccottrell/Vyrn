@@ -95,6 +95,9 @@ pub static NATIVES: &[Native] = &[
     variadic("vec3", vec3),
     variadic("vec4", vec4),
     variadic("join", join),
+    fixed("sleep", &["seconds"], 1, sleep),
+    fixed("channel", &[], 0, channel),
+    fixed("now", &[], 0, now),
 ];
 
 pub fn lookup(name: &str) -> Option<u16> {
@@ -370,15 +373,42 @@ fn sorted(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     }
 }
 
+/// `join(a, b, ...)` groups tasks so one `await` waits for all of them:
+/// `x, y = await join(fetch(1), fetch(2))`.
 fn join(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
-    Ok(Value::tuple(
-        args.iter()
-            .map(|v| match v {
-                Value::Task(inner) => (**inner).clone(),
-                other => other.clone(),
-            })
-            .collect(),
-    ))
+    Ok(Value::tuple(args.to_vec()))
+}
+
+/// `sleep(seconds)`: a task that finishes after the time has passed.
+/// `await sleep(0.5)` pauses the current task and lets others run.
+fn sleep(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let seconds = number(&args[0], "the number of seconds")?;
+    if !(seconds >= 0.0 && seconds.is_finite()) {
+        return Err(err(
+            "ValueError",
+            "`sleep` needs a non-negative number of seconds",
+        ));
+    }
+    let id = ctx.new_task_id();
+    let handle = Rc::new(super::task::TaskHandle::new(id, "sleep"));
+    let until = std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds);
+    ctx.timers.push((until, handle.clone()));
+    Ok(Value::Task(handle))
+}
+
+/// `channel()`: a queue for passing values between tasks.
+fn channel(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
+    Ok(Value::Channel(Rc::new(RefCell::new(
+        super::task::Channel::default(),
+    ))))
+}
+
+/// Seconds on a monotonic clock, for measuring time.
+fn now(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
+    thread_local! {
+        static START: std::time::Instant = std::time::Instant::now();
+    }
+    Ok(Value::Float(START.with(|s| s.elapsed().as_secs_f64())))
 }
 
 // ---- math on scalars and tensors -------------------------------------------
@@ -917,6 +947,29 @@ pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value>
                 _ => Err(no_method(receiver, name)),
             }
         }
+        Value::Channel(ch) => match name {
+            "send" => {
+                arity(1)?;
+                let mut ch = ch.borrow_mut();
+                if ch.closed {
+                    return Err(err("ChannelClosed", "cannot send on a closed channel"));
+                }
+                ch.queue.push_back(rest[0].clone());
+                let waiters = std::mem::take(&mut ch.waiters);
+                ctx.wakeups.extend(waiters);
+                Ok(Value::None)
+            }
+            "close" => {
+                arity(0)?;
+                let mut ch = ch.borrow_mut();
+                ch.closed = true;
+                let waiters = std::mem::take(&mut ch.waiters);
+                ctx.wakeups.extend(waiters);
+                Ok(Value::None)
+            }
+            "len" => Ok(Value::Int(ch.borrow().queue.len() as i64)),
+            _ => Err(no_method(receiver, name)),
+        },
         Value::Tokenizer(tokenizer) => match name {
             "encode" => {
                 arity(1)?;

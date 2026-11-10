@@ -25,6 +25,8 @@ pub struct Proto {
     pub num_regs: usize,
     /// How to fill each captured variable when a closure is created.
     pub captures: Vec<Capture>,
+    /// `async fn`: calling it starts a task and returns its handle.
+    pub is_async: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -182,9 +182,22 @@ tensor counts against its device's memory, and `set_memory_limit` makes a
 device enforce a capacity, so running out of GPU memory is caught in
 development.
 
-**Interpreter-only limitations.** `async for` is a compile error. `spawn`
-runs its call immediately and `await` takes the result: correct, but not
-concurrent. `par for` runs sequentially.
+**Tasks in the interpreter.** Tasks are stackful: a suspended task keeps
+its registers and call frames, so any function can `await`. Calling an
+`async fn` starts a task at once and runs it until it first waits (as in
+JavaScript); the caller gets a task handle. `await` takes a task, a
+channel, or a tuple or list of tasks (`join(a, b)` builds one).
+`sleep(seconds)` and `channel()` (with `send`, `close`, `len`) are
+built in, and `async for x in ch` reads a channel until it is closed.
+The scheduler is a single-threaded ready queue plus timers; when every
+task waits on something that can never happen, the program stops with a
+`Deadlock` error. A task that fails and is never awaited is reported as a
+warning. When `main` returns, tasks still running are cancelled; hosts
+that keep a program alive call `Vm::run_pending`.
+
+**Interpreter-only limitations.** `spawn` of a plain (non-`async`)
+function call runs it immediately. `par for` runs sequentially. Tasks
+share one OS thread.
 
 **Measured performance** (release build, best of 7, 4-core cloud VM,
 CPython 3.13 on the same programs, outputs cross-checked):

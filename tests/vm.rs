@@ -466,6 +466,91 @@ fn defer_runs_when_the_block_ends() {
 }
 
 #[test]
+fn tasks_interleave_while_sleeping() {
+    assert_eq!(
+        run("async fn worker(name, delay):\n\
+             \x20   print(name, \"start\")\n\
+             \x20   await sleep(delay)\n\
+             \x20   print(name, \"done\")\n\
+             \x20   return name\n\
+             end\n\
+             main:\n\
+             \x20   slow = worker(\"slow\", 0.03)\n\
+             \x20   fast = worker(\"fast\", 0.01)\n\
+             \x20   print(\"both started\")\n\
+             \x20   print(await join(slow, fast))\n\
+             end\n"),
+        "slow start\nfast start\nboth started\nfast done\nslow done\n(\"slow\", \"fast\")\n"
+    );
+}
+
+#[test]
+fn channels_feed_async_for() {
+    assert_eq!(
+        run("async fn produce(ch, n):\n\
+             \x20   for i in 0 until n:\n\
+             \x20       ch.send(i * i)\n\
+             \x20       await sleep(0)\n\
+             \x20   end\n\
+             \x20   ch.close()\n\
+             end\n\
+             main:\n\
+             \x20   ch = channel()\n\
+             \x20   producer = produce(ch, 4)\n\
+             \x20   total = 0\n\
+             \x20   async for x in ch:\n\
+             \x20       print(\"got\", x)\n\
+             \x20       total += x\n\
+             \x20   end\n\
+             \x20   await producer\n\
+             \x20   print(total)\n\
+             end\n"),
+        "got 0\ngot 1\ngot 4\ngot 9\n14\n"
+    );
+}
+
+#[test]
+fn async_for_over_a_list() {
+    assert_eq!(main("async for x in [1, 2, 3]: print(x)"), "1\n2\n3\n");
+}
+
+#[test]
+fn awaiting_a_failed_task_raises_its_error() {
+    assert_eq!(
+        run("struct Bad:\n    why: str\nend\n\
+             async fn boom():\n\
+             \x20   await sleep(0)\n\
+             \x20   fail Bad(\"bad input\")\n\
+             end\n\
+             main:\n\
+             \x20   t = boom()\n\
+             \x20   try:\n\
+             \x20       await t\n\
+             \x20   catch Bad as e:\n\
+             \x20       print(\"caught\", e.why)\n\
+             \x20   end\n\
+             end\n"),
+        "caught bad input\n"
+    );
+}
+
+#[test]
+fn waiting_forever_is_a_deadlock() {
+    let e = runtime_error("main:\n    ch = channel()\n    x = await ch\nend\n");
+    assert_eq!(e.kind, "Deadlock");
+}
+
+#[test]
+fn unawaited_failures_are_reported() {
+    let _ = vyrn::vm::task::take_unobserved();
+    run("async fn boom(): fail \"lost\"\nmain:\n    t = boom()\nend\n");
+    let warnings = vyrn::vm::task::take_unobserved();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("boom"), "{warnings:?}");
+    assert!(warnings[0].contains("lost"), "{warnings:?}");
+}
+
+#[test]
 fn spawn_and_await() {
     assert_eq!(
         run("async fn fetch(id): return id * 10\n\
@@ -724,10 +809,6 @@ fn compile_time_errors() {
         compile_errors("const N = 1\nmain:\n    N = 2\nend\n"),
         ["cannot assign to `N`: it is a top-level constant or declaration"]
     );
-    assert_eq!(
-        compile_errors("main:\n    async for x in xs: print(x)\nend\n"),
-        ["`async for` loops are not supported by the interpreter yet"]
-    );
 }
 
 #[test]
@@ -815,6 +896,21 @@ fn main_receives_command_line_arguments() {
         .run_main(&["hello".to_string(), "x".to_string()])
         .unwrap();
     assert_eq!(out.text(), "2 hello\n");
+}
+
+#[test]
+fn hosts_can_finish_background_tasks() {
+    let program = compile_source(
+        "async fn later(msg):\n    await sleep(0.01)\n    print(msg)\nend\n\
+         fn start(): later(\"background done\")\n",
+    )
+    .unwrap();
+    let out = Captured::default();
+    let mut machine = Vm::with_output(program, Box::new(out.clone()));
+    machine.call_global("start", Vec::new()).unwrap();
+    assert_eq!(out.text(), "");
+    machine.run_pending().unwrap();
+    assert_eq!(out.text(), "background done\n");
 }
 
 // ---- element types ----------------------------------------------------------
