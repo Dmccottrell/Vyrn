@@ -247,6 +247,95 @@ impl Quantized {
     }
 }
 
+/// Memory that belongs to someone else, such as a NumPy array or a
+/// memory-mapped file, read in place: the zero-copy path into Vyrn.
+///
+/// The owner is kept alive for as long as any tensor uses the memory, so
+/// it cannot be freed underneath. A tensor never writes to it: the first
+/// change copies the values into memory Vyrn owns (copy on write).
+pub struct External {
+    ptr: *const u8,
+    bytes: usize,
+    dtype: DType,
+    _owner: std::rc::Rc<dyn std::any::Any>,
+}
+
+impl External {
+    /// Wraps `bytes` bytes at `ptr` holding values of `dtype` (`f32`,
+    /// `f16` or `bf16`). Returns `None` if the memory is misaligned for the
+    /// type or not a whole number of values.
+    ///
+    /// # Safety
+    ///
+    /// The memory must stay valid, and must not be freed or resized, for as
+    /// long as `owner` is alive.
+    pub unsafe fn new(
+        ptr: *const u8,
+        bytes: usize,
+        dtype: DType,
+        owner: std::rc::Rc<dyn std::any::Any>,
+    ) -> Option<External> {
+        let size = match dtype {
+            DType::F32 => 4,
+            DType::F16 | DType::BF16 => 2,
+            DType::Q8 | DType::Q4 => return None,
+        };
+        if ptr.is_null() || (ptr as usize) % size != 0 || bytes % size != 0 {
+            return None;
+        }
+        Some(External {
+            ptr,
+            bytes,
+            dtype,
+            _owner: owner,
+        })
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        // SAFETY: `new`'s contract keeps the memory valid while `_owner`,
+        // which this value holds, is alive.
+        unsafe { std::slice::from_raw_parts(self.ptr, self.bytes) }
+    }
+
+    /// The values, for `f32` memory.
+    pub fn f32s(&self) -> &[f32] {
+        debug_assert_eq!(self.dtype, DType::F32);
+        // SAFETY: as above; `new` checked the alignment and the length.
+        unsafe { std::slice::from_raw_parts(self.ptr as *const f32, self.bytes / 4) }
+    }
+
+    /// The raw 16-bit values, for `f16` and `bf16` memory.
+    pub fn u16s(&self) -> &[u16] {
+        debug_assert_ne!(self.dtype, DType::F32);
+        // SAFETY: as above.
+        unsafe { std::slice::from_raw_parts(self.ptr as *const u16, self.bytes / 2) }
+    }
+
+    pub fn len(&self) -> usize {
+        self.bytes / if self.dtype == DType::F32 { 4 } else { 2 }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes == 0
+    }
+
+    pub fn dtype(&self) -> DType {
+        self.dtype
+    }
+}
+
+impl fmt::Debug for External {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "External({} bytes of {})", self.bytes, self.dtype)
+    }
+}
+
+impl PartialEq for External {
+    fn eq(&self, other: &External) -> bool {
+        self.dtype == other.dtype && self.as_bytes() == other.as_bytes()
+    }
+}
+
 /// How a tensor's values are stored.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Storage {
@@ -254,6 +343,8 @@ pub enum Storage {
     F16(Vec<u16>),
     BF16(Vec<u16>),
     Quantized(Quantized),
+    /// Read in place from memory Vyrn does not own.
+    External(std::rc::Rc<External>),
 }
 
 impl Storage {
@@ -272,6 +363,7 @@ impl Storage {
             Storage::F16(_) => DType::F16,
             Storage::BF16(_) => DType::BF16,
             Storage::Quantized(q) => q.dtype,
+            Storage::External(e) => e.dtype,
         }
     }
 
@@ -280,6 +372,7 @@ impl Storage {
             Storage::F32(v) => v.len(),
             Storage::F16(v) | Storage::BF16(v) => v.len(),
             Storage::Quantized(q) => q.len,
+            Storage::External(e) => e.len(),
         }
     }
 
@@ -293,6 +386,7 @@ impl Storage {
             Storage::F32(v) => v.len() * 4,
             Storage::F16(v) | Storage::BF16(v) => v.len() * 2,
             Storage::Quantized(q) => q.nbytes(),
+            Storage::External(e) => e.bytes,
         }
     }
 
@@ -301,6 +395,7 @@ impl Storage {
     pub fn values(&self) -> Cow<'_, [f32]> {
         match self {
             Storage::F32(v) => Cow::Borrowed(v),
+            Storage::External(e) if e.dtype == DType::F32 => Cow::Borrowed(e.f32s()),
             other => {
                 let mut out = vec![0.0; other.len()];
                 other.values_into(0, &mut out);
@@ -324,6 +419,19 @@ impl Storage {
                 }
             }
             Storage::Quantized(q) => q.dequantize_into(start, out),
+            Storage::External(e) => match e.dtype {
+                DType::F32 => out.copy_from_slice(&e.f32s()[start..start + out.len()]),
+                DType::F16 => {
+                    for (o, &h) in out.iter_mut().zip(&e.u16s()[start..]) {
+                        *o = f16_to_f32(h);
+                    }
+                }
+                _ => {
+                    for (o, &b) in out.iter_mut().zip(&e.u16s()[start..]) {
+                        *o = bf16_to_f32(b);
+                    }
+                }
+            },
         }
     }
 
@@ -333,6 +441,11 @@ impl Storage {
             Storage::F16(v) => f16_to_f32(v[i]),
             Storage::BF16(v) => bf16_to_f32(v[i]),
             Storage::Quantized(q) => q.value(i),
+            Storage::External(e) => match e.dtype {
+                DType::F32 => e.f32s()[i],
+                DType::F16 => f16_to_f32(e.u16s()[i]),
+                _ => bf16_to_f32(e.u16s()[i]),
+            },
         }
     }
 }

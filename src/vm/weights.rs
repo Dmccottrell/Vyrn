@@ -199,6 +199,7 @@ pub fn save(path: &str, tensors: &[(String, &Tensor)]) -> Result<(), String> {
                     write(&mut out, &v.to_le_bytes())?;
                 }
             }
+            Storage::External(e) => write(&mut out, e.as_bytes())?,
             Storage::Quantized(_) => unreachable!("rejected above"),
         }
     }

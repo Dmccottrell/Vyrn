@@ -37,6 +37,36 @@ fn python_modules_values_and_errors() {
 
 #[cfg(feature = "python")]
 #[test]
+fn numpy_arrays_become_tensors_without_copying() {
+    if run_source("use python.numpy as np\nmain: print(1)\n").is_err() {
+        eprintln!("skipping: NumPy is not installed");
+        return;
+    }
+    let out = run(
+        "use python.numpy as np\n\
+         fn make() -> tensor[f32]:\n    return np.full([2, 3], 2.0, dtype = \"float32\").to_tensor()\nend\n\
+         main:\n\
+         \x20   let a = np.ones([2, 3], dtype = \"float32\")\n\
+         \x20   var t = a.to_tensor()\n\
+         \x20   a.fill(7.0)\n\
+         \x20   print(t.sum())\n\
+         \x20   t[0, 0] = 100.0\n\
+         \x20   print(t.sum(), a.sum())\n\
+         \x20   print(make().sum(), np.ones([4], dtype = \"float16\").to_tensor().dtype)\n\
+         \x20   print(np.asarray(t @ ones(3, 1)).sum())\n\
+         \x20   try:\n\
+         \x20       np.arange(3).to_tensor()\n\
+         \x20   catch PythonError as e:\n\
+         \x20       print(\"refused\")\n\
+         \x20   end\n\
+         end\n",
+    );
+    // Shared with NumPy until Vyrn writes; then Vyrn has its own copy.
+    assert_eq!(out, "42.0\n135.0 42.0\n12.0 f16\n135.0\nrefused\n");
+}
+
+#[cfg(feature = "python")]
+#[test]
 fn missing_python_modules_say_how_to_install_them() {
     match run_source("use python.surely_not_a_module_xyz\nmain: print(1)\n") {
         Err(RunError::Runtime(e)) => {

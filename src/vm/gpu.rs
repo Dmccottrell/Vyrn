@@ -47,6 +47,11 @@ impl Format {
             Storage::BF16(_) => Format::BF16,
             Storage::Quantized(q) if q.dtype == DType::Q4 => Format::Q4,
             Storage::Quantized(_) => Format::Q8,
+            Storage::External(e) => match e.dtype() {
+                DType::F16 => Format::F16,
+                DType::BF16 => Format::BF16,
+                _ => Format::F32,
+            },
         }
     }
 
@@ -233,6 +238,7 @@ fn storage_key(storage: &Storage) -> usize {
         Storage::F32(v) => v.as_ptr() as usize,
         Storage::F16(v) | Storage::BF16(v) => v.as_ptr() as usize,
         Storage::Quantized(q) => q.values.as_ptr() as usize,
+        Storage::External(e) => e.as_bytes().as_ptr() as usize,
     }
 }
 
@@ -508,6 +514,8 @@ fn packed(storage: &Storage) -> (Vec<u8>, Vec<u8>) {
         Storage::F32(v) => (f32_bytes(v), Vec::new()),
         Storage::F16(v) | Storage::BF16(v) => (u16_bytes(v), Vec::new()),
         Storage::Quantized(q) => (q.values.clone(), u16_bytes(&q.scales)),
+        // Already laid out the way the shaders read it.
+        Storage::External(e) => (e.as_bytes().to_vec(), Vec::new()),
     }
 }
 
@@ -521,11 +529,7 @@ impl TensorBackend for WgpuBackend {
         let (m, k, n) = (plan.m, plan.k, plan.n);
         let total = plan.batches() * m * n;
         let a_values = a.values();
-        let b_bytes = match &b.storage {
-            Storage::F32(v) => v.len() * 4,
-            Storage::F16(v) | Storage::BF16(v) => v.len() * 2,
-            Storage::Quantized(q) => q.values.len(),
-        };
+        let b_bytes = b.storage.nbytes();
         if total * k < self.min_elements
             || !self.fits(a_values.len() * 4)
             || !self.fits(b_bytes)

@@ -113,6 +113,12 @@ impl Tensor {
     /// The values for changing in place. Only `f32` tensors can be changed
     /// element by element.
     pub fn data_mut(&mut self) -> Result<&mut Vec<f32>, TensorError> {
+        // Borrowed memory is copied into Vyrn's own on the first change.
+        if let Storage::External(e) = &self.storage {
+            if e.dtype() == DType::F32 {
+                self.storage = Storage::F32(e.f32s().to_vec());
+            }
+        }
         match &mut self.storage {
             Storage::F32(v) => Ok(v),
             other => Err(TensorError::Shape(format!(

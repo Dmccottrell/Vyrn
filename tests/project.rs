@@ -261,3 +261,27 @@ fn errors_name_the_file_they_are_in() {
     assert!(errors[0].file.as_deref().unwrap().ends_with("util.vyrn"));
     assert_eq!(errors[0].span.start.line, 2);
 }
+
+#[test]
+fn url_modules_can_be_renamed_with_as() {
+    let dir = TempDir::new("alias");
+    let main = dir.write(
+        "main.vyrn",
+        "use \"github.com/Dmccottrell/A.I-SML@v3\" as yuvra\nmain: print(yuvra.version(), yuvra.activate(-1.0))\n",
+    );
+    let host = FakeHost::default();
+    host.publish("v3.1.0", &"d".repeat(40), NEURAL_V1);
+    host.publish("v3.0.2", &"e".repeat(40), NEURAL_V1);
+    let mut resolver = Resolver::new(&host, dir.0.join("cache"), Lockfile::default());
+    let loaded = load(&main, &dir.0, &mut resolver).unwrap();
+    assert_eq!(run(&loaded), "1.0 0.0\n");
+    assert_eq!(
+        resolver.lock.modules["github.com/Dmccottrell/A.I-SML@v3"].version,
+        "v3.1.0"
+    );
+    // Without `as`, the name comes from the repository: `A_I_SML`.
+    assert_eq!(
+        vyrn::parser::url_module_name("github.com/Dmccottrell/A.I-SML@v3").as_deref(),
+        Some("A_I_SML")
+    );
+}

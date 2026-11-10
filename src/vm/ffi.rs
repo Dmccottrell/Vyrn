@@ -353,6 +353,9 @@ impl CFunction {
                 Value::None => Slot::Ptr(std::ptr::null_mut()),
                 Value::Tensor(t) => match &t.storage {
                     Storage::F32(data) => Slot::Ptr(data.as_ptr() as *mut c_void),
+                    Storage::External(e) if e.dtype() == super::dtype::DType::F32 => {
+                        Slot::Ptr(e.f32s().as_ptr() as *mut c_void)
+                    }
                     _ => return Err(wrong("an f32 tensor (convert with `x.to(\"f32\")`)")),
                 },
                 Value::Foreign(f) => match f.as_any().downcast_ref::<CPointer>() {
