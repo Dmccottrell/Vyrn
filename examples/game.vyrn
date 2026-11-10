@@ -3,7 +3,7 @@
 const MAX_ENTITIES = 4096
 const GRAVITY = vec3(0.0, -9.81, 0.0)
 
-@layout(soa)
+# Stored as one column per field when held in an array (the default layout).
 struct Entity:
     pos: vec3
     vel: vec3
