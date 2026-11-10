@@ -48,6 +48,12 @@ pub fn default_fetcher() -> Box<dyn fetch::Fetcher> {
     }
 }
 
+/// Whether `VYRN_OFFLINE=1` asks for no network: modules come only from
+/// `vyrn.lock` and the cache.
+pub fn offline_requested() -> bool {
+    std::env::var("VYRN_OFFLINE").is_ok_and(|v| v == "1" || v == "true")
+}
+
 /// Loads a program and every module it uses. URL modules are fetched and
 /// locked in the project's `vyrn.lock` (next to `vyrn.toml`, or next to the
 /// file when there is no project).
@@ -72,7 +78,7 @@ pub fn load_program(
         Err(_) => lock::Lockfile::default(),
     };
     let mut resolver = resolve::Resolver::new(fetcher, resolve::vyrn_home().join("modules"), lock);
-    resolver.offline = offline;
+    resolver.offline = offline || offline_requested();
     let result = loader::load(
         entry,
         &root,

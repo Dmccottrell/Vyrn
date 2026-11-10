@@ -280,7 +280,7 @@ impl External {
             DType::F16 | DType::BF16 => 2,
             DType::Q8 | DType::Q4 => return None,
         };
-        if ptr.is_null() || (ptr as usize) % size != 0 || bytes % size != 0 {
+        if ptr.is_null() || !(ptr as usize).is_multiple_of(size) || !bytes.is_multiple_of(size) {
             return None;
         }
         Some(External {

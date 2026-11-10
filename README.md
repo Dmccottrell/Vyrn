@@ -12,6 +12,8 @@ The type checker, borrow checker and native backends do not exist yet.
 - [`docs/grammar.ebnf`](docs/grammar.ebnf): the complete EBNF grammar (v0.4)
 - [`docs/architecture.md`](docs/architecture.md): compiler tiers, memory model, GPU bridge and concurrency design
 - [`docs/stdlib.md`](docs/stdlib.md): the standard library: the Prelude, `std.http`, `std.fs`, `std.task` and `std.nn`
+- [`docs/principles.md`](docs/principles.md): the five rules every feature is checked against, and what Vyrn takes from each language
+- [`docs/ffi.md`](docs/ffi.md): the Python and C bridges, zero-copy tensors, and the decentralized module resolver
 
 ## Examples
 

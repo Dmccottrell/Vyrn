@@ -461,6 +461,7 @@ fn with_resolver(work: impl FnOnce(&mut resolve::Resolver) -> Result<(), String>
     let fetcher = project::default_fetcher();
     let mut resolver =
         resolve::Resolver::new(fetcher.as_ref(), resolve::vyrn_home().join("modules"), lock);
+    resolver.offline = project::offline_requested();
     let result = work(&mut resolver);
     if resolver.lock_changed {
         if let Err(e) = std::fs::write(&lock_path, resolver.lock.render()) {
