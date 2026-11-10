@@ -399,6 +399,50 @@ pub enum Op {
     },
     TryEnd,
 
+    // ---- with a small integer operand ----
+    /// `a + imm`, saving the load of the constant in `i + 1`.
+    AddI {
+        dst: u8,
+        a: u8,
+        imm: i8,
+    },
+    SubI {
+        dst: u8,
+        a: u8,
+        imm: i8,
+    },
+    /// Comparisons with a small integer, as in `n < 2`.
+    LtI {
+        dst: u8,
+        a: u8,
+        imm: i8,
+    },
+    LtEqI {
+        dst: u8,
+        a: u8,
+        imm: i8,
+    },
+    GtI {
+        dst: u8,
+        a: u8,
+        imm: i8,
+    },
+    GtEqI {
+        dst: u8,
+        a: u8,
+        imm: i8,
+    },
+    EqI {
+        dst: u8,
+        a: u8,
+        imm: i8,
+    },
+    NotEqI {
+        dst: u8,
+        a: u8,
+        imm: i8,
+    },
+
     // ---- tasks ----
     Spawn {
         dst: u8,

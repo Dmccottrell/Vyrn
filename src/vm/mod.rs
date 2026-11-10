@@ -10,6 +10,7 @@ pub mod builtins;
 pub mod clock;
 pub mod compiler;
 pub mod dtype;
+mod fast;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod json;

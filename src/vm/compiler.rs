@@ -1128,6 +1128,15 @@ impl Compiler {
         self.bind_plain("", reg);
     }
 
+    /// Whether `reg` holds a variable or a hidden value such as a loop
+    /// counter, rather than a temporary.
+    fn is_bound(&mut self, reg: u8) -> bool {
+        self.f()
+            .scopes
+            .iter()
+            .any(|s| s.iter().any(|(_, r, _)| *r == reg))
+    }
+
     fn is_named_local(&mut self, reg: u8) -> bool {
         self.f()
             .scopes
@@ -1675,6 +1684,12 @@ impl Compiler {
                 let skip = self.emit(Op::JumpIfNotNone { src: r, offset: 0 });
                 self.expr_to(value, r)?;
                 self.patch_here(skip);
+            } else if let (Some(imm), AssignOp::Add | AssignOp::Sub) = (small_int(value), op) {
+                self.emit(if op == AssignOp::Add {
+                    Op::AddI { dst: r, a: r, imm }
+                } else {
+                    Op::SubI { dst: r, a: r, imm }
+                });
             } else {
                 let rhs = self.expr_any(value)?;
                 self.emit_assign_op(op, r, r, rhs);
@@ -2836,6 +2851,35 @@ impl Compiler {
                 self.expr_to(rhs, dst)?;
                 self.patch_here(skip);
             }
+            ExprKind::Binary {
+                op: op @ (BinaryOp::Add | BinaryOp::Sub),
+                lhs,
+                rhs,
+            } if small_int(rhs).is_some() => {
+                let imm = small_int(rhs).unwrap_or_default();
+                let a = self.expr_any(lhs)?;
+                self.emit(if *op == BinaryOp::Add {
+                    Op::AddI { dst, a, imm }
+                } else {
+                    Op::SubI { dst, a, imm }
+                });
+            }
+            ExprKind::Compare { operands, ops }
+                if ops.len() == 1
+                    && small_int(&operands[1]).is_some()
+                    && !matches!(ops[0], CompareOp::In | CompareOp::NotIn) =>
+            {
+                let imm = small_int(&operands[1]).unwrap_or_default();
+                let a = self.expr_any(&operands[0])?;
+                self.emit(match ops[0] {
+                    CompareOp::Lt => Op::LtI { dst, a, imm },
+                    CompareOp::LtEq => Op::LtEqI { dst, a, imm },
+                    CompareOp::Gt => Op::GtI { dst, a, imm },
+                    CompareOp::GtEq => Op::GtEqI { dst, a, imm },
+                    CompareOp::Eq => Op::EqI { dst, a, imm },
+                    _ => Op::NotEqI { dst, a, imm },
+                });
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let a = self.expr_any(lhs)?;
                 let b = self.expr_any(rhs)?;
@@ -3323,7 +3367,11 @@ impl Compiler {
         if ordered.len() > 250 {
             return Err(self.error("too many arguments for the interpreter", callee.span));
         }
-        let func = self.alloc()?;
+        // A result headed for the newest temporary can be computed in place:
+        // the function goes there and the arguments above it, saving a move.
+        // Never for a variable, whose old value the arguments may read.
+        let in_place = dst as usize + 1 == self.f().next_reg && !self.is_bound(dst);
+        let func = if in_place { dst } else { self.alloc()? };
         let regs = self.alloc_n(ordered.len())?;
         self.expr_to(callee, func)?;
         for (arg, &r) in ordered.iter().zip(&regs) {
@@ -3751,5 +3799,13 @@ fn scan_clauses(clauses: &[CompClause], inside: bool, names: &mut HashSet<String
             CompClause::For { iter, .. } => scan_expr(iter, inside, names),
             CompClause::If(e) => scan_expr(e, inside, names),
         }
+    }
+}
+
+/// An integer literal small enough to be an instruction's operand.
+fn small_int(expr: &Expr) -> Option<i8> {
+    match &expr.kind {
+        ExprKind::Int { value, .. } => i8::try_from(*value).ok(),
+        _ => None,
     }
 }

@@ -19,6 +19,7 @@ use std::io::Write;
 use std::rc::Rc;
 
 use super::builtins;
+use super::fast;
 use super::op::Op;
 use super::ops::{self, err, type_error, Arith, Cmp, Ctx, VmResult};
 use super::program::{Capture, GlobalInit, ParamSource, Program, RouteParam, TypeKind};
@@ -979,7 +980,7 @@ impl Vm {
         if depth < entry_depth {
             return Some(value);
         }
-        self.stack[frame.ret] = value;
+        fast::store(&mut self.stack[frame.ret], value);
         if let Some(caller) = self.frames.last() {
             // Release the registers only the finished frame used. Its
             // window starts inside the caller's, and the part that overlaps
@@ -1140,6 +1141,19 @@ impl Vm {
                     self.stack[base + $r as usize]
                 };
             }
+            // Stores into a register. Overwriting a value that owns no heap
+            // memory (a number, a bool) needs no destructor call.
+            macro_rules! put {
+                ($r:expr, $v:expr) => {{
+                    let value = $v;
+                    let slot = &mut self.stack[base + $r as usize];
+                    if slot.owns_heap() {
+                        *slot = value;
+                    } else {
+                        std::mem::forget(std::mem::replace(slot, value));
+                    }
+                }};
+            }
             macro_rules! save_ip {
                 () => {
                     if let Some(f) = self.frames.last_mut() {
@@ -1219,7 +1233,7 @@ impl Vm {
                             &self.stack[base + $b as usize]
                         )),
                     };
-                    reg!($dst) = value;
+                    put!($dst, value);
                 }};
             }
             macro_rules! slow_arith {
@@ -1230,7 +1244,7 @@ impl Vm {
                         &self.stack[base + $a as usize],
                         &self.stack[base + $b as usize]
                     ));
-                    reg!($dst) = value;
+                    put!($dst, value);
                 }};
             }
             macro_rules! compare {
@@ -1249,7 +1263,27 @@ impl Vm {
                             &self.stack[base + $b as usize]
                         )),
                     };
-                    reg!($dst) = value;
+                    put!($dst, value);
+                }};
+            }
+
+            macro_rules! compare_imm {
+                ($dst:expr, $a:expr, $imm:expr, $kind:expr, $op:tt) => {{
+                    let fast = match &reg!($a) {
+                        Value::Int(x) => Some(*x $op i64::from($imm)),
+                        Value::Float(x) => Some(*x $op f64::from($imm)),
+                        _ => None,
+                    };
+                    let value = match fast {
+                        Some(b) => Value::Bool(b),
+                        None => check!(ops::compare(
+                            &mut self.ctx,
+                            $kind,
+                            &self.stack[base + $a as usize],
+                            &Value::Int(i64::from($imm))
+                        )),
+                    };
+                    put!($dst, value);
                 }};
             }
 
@@ -1265,46 +1299,41 @@ impl Vm {
                 match op {
                     // ---- loads and moves ----
                     Op::Move { dst, src } => {
-                        let value = match &reg!(src) {
-                            Value::Int(i) => Value::Int(*i),
-                            Value::Float(f) => Value::Float(*f),
-                            Value::Bool(b) => Value::Bool(*b),
-                            other => other.clone(),
-                        };
-                        reg!(dst) = value;
+                        let value = fast::copy(&reg!(src));
+                        put!(dst, value);
                     }
-                    Op::LoadConst { dst, k } => reg!(dst) = proto.consts[k as usize].clone(),
-                    Op::LoadInt { dst, value } => reg!(dst) = Value::Int(i64::from(value)),
-                    Op::LoadNone { dst } => reg!(dst) = Value::None,
-                    Op::LoadBool { dst, value } => reg!(dst) = Value::Bool(value),
-                    Op::LoadMissing { dst } => reg!(dst) = Value::Missing,
+                    Op::LoadConst { dst, k } => put!(dst, fast::copy(&proto.consts[k as usize])),
+                    Op::LoadInt { dst, value } => put!(dst, Value::Int(i64::from(value))),
+                    Op::LoadNone { dst } => put!(dst, Value::None),
+                    Op::LoadBool { dst, value } => put!(dst, Value::Bool(value)),
+                    Op::LoadMissing { dst } => put!(dst, Value::Missing),
                     Op::GetGlobal { dst, idx } => {
                         let value = self.globals[idx as usize].clone();
-                        reg!(dst) = value;
+                        put!(dst, value);
                     }
                     Op::SetGlobal { src, idx } => {
                         let value = reg!(src).clone();
                         self.globals[idx as usize] = value;
                     }
                     Op::GetCapture { dst, idx } => {
-                        reg!(dst) = closure.captures[idx as usize].clone();
+                        put!(dst, closure.captures[idx as usize].clone());
                     }
                     Op::MakeCell { reg } => {
                         let value = std::mem::replace(&mut reg!(reg), Value::None);
-                        reg!(reg) = Value::Cell(Rc::new(RefCell::new(value)));
+                        put!(reg, Value::Cell(Rc::new(RefCell::new(value))));
                     }
                     Op::GetCell { dst, cell } => {
                         let value = match &reg!(cell) {
                             Value::Cell(c) => c.borrow().clone(),
                             other => other.clone(),
                         };
-                        reg!(dst) = value;
+                        put!(dst, value);
                     }
                     Op::SetCell { cell, src } => {
                         let value = reg!(src).clone();
                         match &reg!(cell) {
                             Value::Cell(c) => *c.borrow_mut() = value,
-                            _ => reg!(cell) = value,
+                            _ => put!(cell, value),
                         }
                     }
                     Op::GetUpval { dst, idx } => {
@@ -1312,7 +1341,7 @@ impl Vm {
                             Value::Cell(c) => c.borrow().clone(),
                             other => other.clone(),
                         };
-                        reg!(dst) = value;
+                        put!(dst, value);
                     }
                     Op::SetUpval { idx, src } => {
                         let value = reg!(src).clone();
@@ -1369,20 +1398,86 @@ impl Vm {
                         |x, y| (y != 0).then(|| Value::Float(x as f64 / y as f64)),
                         |x, y| (y != 0.0).then(|| Value::Float(x / y))
                     ),
-                    Op::FloorDiv { dst, a, b } => slow_arith!(dst, a, b, Arith::FloorDiv),
-                    Op::Rem { dst, a, b } => slow_arith!(dst, a, b, Arith::Rem),
+                    Op::FloorDiv { dst, a, b } => arith!(
+                        dst,
+                        a,
+                        b,
+                        Arith::FloorDiv,
+                        |x, y| fast::floor_div(x, y).map(Value::Int),
+                        |_x, _y| None
+                    ),
+                    Op::Rem { dst, a, b } => arith!(
+                        dst,
+                        a,
+                        b,
+                        Arith::Rem,
+                        |x, y| fast::modulo(x, y).map(Value::Int),
+                        |_x, _y| None
+                    ),
                     Op::Pow { dst, a, b } => slow_arith!(dst, a, b, Arith::Pow),
                     Op::BitAnd { dst, a, b } => slow_arith!(dst, a, b, Arith::BitAnd),
                     Op::BitOr { dst, a, b } => slow_arith!(dst, a, b, Arith::BitOr),
                     Op::BitXor { dst, a, b } => slow_arith!(dst, a, b, Arith::BitXor),
                     Op::Shl { dst, a, b } => slow_arith!(dst, a, b, Arith::Shl),
                     Op::Shr { dst, a, b } => slow_arith!(dst, a, b, Arith::Shr),
+                    Op::AddI { dst, a, imm } => {
+                        let value = match &reg!(a) {
+                            Value::Int(x) => x.checked_add(i64::from(imm)).map(Value::Int),
+                            Value::Float(x) => Some(Value::Float(x + f64::from(imm))),
+                            _ => None,
+                        };
+                        let value = match value {
+                            Some(v) => v,
+                            None => check!(ops::arith(
+                                &mut self.ctx,
+                                Arith::Add,
+                                &self.stack[base + a as usize],
+                                &Value::Int(i64::from(imm))
+                            )),
+                        };
+                        put!(dst, value);
+                    }
+                    Op::SubI { dst, a, imm } => {
+                        let value = match &reg!(a) {
+                            Value::Int(x) => x.checked_sub(i64::from(imm)).map(Value::Int),
+                            Value::Float(x) => Some(Value::Float(x - f64::from(imm))),
+                            _ => None,
+                        };
+                        let value = match value {
+                            Some(v) => v,
+                            None => check!(ops::arith(
+                                &mut self.ctx,
+                                Arith::Sub,
+                                &self.stack[base + a as usize],
+                                &Value::Int(i64::from(imm))
+                            )),
+                        };
+                        put!(dst, value);
+                    }
+                    Op::LtI { dst, a, imm } => compare_imm!(dst, a, imm, Cmp::Lt, <),
+                    Op::LtEqI { dst, a, imm } => compare_imm!(dst, a, imm, Cmp::LtEq, <=),
+                    Op::GtI { dst, a, imm } => compare_imm!(dst, a, imm, Cmp::Gt, >),
+                    Op::GtEqI { dst, a, imm } => compare_imm!(dst, a, imm, Cmp::GtEq, >=),
+                    Op::EqI { dst, a, imm } => {
+                        let equal = match &reg!(a) {
+                            Value::Int(x) => *x == i64::from(imm),
+                            other => ops::equals(other, &Value::Int(i64::from(imm))),
+                        };
+                        put!(dst, Value::Bool(equal));
+                    }
+                    Op::NotEqI { dst, a, imm } => {
+                        let equal = match &reg!(a) {
+                            Value::Int(x) => *x == i64::from(imm),
+                            other => ops::equals(other, &Value::Int(i64::from(imm))),
+                        };
+                        put!(dst, Value::Bool(!equal));
+                    }
                     Op::Neg { dst, src } => {
                         let value = match &reg!(src) {
                             Value::Float(x) => Value::Float(-x),
                             other => check!(ops::negate(&mut self.ctx, &other.clone())),
                         };
-                        reg!(dst) = value;
+                        put!(dst, value);
                     }
                     Op::Pos { dst, src } => {
                         let value = match &reg!(src) {
@@ -1392,7 +1487,7 @@ impl Vm {
                                 other.type_name()
                             ))),
                         };
-                        reg!(dst) = value;
+                        put!(dst, value);
                     }
                     Op::BitNot { dst, src } => {
                         let value = match &reg!(src) {
@@ -1402,11 +1497,11 @@ impl Vm {
                                 other.type_name()
                             ))),
                         };
-                        reg!(dst) = value;
+                        put!(dst, value);
                     }
                     Op::Not { dst, src } => {
                         let value = !reg!(src).truthy();
-                        reg!(dst) = Value::Bool(value);
+                        put!(dst, Value::Bool(value));
                     }
 
                     // ---- comparison ----
@@ -1415,14 +1510,14 @@ impl Vm {
                             (Value::Int(x), Value::Int(y)) => x == y,
                             (x, y) => ops::equals(x, y),
                         };
-                        reg!(dst) = Value::Bool(equal);
+                        put!(dst, Value::Bool(equal));
                     }
                     Op::NotEq { dst, a, b } => {
                         let equal = match (&reg!(a), &reg!(b)) {
                             (Value::Int(x), Value::Int(y)) => x == y,
                             (x, y) => ops::equals(x, y),
                         };
-                        reg!(dst) = Value::Bool(!equal);
+                        put!(dst, Value::Bool(!equal));
                     }
                     Op::Lt { dst, a, b } => compare!(dst, a, b, Cmp::Lt, <),
                     Op::LtEq { dst, a, b } => compare!(dst, a, b, Cmp::LtEq, <=),
@@ -1434,7 +1529,7 @@ impl Vm {
                         container,
                     } => {
                         let found = check!(ops::contains(&reg!(item), &reg!(container)));
-                        reg!(dst) = Value::Bool(found);
+                        put!(dst, Value::Bool(found));
                     }
 
                     // ---- tensors and devices ----
@@ -1444,7 +1539,7 @@ impl Vm {
                             &self.stack[base + a as usize],
                             &self.stack[base + b as usize]
                         ));
-                        reg!(dst) = value;
+                        put!(dst, value);
                     }
                     Op::Place { dst, src, target } => {
                         let value = check!(ops::place(
@@ -1452,7 +1547,7 @@ impl Vm {
                             &self.stack[base + src as usize],
                             &self.stack[base + target as usize]
                         ));
-                        reg!(dst) = value;
+                        put!(dst, value);
                     }
                     Op::PushDevice { src } => {
                         let device = match &reg!(src) {
@@ -1536,7 +1631,7 @@ impl Vm {
                     }
                     Op::IterInit { dst, src } => {
                         let iter = check!(ops::make_iter(&reg!(src)));
-                        reg!(dst) = iter;
+                        put!(dst, iter);
                     }
                     Op::IterNext { iter, dst } => {
                         let next = match &reg!(iter) {
@@ -1547,7 +1642,7 @@ impl Vm {
                             ))),
                         };
                         if let Some(value) = next {
-                            reg!(dst) = value;
+                            put!(dst, value);
                             ip += 1;
                         }
                     }
@@ -1556,8 +1651,14 @@ impl Vm {
                     Op::Call { func, argc } => {
                         let at = base + func as usize;
                         match &self.stack[at] {
-                            Value::Function(callee) => {
-                                let callee = callee.clone();
+                            Value::Function(_) => {
+                                // The return value replaces the function,
+                                // so the frame can take it over.
+                                let Value::Function(callee) =
+                                    std::mem::replace(&mut self.stack[at], Value::None)
+                                else {
+                                    unreachable!()
+                                };
                                 save_ip!();
                                 check!(self.enter(callee, at, at + 1, argc as usize));
                                 continue 'frames;
@@ -1720,7 +1821,14 @@ impl Vm {
                         self.stack[result_at] = result;
                     }
                     Op::Return { src } => {
-                        let value = reg!(src).clone();
+                        // The frame ends here, so its value can be moved out
+                        // rather than copied; parameters stay, as callers
+                        // read `mut` arguments back from them.
+                        let value = if (src as usize) < proto.params.len() {
+                            reg!(src).clone()
+                        } else {
+                            std::mem::replace(&mut reg!(src), Value::None)
+                        };
                         if let Some(value) = self.finish_frame(value) {
                             if self.current == root {
                                 return Ok(value);
@@ -1745,14 +1853,14 @@ impl Vm {
                     Op::NewList { dst, start, count } => {
                         let from = base + start as usize;
                         let items = self.stack[from..from + count as usize].to_vec();
-                        reg!(dst) = Value::list(items);
+                        put!(dst, Value::list(items));
                     }
                     Op::NewTuple { dst, start, count } => {
                         let from = base + start as usize;
                         let items = self.stack[from..from + count as usize].to_vec();
-                        reg!(dst) = Value::tuple(items);
+                        put!(dst, Value::tuple(items));
                     }
-                    Op::NewMap { dst } => reg!(dst) = builtins::new_map(),
+                    Op::NewMap { dst } => put!(dst, builtins::new_map()),
                     Op::ListPush { list, src } => {
                         let value = reg!(src).clone();
                         match &reg!(list) {
@@ -1775,7 +1883,7 @@ impl Vm {
                             &self.stack[at + 2],
                             inclusive
                         ));
-                        reg!(dst) = range;
+                        put!(dst, range);
                     }
                     Op::MakeSlice { dst, base: b } => {
                         let at = base + b as usize;
@@ -1784,7 +1892,7 @@ impl Vm {
                             &self.stack[at + 1],
                             &self.stack[at + 2]
                         ));
-                        reg!(dst) = slice;
+                        put!(dst, slice);
                     }
                     Op::GetIndex { dst, obj, index } => {
                         let fast = match (&reg!(obj), &reg!(index)) {
@@ -1804,7 +1912,7 @@ impl Vm {
                                 &self.stack[base + index as usize]
                             )),
                         };
-                        reg!(dst) = value;
+                        put!(dst, value);
                     }
                     Op::TakeIndex { dst, obj, index } => {
                         let taken = match (&reg!(obj), &reg!(index)) {
@@ -1826,7 +1934,7 @@ impl Vm {
                                 &self.stack[base + index as usize]
                             )),
                         };
-                        reg!(dst) = value;
+                        put!(dst, value);
                     }
                     Op::SetIndex { obj, index, src } => {
                         let key = reg!(index).clone();
@@ -1851,7 +1959,7 @@ impl Vm {
                             other => ops::get_attr(other, self.program.symbols.name(symbol)),
                         };
                         let value = check!(result);
-                        reg!(dst) = value;
+                        put!(dst, value);
                     }
                     Op::SetField { obj, name, src } => {
                         let symbol = proto.names[name as usize];
@@ -1893,13 +2001,13 @@ impl Vm {
                             _ => None,
                         };
                         match value {
-                            Some(v) => reg!(dst) = v,
+                            Some(v) => put!(dst, v),
                             None => throw!(type_error("pattern field out of range")),
                         }
                     }
                     Op::Len { dst, src } => {
                         let n = check!(ops::len(&reg!(src)));
-                        reg!(dst) = Value::Int(n);
+                        put!(dst, Value::Int(n));
                     }
                     Op::MakeInstance { dst, ty } => {
                         let def = &self.program.types[ty as usize];
@@ -1920,14 +2028,14 @@ impl Vm {
                                 other => text.push_str(&ops::display(&self.program, other)),
                             }
                         }
-                        reg!(dst) = Value::str(text);
+                        put!(dst, Value::str(text));
                     }
 
                     // ---- patterns and failures ----
                     Op::IsType { dst, src, name } => {
                         let type_name = self.program.symbols.name(proto.names[name as usize]);
                         let matches = ops::is_type(&self.program, &reg!(src), type_name);
-                        reg!(dst) = Value::Bool(matches);
+                        put!(dst, Value::Bool(matches));
                     }
                     Op::Fail { src } => {
                         let value = reg!(src).clone();
@@ -1955,12 +2063,12 @@ impl Vm {
                             task @ Value::Task(_) => task.clone(),
                             other => Value::Task(Rc::new(TaskHandle::done(other.clone()))),
                         };
-                        reg!(dst) = value;
+                        put!(dst, value);
                     }
                     Op::Await { dst, src } => {
                         let value = reg!(src).clone();
                         match self.await_value(&value) {
-                            Awaited::Ready(v) => reg!(dst) = v,
+                            Awaited::Ready(v) => put!(dst, v),
                             Awaited::Failed(e) => throw!(e),
                             Awaited::Blocked => {
                                 if self.entry_depth > 1 {
@@ -1982,7 +2090,7 @@ impl Vm {
                             ch @ Value::Channel(_) => ch.clone(),
                             other => check!(ops::make_iter(other)),
                         };
-                        reg!(dst) = iter;
+                        put!(dst, iter);
                     }
                     Op::AsyncIterNext { iter, dst } => {
                         let channel = match &reg!(iter) {
@@ -2004,7 +2112,7 @@ impl Vm {
                                 };
                                 match next {
                                     Some(Some(v)) => {
-                                        reg!(dst) = v;
+                                        put!(dst, v);
                                         ip += 1;
                                     }
                                     // Closed and empty: fall through to the exit.
@@ -2032,7 +2140,7 @@ impl Vm {
                                     ))),
                                 };
                                 if let Some(value) = next {
-                                    reg!(dst) = value;
+                                    put!(dst, value);
                                     ip += 1;
                                 }
                             }

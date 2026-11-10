@@ -551,6 +551,23 @@ fn unawaited_failures_are_reported() {
 }
 
 #[test]
+fn small_integer_operands_behave_like_any_other() {
+    assert_eq!(
+        main("x = 2.5\nn = 7\nprint(x + 1, x - 1, x < 3, x >= 3, x == 2, n != 7, n - -3)\nn += 2\nn -= 1\nprint(n, [1] == 1, none != 0)"),
+        "3.5 1.5 true false false false 10\n8 false true\n"
+    );
+    let big = "big = 9223372036854775807\n";
+    let with_literal = runtime_error(&format!("main:\n    {big}    print(big + 1)\nend\n"));
+    let with_variable = runtime_error(&format!(
+        "main:\n    {big}    one = 1\n    print(big + one)\nend\n"
+    ));
+    assert_eq!(with_literal.kind, with_variable.kind);
+    assert_eq!(with_literal.message, with_variable.message);
+    let e = runtime_error("main:\n    print(\"a\" < 1)\nend\n");
+    assert_eq!(e.kind, "TypeError");
+}
+
+#[test]
 fn spawn_and_await() {
     assert_eq!(
         run("async fn fetch(id): return id * 10\n\

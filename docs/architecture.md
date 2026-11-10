@@ -230,21 +230,32 @@ CPython 3.13 on the same programs, outputs cross-checked):
 
 | Workload | Vyrn VM | CPython 3.13 | Relative |
 |---|---|---|---|
-| 30M-iteration integer loop | 1070 ms | 1661 ms | 1.55x faster |
-| `fib(30)`: 1.6M calls | 232 ms | 97 ms | 2.4x slower |
-| 1,000 entities x 1,000 frames | 208 ms | 144 ms | 1.4x slower |
+| 30M-iteration integer loop | 1118 ms | 1859 ms | 1.66x faster |
+| `fib(30)`: 1.6M calls | 168 ms | 100 ms | 1.7x slower |
+| 1,000 entities x 1,000 frames | 184 ms | 152 ms | 1.2x slower |
 
-Calls and field access are where CPython 3.13's specializing interpreter
-leads. Profiling shows the cost spread across bounds-checked register access,
-out-of-line clone and drop of values, and linear field lookup. The planned
-fixes, in order of expected gain:
+The last round of speed work, judged by instruction counts under callgrind
+(wall-clock time on a shared VM is too noisy to compare small changes):
+
+- Small integer operands are part of the instruction (`AddI`, `SubI`, `LtI`,
+  ...), so `n - 1`, `i += 1` and `n < 2` need no separate load.
+- A call whose result goes to a fresh temporary puts the function there, and
+  `return` moves its value out instead of copying it: fib went from 17 to 12
+  instructions per call, and 29% less time.
+- Register stores skip the destructor call when the old value is a scalar,
+  and `//` and `%` on integers no longer go through the general arithmetic
+  routine.
+
+A separate inner loop for simple instructions, on a register slice borrowed
+once, cut instructions by up to a third but made calls and field-heavy code
+slower in wall-clock time (the doubled dispatch code costs more in branch
+prediction and cache than it saves), so it was dropped. Next, in order of
+expected gain:
 
 1. NaN-boxed 8-byte values, so scalars copy and drop without branches.
-2. Inline caches for field and method lookup.
-3. Superinstructions for compare-and-branch and for `x.f op= y`.
-4. A bytecode verifier at load time, which makes unchecked register access
-   sound.
-5. Frames that do not touch reference counts on call and return.
+2. Frames that do not touch reference counts on call and return.
+3. Inline caches for field and method lookup.
+4. Fused compare-and-branch instructions.
 
 ## 3. Pillar 2: Data-oriented memory model
 
