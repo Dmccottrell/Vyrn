@@ -99,6 +99,13 @@ pub static NATIVES: &[Native] = &[
     fixed("channel", &[], 0, channel),
     fixed("now", &[], 0, now),
     fixed("assert", &["condition", "message"], 1, assert),
+    fixed("python.import", &["module", "name"], 1, python_import),
+    fixed(
+        "ffi.function",
+        &["library", "name", "signature"],
+        3,
+        ffi_function,
+    ),
     fixed("Clock", &["hz", "frames"], 0, clock),
     fixed("web.serve", &["port", "host", "requests"], 0, web_serve),
     fixed("web.provide", &["name", "value"], 2, web_provide),
@@ -503,6 +510,52 @@ fn assert(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         None => "the assertion is false".to_string(),
     };
     Err(err("AssertionError", message))
+}
+
+/// Imports a Python module, or one name from it: `use python.numpy`.
+fn python_import(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let (Value::Str(module), name) = (&args[0], opt(args, 1)) else {
+        return Err(type_error("python.import takes a module name"));
+    };
+    let name = match name {
+        Some(Value::Str(n)) => Some(n.as_str()),
+        _ => None,
+    };
+    #[cfg(feature = "python")]
+    {
+        super::python::import(module, name)
+    }
+    #[cfg(not(feature = "python"))]
+    {
+        let _ = name;
+        Err(err(
+            "PythonUnavailable",
+            format!(
+                "`use python.{module}` needs Python support; build vyrn with `cargo build --features python`"
+            ),
+        ))
+    }
+}
+
+/// Looks up a C function: `extern "c":` declarations.
+fn ffi_function(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let (Value::Str(library), Value::Str(name), Value::Str(signature)) =
+        (&args[0], &args[1], &args[2])
+    else {
+        return Err(type_error("ffi.function takes three strings"));
+    };
+    #[cfg(feature = "ffi")]
+    {
+        super::ffi::function(library, name, signature)
+    }
+    #[cfg(not(feature = "ffi"))]
+    {
+        let _ = (library, signature);
+        Err(err(
+            "FfiUnavailable",
+            format!("calling the C function `{name}` needs C support; build vyrn with `cargo build --features ffi`"),
+        ))
+    }
 }
 
 /// `channel()`: a queue for passing values between tasks.
@@ -913,6 +966,9 @@ fn vec4(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 /// Calls method `name` on `args[0]` with the remaining arguments.
 pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value> {
     let (receiver, rest) = (&args[0], &args[1..]);
+    if let Value::Foreign(f) = receiver {
+        return f.call_method(ctx, name, rest, &[]);
+    }
     let arity = |n: usize| -> VmResult<()> {
         if rest.len() == n {
             Ok(())

@@ -222,6 +222,16 @@ fn float_arith(op: Arith, x: f64, y: f64) -> VmResult<Value> {
 }
 
 pub fn arith(ctx: &mut Ctx, op: Arith, a: &Value, b: &Value) -> VmResult<Value> {
+    if let Value::Foreign(f) = a {
+        if let Some(result) = f.binary(op, b, false) {
+            return result;
+        }
+    }
+    if let Value::Foreign(f) = b {
+        if let Some(result) = f.binary(op, a, true) {
+            return result;
+        }
+    }
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => int_arith(op, *x, *y),
         (Value::Tensor(x), Value::Tensor(y)) => tensor_arith(ctx, op, x, y),
@@ -359,6 +369,7 @@ pub enum Cmp {
 
 pub fn equals(a: &Value, b: &Value) -> bool {
     match (a, b) {
+        (Value::Foreign(f), other) | (other, Value::Foreign(f)) => f.equals(other),
         (Value::None, Value::None) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Int(x), Value::Int(y)) => x == y,
@@ -512,6 +523,7 @@ pub fn len(value: &Value) -> VmResult<i64> {
         Value::Map(map) => map.borrow().len() as i64,
         Value::Range(r) => range_len(r),
         Value::Tensor(t) => t.shape.first().copied().unwrap_or(1) as i64,
+        Value::Foreign(f) => f.len()? as i64,
         _ => return Err(type_error(format!("{} has no length", value.type_name()))),
     })
 }
@@ -611,6 +623,7 @@ fn tensor_subs(index: &Value) -> VmResult<Vec<Sub>> {
 
 pub fn get_index(ctx: &mut Ctx, obj: &Value, index: &Value) -> VmResult<Value> {
     match obj {
+        Value::Foreign(f) => f.index(index),
         Value::List(items) => {
             let items = items.borrow();
             if let Some(i) = int_index(index) {
@@ -765,6 +778,9 @@ pub fn set_index(obj: &mut Value, index: &Value, value: Value) -> VmResult<()> {
 
 /// Fields of builtin values: `t.T`, `t.shape`, `v.x` and so on.
 pub fn get_attr(value: &Value, name: &str) -> VmResult<Value> {
+    if let Value::Foreign(f) = value {
+        return f.get_attr(name);
+    }
     if let Value::Clock(clock) = value {
         let c = clock.borrow();
         return match name {
@@ -868,6 +884,10 @@ pub fn set_attr(value: &mut Value, name: &str, new: Value) -> VmResult<()> {
 
 pub fn make_iter(value: &Value) -> VmResult<Value> {
     let iter = match value {
+        Value::Foreign(f) => Iter::Values {
+            items: f.items()?,
+            next: 0,
+        },
         Value::List(items) => Iter::List {
             items: items.clone(),
             next: 0,
@@ -1218,6 +1238,7 @@ fn write_value(program: &Program, value: &Value, quoted: bool, out: &mut String)
         Value::Channel(c) => {
             let _ = write!(out, "<channel with {} waiting>", c.borrow().queue.len());
         }
+        Value::Foreign(f) => out.push_str(&f.display()),
         Value::Clock(c) => {
             let c = c.borrow();
             let _ = write!(out, "<Clock {} Hz, frame {}>", c.hz, c.frame);

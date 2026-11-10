@@ -271,3 +271,24 @@ fn errors_stop_compilation_with_positions() {
         Some("declare it with `var n` to change it")
     );
 }
+
+// ---- C functions --------------------------------------------------------------
+
+#[test]
+fn pointer_passing_c_calls_need_unsafe() {
+    let decl = "extern \"c\":\n    fn cos(x: f64) -> f64\n    fn fill(x: tensor[f32], n: i32)\n    fn open_dev() -> ptr u8\nend\n";
+    assert_eq!(
+        one(&format!("{decl}main:\n    fill(zeros(4), 4)\nend\n")),
+        "`fill` passes raw pointers to C, so it can only be called in an `unsafe:` block"
+    );
+    assert_eq!(
+        one(&format!("{decl}main:\n    h = open_dev()\nend\n")),
+        "`open_dev` passes raw pointers to C, so it can only be called in an `unsafe:` block"
+    );
+    // Numbers only: safe to call anywhere. Pointers: fine inside `unsafe:`.
+    ok(&format!("{decl}main:\n    print(cos(0.0))\n    unsafe:\n        fill(zeros(4), 4)\n        let h = open_dev()\n    end\nend\n"));
+    assert_eq!(
+        one(&format!("{decl}main:\n    print(cos(\"zero\"))\nend\n")),
+        "argument `x` of `cos` is float, but this is str"
+    );
+}

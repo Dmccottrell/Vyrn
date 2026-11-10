@@ -34,6 +34,7 @@ pub fn check(module: &Module) -> Vec<Diagnostic> {
         scopes: Vec::new(),
         fns: Vec::new(),
         borrowed: Vec::new(),
+        unsafe_depth: 0,
         diagnostics: Vec::new(),
     };
     checker.items(&module.items);
@@ -66,6 +67,8 @@ pub enum Ty {
     Optional(Box<Ty>),
     /// A struct, class or enum declared in this module.
     Named(String),
+    /// A pointer from C: an opaque handle.
+    Ptr,
 }
 
 impl Ty {
@@ -87,6 +90,7 @@ impl Ty {
             ),
             Ty::Optional(t) => format!("{}?", t.name()),
             Ty::Named(n) => n.clone(),
+            Ty::Ptr => "ptr".into(),
         }
     }
 
@@ -129,6 +133,9 @@ struct Table {
     /// Type aliases and other names that are types the checker does not
     /// model.
     opaque: HashSet<String>,
+    /// C functions that pass or return pointers, which only `unsafe:` code
+    /// may call.
+    raw_externs: HashSet<String>,
 }
 
 impl Table {
@@ -211,6 +218,18 @@ impl Table {
                     }
                 }
                 ItemKind::RouteGroup(g) => self.collect(&g.items),
+                ItemKind::Extern(e) => {
+                    for f in &e.functions {
+                        let sig = self.signature(f);
+                        let pointer = |t: &Ty| matches!(t, Ty::Ptr | Ty::Tensor | Ty::List(_));
+                        let raw = sig.params.iter().any(|p| pointer(&p.ty))
+                            || sig.ret.as_ref().is_some_and(pointer);
+                        if raw {
+                            self.raw_externs.insert(f.name.name.clone());
+                        }
+                        self.fns.insert(f.name.name.clone(), sig);
+                    }
+                }
                 _ => {}
             }
         }
@@ -271,6 +290,10 @@ impl Table {
                 Ty::Any => Ty::Any,
                 t => Ty::Optional(Box::new(t)),
             },
+            TypeExprKind::Owned {
+                ownership: Ownership::Ptr,
+                ..
+            } => Ty::Ptr,
             TypeExprKind::Owned { inner, .. } => self.ty(inner),
             TypeExprKind::Placed { inner, .. } => self.ty(inner),
             _ => Ty::Any,
@@ -357,6 +380,8 @@ impl Table {
             (a, b) if a == b => true,
             (Ty::Float, Ty::Int) => true,
             (Ty::Optional(_), Ty::None) => true,
+            // `none` is C's NULL.
+            (Ty::Ptr, Ty::None) => true,
             (Ty::Optional(e), Ty::Optional(a)) => self.assignable(e, a),
             (Ty::Optional(e), a) => self.assignable(e, a),
             (Ty::List(e), Ty::List(a)) => self.assignable(e, a),
@@ -428,6 +453,8 @@ struct Checker<'t> {
     fns: Vec<FnCtx>,
     /// Lists being changed by `for mut` loops: name and the loop's span.
     borrowed: Vec<(String, Span)>,
+    /// How many `unsafe:` blocks enclose the code being checked.
+    unsafe_depth: usize,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -834,7 +861,11 @@ impl Checker<'_> {
                 self.block(&r.body);
                 self.pop();
             }
-            StmtKind::Unsafe(b) => self.block(b),
+            StmtKind::Unsafe(b) => {
+                self.unsafe_depth += 1;
+                self.block(b);
+                self.unsafe_depth -= 1;
+            }
             StmtKind::Item(item) => {
                 if let ItemKind::Fn(f) = &item.kind {
                     // Declared first, so it can call itself.
@@ -1570,6 +1601,13 @@ impl Checker<'_> {
         match &callee.kind {
             ExprKind::Name(n) if self.lookup(&n.name).is_none() => {
                 name = n.name.clone();
+                if self.table.raw_externs.contains(&n.name) && self.unsafe_depth == 0 {
+                    self.error_hint(
+                        format!("`{}` passes raw pointers to C, so it can only be called in an `unsafe:` block", n.name),
+                        callee.span,
+                        "put the call in `unsafe:` ... `end`: you promise the C code reads and writes only what it was given, and keeps no pointer to Vyrn memory after it returns",
+                    );
+                }
                 if let Some(s) = self.table.fns.get(&n.name) {
                     sig = Some(s.clone());
                     result = s.ret.clone().unwrap_or(Ty::Any);

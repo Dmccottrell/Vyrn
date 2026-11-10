@@ -1715,6 +1715,13 @@ impl Vm {
                                 self.stack[at] = result;
                                 block_on!();
                             }
+                            Value::Foreign(f) => {
+                                let f = f.clone();
+                                let args: Vec<Value> =
+                                    self.stack[at + 1..at + 1 + argc as usize].to_vec();
+                                let result = check!(f.call(&mut self.ctx, &args, &[]));
+                                self.stack[at] = result;
+                            }
                             Value::Type(t) => {
                                 let name = self.type_name(*t);
                                 throw!(type_error(format!(
@@ -1729,6 +1736,13 @@ impl Vm {
                     Op::CallKw { func, argc } => {
                         let at = base + func as usize;
                         let callee = self.stack[at].clone();
+                        if let Value::Foreign(f) = &callee {
+                            let (args, kwargs) =
+                                check!(split_keywords(&self.stack[at + 1..], argc as usize));
+                            let result = check!(f.call(&mut self.ctx, &args, &kwargs));
+                            self.stack[at] = result;
+                            continue;
+                        }
                         let (params, required, name): (Vec<String>, usize, String) = match &callee {
                             Value::Function(c) => (
                                 c.proto
@@ -1790,6 +1804,16 @@ impl Vm {
                         let result_at = base + b as usize;
                         let receiver = result_at + 1;
                         let symbol = proto.names[name as usize];
+                        if let Value::Foreign(f) = &self.stack[receiver] {
+                            let f = f.clone();
+                            let (args, kwargs) =
+                                check!(split_keywords(&self.stack[receiver + 1..], argc as usize));
+                            let method = self.program.symbols.name(symbol).to_string();
+                            let value =
+                                check!(f.call_method(&mut self.ctx, &method, &args, &kwargs));
+                            self.stack[result_at] = value;
+                            continue;
+                        }
                         let ty = match &self.stack[receiver] {
                             Value::Struct(inst) => Some(inst.ty),
                             Value::Object(obj) => Some(obj.borrow().ty),
@@ -2202,6 +2226,31 @@ fn waiting_in_callback() -> Value {
         "AsyncError",
         "cannot wait inside a function called by a built-in; await outside the callback",
     )
+}
+
+/// Splits `argc` call arguments into positional ones and `name = value`
+/// pairs: the tuple of keyword names follows the arguments and names the
+/// last ones.
+type Keywords = Vec<(String, Value)>;
+
+fn split_keywords(slots: &[Value], argc: usize) -> VmResult<(Vec<Value>, Keywords)> {
+    let names: Vec<String> = match slots.get(argc) {
+        Some(Value::Tuple(items)) => items
+            .iter()
+            .map(|n| match n {
+                Value::Str(s) => (**s).clone(),
+                _ => String::new(),
+            })
+            .collect(),
+        _ => return Err(err("InternalError", "keyword names are missing")),
+    };
+    let positional = argc - names.len();
+    let args = slots[..positional].to_vec();
+    let kwargs = names
+        .into_iter()
+        .zip(slots[positional..argc].iter().cloned())
+        .collect();
+    Ok((args, kwargs))
 }
 
 /// Drops what dead registers refer to. Registers holding scalars are left

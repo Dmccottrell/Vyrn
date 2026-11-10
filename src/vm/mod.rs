@@ -11,6 +11,9 @@ pub mod clock;
 pub mod compiler;
 pub mod dtype;
 mod fast;
+#[cfg(feature = "ffi")]
+pub mod ffi;
+pub mod foreign;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod json;
@@ -18,6 +21,10 @@ pub mod machine;
 pub mod op;
 pub mod ops;
 pub mod program;
+#[cfg(feature = "python")]
+pub mod python;
+#[cfg(feature = "python")]
+pub mod python_tensor;
 pub mod task;
 pub mod tensor;
 pub mod tokenizer;

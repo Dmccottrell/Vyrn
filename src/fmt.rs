@@ -131,7 +131,9 @@ pub fn format(src: &str) -> Result<String, String> {
                 stack.pop().map_or(0, Frame::depth)
             }
             // A match's `else` is one more arm.
-            Tk::Keyword(K::Else) if matches!(stack.last(), Some(Frame::Arm(_) | Frame::Match(_))) => {
+            Tk::Keyword(K::Else)
+                if matches!(stack.last(), Some(Frame::Arm(_) | Frame::Match(_))) =>
+            {
                 if let Some(Frame::Arm(_)) = stack.last() {
                     stack.pop();
                 }
@@ -141,7 +143,9 @@ pub fn format(src: &str) -> Result<String, String> {
                 }
                 arm
             }
-            Tk::Keyword(K::Elif | K::Else | K::Catch | K::Finally) => stack.last().map_or(0, |f| f.depth()),
+            Tk::Keyword(K::Elif | K::Else | K::Catch | K::Finally) => {
+                stack.last().map_or(0, |f| f.depth())
+            }
             Tk::Keyword(K::Is) if matches!(stack.last(), Some(Frame::Arm(_) | Frame::Match(_))) => {
                 if let Some(Frame::Arm(_)) = stack.last() {
                     stack.pop();

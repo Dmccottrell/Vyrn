@@ -212,6 +212,9 @@ struct Compiler {
     modules: HashMap<String, &'static str>,
     /// Builtins imported by name: `use std.web (serve)`.
     imports: HashMap<String, u16>,
+    /// Globals filled by a builtin call before anything else runs: Python
+    /// modules and C functions. Global slot, builtin, and its arguments.
+    foreign_inits: Vec<(u16, u16, Vec<Value>)>,
     symbols: Interner,
     routes: Vec<RouteDef>,
     main: Option<usize>,
@@ -334,6 +337,7 @@ impl Compiler {
             global_index: HashMap::new(),
             modules: HashMap::new(),
             imports: HashMap::new(),
+            foreign_inits: Vec::new(),
             symbols: Interner::default(),
             routes: Vec::new(),
             main: None,
@@ -398,6 +402,24 @@ impl Compiler {
         // Pass 2: compile.
         let init = self.reserve_proto();
         self.begin_fn("<module>".into(), &[], HashSet::new());
+        for (slot, native, args) in std::mem::take(&mut self.foreign_inits) {
+            if let Ok(regs) = self.alloc_n(args.len() + 1) {
+                let _ = self.load_const(regs[0], Value::Native(native));
+                let argc = args.len() as u8;
+                for (value, &r) in args.into_iter().zip(&regs[1..]) {
+                    let _ = self.load_const(r, value);
+                }
+                self.emit(Op::Call {
+                    func: regs[0],
+                    argc,
+                });
+                self.emit(Op::SetGlobal {
+                    src: regs[0],
+                    idx: slot,
+                });
+                self.release(0);
+            }
+        }
         for c in consts {
             self.set_pos(c.value.span);
             if let Some(GlobalKind::Const { slot }) = self.global_index.get(&c.name.name).cloned() {
@@ -467,7 +489,8 @@ impl Compiler {
     ) {
         match &item.kind {
             ItemKind::Use(decl) => self.use_decl(decl),
-            ItemKind::Trait(_) | ItemKind::TypeAlias(_) | ItemKind::Extern(_) => {}
+            ItemKind::Extern(e) => self.extern_decl(e, item),
+            ItemKind::Trait(_) | ItemKind::TypeAlias(_) => {}
             ItemKind::RouteGroup(_) => {}
             ItemKind::Main(decl) => {
                 let slot = self.reserve_proto();
@@ -1163,6 +1186,10 @@ impl Compiler {
     /// system, which the interpreter leaves to the release toolchain.
     fn use_decl(&mut self, decl: &UseDecl) {
         let segments: Vec<&str> = decl.path.segments.iter().map(|s| s.name.as_str()).collect();
+        if segments.first() == Some(&"python") && decl.url.is_none() {
+            self.python_use(decl, &segments[1..]);
+            return;
+        }
         let [std, name] = segments[..] else {
             return;
         };
@@ -1196,6 +1223,111 @@ impl Compiler {
                             );
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// A global filled at start-up by calling builtin `native` with `args`.
+    fn foreign_global(&mut self, name: &str, span: Span, native: &str, args: Vec<Value>) {
+        let Some(id) = builtins::lookup(native) else {
+            return;
+        };
+        if let Some(slot) = self.add_global(name, GlobalInit::Const, span) {
+            self.global_index
+                .insert(name.to_string(), GlobalKind::Const { slot });
+            self.foreign_inits.push((slot, id, args));
+        }
+    }
+
+    /// `use python.numpy as np`, `use python.os.path (join)`.
+    fn python_use(&mut self, decl: &UseDecl, path: &[&str]) {
+        if path.is_empty() {
+            self.error_hint(
+                "`use python` needs a module name",
+                decl.path.span,
+                "for example `use python.numpy as np`",
+            );
+            return;
+        }
+        let module = Value::str(path.join("."));
+        match &decl.kind {
+            UseKind::Module { alias } => {
+                let local = alias
+                    .as_ref()
+                    .map_or(path[path.len() - 1], |a| a.name.as_str())
+                    .to_string();
+                self.foreign_global(&local, decl.path.span, "python.import", vec![module]);
+            }
+            UseKind::Names(names) => {
+                for n in names {
+                    let local = n.alias.as_ref().unwrap_or(&n.name).name.clone();
+                    self.foreign_global(
+                        &local,
+                        n.name.span,
+                        "python.import",
+                        vec![module.clone(), Value::str(n.name.name.clone())],
+                    );
+                }
+            }
+        }
+    }
+
+    /// `extern "c":` functions, from the library named by `@link("m")`, or
+    /// from the program itself (libc) when there is none.
+    fn extern_decl(&mut self, decl: &ExternDecl, item: &Item) {
+        if decl.abi != "c" {
+            self.error_hint(
+                format!(
+                    "`extern \"{}\"` is not supported by the interpreter",
+                    decl.abi
+                ),
+                item.span,
+                "the interpreter calls C libraries: `extern \"c\":`",
+            );
+            return;
+        }
+        let mut library = String::new();
+        for d in &item.decorators {
+            let name: Vec<&str> = d.name.segments.iter().map(|s| s.name.as_str()).collect();
+            if name == ["link"] {
+                match d.args.first().map(|a| &a.value.kind) {
+                    Some(ExprKind::Str(parts)) => {
+                        if let [StrSegment::Text(t)] = parts.as_slice() {
+                            library = t.clone();
+                        }
+                    }
+                    _ => {
+                        self.error("`@link` takes the library's name: `@link(\"m\")`", d.span);
+                    }
+                }
+            }
+        }
+        for f in &decl.functions {
+            match c_signature(f) {
+                Ok(signature) => self.foreign_global(
+                    &f.name.name,
+                    f.name.span,
+                    "ffi.function",
+                    vec![
+                        Value::str(library.clone()),
+                        Value::str(
+                            f.name
+                                .name
+                                .rsplit('.')
+                                .next()
+                                .unwrap_or(&f.name.name)
+                                .to_string(),
+                        ),
+                        Value::str(signature),
+                    ],
+                ),
+                Err((message, span)) => {
+                    self.error_hint(
+                        message,
+                        span,
+                        "C functions take and return numbers (i8 to u64, f32, f64), bool, str, `ptr T`, and tensors or lists of numbers as pointers",
+                    );
                 }
             }
         }
@@ -3808,4 +3940,79 @@ fn small_int(expr: &Expr) -> Option<i8> {
         ExprKind::Int { value, .. } => i8::try_from(*value).ok(),
         _ => None,
     }
+}
+
+/// A C function's signature in the form the FFI builtin reads:
+/// `f64(f64,ptr)`. Types are spelled as C sees them.
+fn c_signature(f: &FnDecl) -> Result<String, (String, Span)> {
+    fn c_type(t: &TypeExpr) -> Option<&'static str> {
+        match &t.kind {
+            TypeExprKind::Named { path, .. } if path.segments.len() == 1 => {
+                Some(match path.segments[0].name.as_str() {
+                    "i8" => "i8",
+                    "i16" => "i16",
+                    "i32" => "i32",
+                    "i64" | "int" | "isize" => "i64",
+                    "u8" => "u8",
+                    "u16" => "u16",
+                    "u32" => "u32",
+                    "u64" | "usize" => "u64",
+                    "f32" => "f32",
+                    "f64" | "float" => "f64",
+                    "bool" => "bool",
+                    "str" => "str",
+                    _ => return None,
+                })
+            }
+            TypeExprKind::Owned {
+                ownership: Ownership::Ptr,
+                ..
+            } => Some("ptr"),
+            TypeExprKind::Tensor(_) | TypeExprKind::List(_) | TypeExprKind::Array { .. } => {
+                Some("ptr")
+            }
+            TypeExprKind::Tuple(items) if items.is_empty() => Some("void"),
+            _ => None,
+        }
+    }
+    let mut params = Vec::new();
+    for p in &f.params {
+        let Some(t) = &p.declared_ty else {
+            return Err((
+                format!(
+                    "parameter `{}` of C function `{}` needs a type",
+                    p.name.name, f.name.name
+                ),
+                p.name.span,
+            ));
+        };
+        match c_type(t) {
+            Some("void") | None => {
+                return Err((
+                    format!(
+                        "parameter `{}` has a type that cannot be passed to C",
+                        p.name.name
+                    ),
+                    t.span,
+                ))
+            }
+            Some(c) => params.push(c),
+        }
+    }
+    let result = match &f.result.returns {
+        None => "void",
+        Some(t) => match c_type(t) {
+            Some(c) if c != "str" => c,
+            _ => {
+                return Err((
+                    format!(
+                        "`{}` returns a type that cannot come back from C",
+                        f.name.name
+                    ),
+                    t.span,
+                ))
+            }
+        },
+    };
+    Ok(format!("{result}({})", params.join(",")))
 }

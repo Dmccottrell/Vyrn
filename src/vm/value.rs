@@ -84,6 +84,8 @@ pub enum Value {
     Channel(Rc<RefCell<Channel>>),
     /// A game loop's frame clock.
     Clock(Rc<RefCell<super::clock::Clock>>),
+    /// A Python object or a C function or pointer.
+    Foreign(Rc<Box<dyn super::foreign::Foreign>>),
     /// A runtime error raised by the VM itself.
     Error(Rc<ErrorValue>),
     Tokenizer(Rc<Tokenizer>),
@@ -136,6 +138,7 @@ impl Value {
             Value::Task(_) => "task",
             Value::Channel(_) => "channel",
             Value::Clock(_) => "Clock",
+            Value::Foreign(f) => f.type_name(),
             Value::Error(_) => "error",
             Value::Tokenizer(_) => "tokenizer",
             Value::Cell(_) => "cell",
@@ -173,6 +176,7 @@ impl Value {
             Value::List(l) => !l.borrow().is_empty(),
             Value::Tuple(t) => !t.is_empty(),
             Value::Map(m) => !m.borrow().is_empty(),
+            Value::Foreign(f) => f.truthy(),
             _ => true,
         }
     }

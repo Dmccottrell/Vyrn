@@ -21,6 +21,11 @@ sha2 = "0.10"
 ureq = { version = "3", optional = true }
 wgpu = { version = "30", optional = true, default-features = false, features = ["vulkan", "metal", "dx12", "wgsl"] }
 pollster = { version = "0.4", optional = true }
+# `use python.x`: an embedded CPython.
+pyo3 = { version = "0.30", optional = true, features = ["auto-initialize"] }
+# `extern "c"`: loading C libraries and calling them by signature.
+libloading = { version = "0.9", optional = true }
+libffi = { version = "5", optional = true }
 
 [features]
 default = ["net"]
@@ -28,3 +33,7 @@ default = ["net"]
 net = ["dep:ureq"]
 # Runs tensor work on a real GPU through wgpu (Vulkan, Metal or DirectX 12).
 gpu = ["dep:wgpu", "dep:pollster"]
+# `use python.numpy`: Python libraries through an embedded CPython.
+python = ["dep:pyo3"]
+# `extern "c":` blocks: calling C and C++ libraries.
+ffi = ["dep:libloading", "dep:libffi"]
