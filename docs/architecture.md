@@ -139,6 +139,63 @@ Purpose: maximum steady-state speed. Compile time is unconstrained.
   that the optimizer proves cannot fire. Overflow and bounds checks stay on in
   release unless disabled per function with `@unchecked`.
 
+### 2.4 The interpreter (implemented)
+
+The REPL and `vyrn run` use a bytecode interpreter that compiles straight from
+the syntax tree (`src/vm`). It needs no type information, so it runs the
+dynamic subset of the language today, ahead of type checking and VIR.
+
+**Register machine, not stack machine.** Each frame owns up to 256 registers;
+instructions name their operands directly. `total = total + x` is one `Add`
+reading and writing registers in place, where a stack machine needs four
+instructions. Fewer instructions means fewer trips through dispatch, which
+dominates interpreter time. Lua 5 made the same move for the same reason.
+
+| Decision | Reason |
+|---|---|
+| 4-byte instructions (`Op` is a `Copy` enum, size checked by a test) | Dense code, one load per dispatch |
+| 16-byte values, reference counted, no tracing collector | Matches the language's ownership model: memory is released when the last reference goes away |
+| Structs copied on write (`Rc::make_mut`) | Value semantics without copying on every assignment |
+| Sliding register windows | A callee's parameters are the caller's argument registers; arguments are never copied, and `mut` parameters write back for free |
+| Non-recursive dispatch loop | Deep Vyrn recursion cannot overflow the Rust stack; the limit is a clean `StackOverflow` error at 10,000 frames |
+| Counted loops (`ForPrep`/`ForLoop`) | `for i in 0 until n` costs one instruction per iteration |
+| `TakeIndex` for `for mut` | The element is moved out of the list and back, so struct elements change in place with no copy |
+| Dedicated `MatMul`, `Place`, `PushDevice`/`PopDevice` | Tensor work is dispatched to a `TensorBackend` per device; the VM never does tensor math itself |
+| Failures unwind through handler records | `fail`/`catch`/`finally` and `defer` cost nothing until something fails |
+
+**Tensor backends.** `ReferenceBackend` runs every tensor instruction on the
+CPU and is installed for all devices by default, so GPU-targeted code runs
+anywhere with placement rules still enforced. A CUDA, Metal or WebGPU backend
+implements the same trait and is installed with `Vm::set_gpu_backend`.
+
+**Interpreter-only limitations.** `with` and `async for` are compile errors.
+`spawn` runs its call immediately and `await` takes the result: correct, but
+not concurrent. `par for` runs sequentially. Closures capture by value.
+Keyword arguments are resolved at compile time, so they work for top-level
+functions, structs and builtins but not for closures or methods. Tensors are
+`f32` regardless of the declared element type.
+
+**Measured performance** (release build, best of 7, 4-core cloud VM,
+CPython 3.13 on the same programs, outputs cross-checked):
+
+| Workload | Vyrn VM | CPython 3.13 | Relative |
+|---|---|---|---|
+| 30M-iteration integer loop | 1070 ms | 1661 ms | 1.55x faster |
+| `fib(30)`: 1.6M calls | 232 ms | 97 ms | 2.4x slower |
+| 1,000 entities x 1,000 frames | 208 ms | 144 ms | 1.4x slower |
+
+Calls and field access are where CPython 3.13's specializing interpreter
+leads. Profiling shows the cost spread across bounds-checked register access,
+out-of-line clone and drop of values, and linear field lookup. The planned
+fixes, in order of expected gain:
+
+1. NaN-boxed 8-byte values, so scalars copy and drop without branches.
+2. Inline caches for field and method lookup.
+3. Superinstructions for compare-and-branch and for `x.f op= y`.
+4. A bytecode verifier at load time, which makes unchecked register access
+   sound.
+5. Frames that do not touch reference counts on call and return.
+
 ## 3. Pillar 2: Data-oriented memory model
 
 ### 3.1 Ownership
@@ -470,6 +527,8 @@ end
 ## 7. Build order
 
 1. Front end to VIR, with the borrow checker, validated by an interpreter.
+   *Done so far: lexer, parser, AST and the bytecode interpreter (section 2.4).
+   Type checking, the borrow checker and VIR are next.*
 2. Dev backend for x86-64. This is the first usable compiler.
 3. SoA collections and regions.
 4. Async runtime and `route`.

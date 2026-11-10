@@ -1,13 +1,14 @@
-//! Front end of the Vyrn compiler.
+//! The Vyrn compiler and interpreter.
 //!
 //! Implemented so far, against `docs/grammar.ebnf` v0.4:
 //!
-//! - [`span`]: source positions with line and column tracking
-//! - [`token`]: the token vocabulary
-//! - [`lexer`]: source text to tokens
-//! - [`ast`]: the tree the parser will build
+//! - [`span`], [`diagnostic`]: source positions and error reports
+//! - [`token`], [`lexer`]: source text to tokens
+//! - [`ast`], [`parser`], [`pretty`]: tokens to a syntax tree, and back to text
+//! - [`vm`]: a bytecode compiler and register-based virtual machine that runs
+//!   programs, for `vyrn run` and the REPL
 //!
-//! The parser and everything after it do not exist yet.
+//! Type checking, borrow checking and the native backends come next.
 
 pub mod ast;
 pub mod diagnostic;
@@ -16,6 +17,7 @@ pub mod parser;
 pub mod pretty;
 pub mod span;
 pub mod token;
+pub mod vm;
 
 pub use diagnostic::Diagnostic;
 pub use lexer::{tokenize, LexError, LexErrorKind, Lexer};

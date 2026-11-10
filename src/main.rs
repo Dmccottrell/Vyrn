@@ -2,15 +2,18 @@
 //!
 //! - `vyrn lex <file>` prints the token stream.
 //! - `vyrn parse <file>` prints the syntax tree in compact form.
+//! - `vyrn bytecode <file>` prints the compiled bytecode.
+//! - `vyrn run <file>` compiles the file and runs its `main:` block.
 
 use std::process::ExitCode;
+use vyrn::vm::{self, Vm};
 use vyrn::{parse_recovering, pretty, Lexer};
 
-const USAGE: &str = "usage: vyrn <lex|parse> <file.vyrn>";
+const USAGE: &str = "usage: vyrn <run|bytecode|parse|lex> <file.vyrn>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let [command, file] = args.as_slice() else {
+    let [command, file, rest @ ..] = args.as_slice() else {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
@@ -24,6 +27,8 @@ fn main() -> ExitCode {
     match command.as_str() {
         "lex" => lex(file, &src),
         "parse" => parse(file, &src),
+        "bytecode" => bytecode(file, &src),
+        "run" => run(file, &src, rest),
         _ => {
             eprintln!("unknown command `{command}`\n{USAGE}");
             ExitCode::from(2)
@@ -58,4 +63,40 @@ fn parse(file: &str, src: &str) -> ExitCode {
     }
     print!("{}", pretty::module(&module));
     ExitCode::SUCCESS
+}
+
+fn compile(file: &str, src: &str) -> Option<vm::Program> {
+    match vm::compile_source(src) {
+        Ok(program) => Some(program),
+        Err(diagnostics) => {
+            for diagnostic in &diagnostics {
+                eprintln!("{}", diagnostic.render(file, src));
+            }
+            None
+        }
+    }
+}
+
+fn bytecode(file: &str, src: &str) -> ExitCode {
+    match compile(file, src) {
+        Some(program) => {
+            print!("{}", program.disassemble());
+            ExitCode::SUCCESS
+        }
+        None => ExitCode::FAILURE,
+    }
+}
+
+fn run(file: &str, src: &str, args: &[String]) -> ExitCode {
+    let Some(program) = compile(file, src) else {
+        return ExitCode::FAILURE;
+    };
+    let mut machine = Vm::new(program);
+    match machine.run_main(args) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }

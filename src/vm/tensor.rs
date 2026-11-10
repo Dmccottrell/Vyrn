@@ -1,0 +1,795 @@
+//! Tensors, devices, and the backends that execute tensor instructions.
+//!
+//! The VM never computes tensor math itself. `MatMul`, element-wise
+//! arithmetic on tensors, reductions and transfers are all delegated to the
+//! [`TensorBackend`] of the device the operands live on. [`ReferenceBackend`]
+//! runs everything on the CPU and is the default for every device, so code
+//! that targets `gpu[0]` runs anywhere. A CUDA, Metal or WebGPU backend
+//! implements the same trait and is installed with
+//! [`crate::vm::Vm::set_gpu_backend`].
+
+use std::fmt;
+
+/// Where a tensor's memory lives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Device {
+    Cpu,
+    Gpu(u16),
+}
+
+impl fmt::Display for Device {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Device::Cpu => write!(f, "cpu"),
+            Device::Gpu(i) => write!(f, "gpu:{i}"),
+        }
+    }
+}
+
+/// A dense, row-major tensor of 32-bit floats.
+///
+/// Declared element types such as `f16` and `bf16` are computed in `f32` by
+/// the interpreter; reduced precision is a concern of the release backend.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tensor {
+    pub shape: Vec<usize>,
+    pub data: Vec<f32>,
+    pub device: Device,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TensorError {
+    Shape(String),
+    Device(String),
+}
+
+impl Tensor {
+    pub fn new(shape: Vec<usize>, data: Vec<f32>, device: Device) -> Result<Tensor, TensorError> {
+        let expected: usize = shape.iter().product();
+        if expected != data.len() {
+            return Err(TensorError::Shape(format!(
+                "shape {shape:?} needs {expected} values, got {}",
+                data.len()
+            )));
+        }
+        Ok(Tensor {
+            shape,
+            data,
+            device,
+        })
+    }
+
+    pub fn filled(shape: Vec<usize>, value: f32, device: Device) -> Tensor {
+        let n = shape.iter().product();
+        Tensor {
+            shape,
+            data: vec![value; n],
+            device,
+        }
+    }
+
+    pub fn scalar(value: f32, device: Device) -> Tensor {
+        Tensor {
+            shape: Vec::new(),
+            data: vec![value],
+            device,
+        }
+    }
+
+    pub fn ndim(&self) -> usize {
+        self.shape.len()
+    }
+
+    pub fn strides(&self) -> Vec<usize> {
+        strides(&self.shape)
+    }
+
+    /// Swaps the last two dimensions. A 0-D or 1-D tensor is unchanged.
+    pub fn transpose(&self) -> Tensor {
+        let n = self.ndim();
+        if n < 2 {
+            return self.clone();
+        }
+        let (rows, cols) = (self.shape[n - 2], self.shape[n - 1]);
+        let matrix = rows * cols;
+        let mut data = vec![0.0; self.data.len()];
+        for (batch, chunk) in self.data.chunks(matrix.max(1)).enumerate() {
+            let out = &mut data[batch * matrix..(batch + 1) * matrix];
+            for r in 0..rows {
+                for c in 0..cols {
+                    out[c * rows + r] = chunk[r * cols + c];
+                }
+            }
+        }
+        let mut shape = self.shape.clone();
+        shape.swap(n - 2, n - 1);
+        Tensor {
+            shape,
+            data,
+            device: self.device,
+        }
+    }
+
+    pub fn reshape(&self, shape: Vec<usize>) -> Result<Tensor, TensorError> {
+        Tensor::new(shape, self.data.clone(), self.device)
+    }
+
+    /// Selects elements, Python/NumPy style. The result keeps one dimension
+    /// for each slice and new axis, and drops one for each integer index.
+    pub fn select(&self, subs: &[Sub]) -> Result<Tensor, TensorError> {
+        let ndim = self.ndim();
+        let consuming = subs
+            .iter()
+            .filter(|s| matches!(s, Sub::Index(_) | Sub::Slice { .. }))
+            .count();
+        if consuming > ndim {
+            return Err(TensorError::Shape(format!(
+                "{consuming} indices given for a tensor with {ndim} dimensions"
+            )));
+        }
+        let mut expanded = Vec::with_capacity(ndim + 2);
+        let mut seen_ellipsis = false;
+        for sub in subs {
+            if let Sub::Ellipsis = sub {
+                if seen_ellipsis {
+                    return Err(TensorError::Shape("only one `...` is allowed".into()));
+                }
+                seen_ellipsis = true;
+                for _ in 0..ndim - consuming {
+                    expanded.push(Sub::full());
+                }
+            } else {
+                expanded.push(*sub);
+            }
+        }
+        while expanded
+            .iter()
+            .filter(|s| matches!(s, Sub::Index(_) | Sub::Slice { .. }))
+            .count()
+            < ndim
+        {
+            expanded.push(Sub::full());
+        }
+
+        let mut out_shape = Vec::new();
+        let mut picks: Vec<Vec<usize>> = Vec::with_capacity(ndim);
+        let mut dim = 0;
+        for sub in &expanded {
+            match *sub {
+                Sub::NewAxis => out_shape.push(1),
+                Sub::Index(i) => {
+                    let size = self.shape[dim];
+                    let index = normalize_index(i, size).ok_or_else(|| {
+                        TensorError::Shape(format!(
+                            "index {i} is out of range for dimension {dim} of size {size}"
+                        ))
+                    })?;
+                    picks.push(vec![index]);
+                    dim += 1;
+                }
+                Sub::Slice { start, stop, step } => {
+                    let indices = slice_indices(start, stop, step, self.shape[dim])
+                        .map_err(TensorError::Shape)?;
+                    out_shape.push(indices.len());
+                    picks.push(indices);
+                    dim += 1;
+                }
+                Sub::Ellipsis => {}
+            }
+        }
+
+        let strides = self.strides();
+        let total: usize = picks.iter().map(Vec::len).product();
+        let mut data = Vec::with_capacity(total);
+        if total > 0 {
+            // An odometer over the selected indices of every dimension.
+            let mut counter = vec![0usize; picks.len()];
+            'next: loop {
+                let offset: usize = counter
+                    .iter()
+                    .enumerate()
+                    .map(|(d, &c)| picks[d][c] * strides[d])
+                    .sum();
+                data.push(self.data[offset]);
+                let mut d = picks.len();
+                while d > 0 {
+                    d -= 1;
+                    counter[d] += 1;
+                    if counter[d] < picks[d].len() {
+                        continue 'next;
+                    }
+                    counter[d] = 0;
+                }
+                break;
+            }
+        }
+        Tensor::new(out_shape, data, self.device)
+    }
+
+    /// Writes one element addressed by an integer index per dimension.
+    pub fn set(&mut self, index: &[i64], value: f32) -> Result<(), TensorError> {
+        if index.len() != self.ndim() {
+            return Err(TensorError::Shape(format!(
+                "assigning into a tensor needs {} indices, got {}",
+                self.ndim(),
+                index.len()
+            )));
+        }
+        let strides = self.strides();
+        let mut offset = 0;
+        for (d, &i) in index.iter().enumerate() {
+            let size = self.shape[d];
+            let i = normalize_index(i, size).ok_or_else(|| {
+                TensorError::Shape(format!("index {i} is out of range for size {size}"))
+            })?;
+            offset += i * strides[d];
+        }
+        self.data[offset] = value;
+        Ok(())
+    }
+}
+
+/// Widens a tensor element to a scalar without the noise a plain cast adds:
+/// `0.1f32 as f64` is 0.10000000149011612, but the element was written and
+/// is printed as 0.1, so the scalar should be 0.1 too.
+pub fn widen(x: f32) -> f64 {
+    if x.fract() == 0.0 || !x.is_finite() {
+        return f64::from(x);
+    }
+    x.to_string().parse().unwrap_or(f64::from(x))
+}
+
+/// One subscript in a tensor index.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Sub {
+    Index(i64),
+    Slice {
+        start: Option<i64>,
+        stop: Option<i64>,
+        step: Option<i64>,
+    },
+    Ellipsis,
+    NewAxis,
+}
+
+impl Sub {
+    pub fn full() -> Sub {
+        Sub::Slice {
+            start: None,
+            stop: None,
+            step: None,
+        }
+    }
+}
+
+pub fn strides(shape: &[usize]) -> Vec<usize> {
+    let mut strides = vec![1; shape.len()];
+    for d in (0..shape.len().saturating_sub(1)).rev() {
+        strides[d] = strides[d + 1] * shape[d + 1];
+    }
+    strides
+}
+
+/// Resolves a possibly negative index against a length.
+pub fn normalize_index(index: i64, len: usize) -> Option<usize> {
+    let len = len as i64;
+    let i = if index < 0 { index + len } else { index };
+    (0..len).contains(&i).then_some(i as usize)
+}
+
+/// The indices a Python slice selects from a sequence of length `len`.
+pub fn slice_indices(
+    start: Option<i64>,
+    stop: Option<i64>,
+    step: Option<i64>,
+    len: usize,
+) -> Result<Vec<usize>, String> {
+    let step = step.unwrap_or(1);
+    if step == 0 {
+        return Err("a slice step cannot be zero".into());
+    }
+    let len = len as i64;
+    let clamp = |v: i64, low: i64, high: i64| v.max(low).min(high);
+    let resolve = |v: i64| if v < 0 { v + len } else { v };
+    let mut out = Vec::new();
+    if step > 0 {
+        let start = start.map(|s| clamp(resolve(s), 0, len)).unwrap_or(0);
+        let stop = stop.map(|s| clamp(resolve(s), 0, len)).unwrap_or(len);
+        let mut i = start;
+        while i < stop {
+            out.push(i as usize);
+            i += step;
+        }
+    } else {
+        let start = start
+            .map(|s| clamp(resolve(s), -1, len - 1))
+            .unwrap_or(len - 1);
+        let stop = stop.map(|s| clamp(resolve(s), -1, len - 1)).unwrap_or(-1);
+        let mut i = start;
+        while i > stop {
+            out.push(i as usize);
+            i += step;
+        }
+    }
+    Ok(out)
+}
+
+/// NumPy broadcasting: dimensions are aligned from the right, and a
+/// dimension of size 1 stretches to match the other.
+pub fn broadcast_shapes(a: &[usize], b: &[usize]) -> Result<Vec<usize>, TensorError> {
+    let n = a.len().max(b.len());
+    let mut out = vec![0; n];
+    for i in 0..n {
+        let da = if i < n - a.len() {
+            1
+        } else {
+            a[i - (n - a.len())]
+        };
+        let db = if i < n - b.len() {
+            1
+        } else {
+            b[i - (n - b.len())]
+        };
+        out[i] = if da == db || db == 1 {
+            da
+        } else if da == 1 {
+            db
+        } else {
+            return Err(TensorError::Shape(format!(
+                "shapes {a:?} and {b:?} cannot be broadcast together"
+            )));
+        };
+    }
+    Ok(out)
+}
+
+/// For each position of `out_shape`, the offset into a tensor of `shape`
+/// broadcast to it.
+fn broadcast_offsets(shape: &[usize], out_shape: &[usize]) -> Vec<usize> {
+    let total: usize = out_shape.iter().product();
+    let pad = out_shape.len() - shape.len();
+    let source_strides = strides(shape);
+    let mut offsets = Vec::with_capacity(total);
+    let mut counter = vec![0usize; out_shape.len()];
+    for _ in 0..total {
+        let mut offset = 0;
+        for (d, &c) in counter.iter().enumerate().skip(pad) {
+            let sd = d - pad;
+            if shape[sd] != 1 {
+                offset += c * source_strides[sd];
+            }
+        }
+        offsets.push(offset);
+        for d in (0..counter.len()).rev() {
+            counter[d] += 1;
+            if counter[d] < out_shape[d] {
+                break;
+            }
+            counter[d] = 0;
+        }
+    }
+    offsets
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ElemOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Pow,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MapOp {
+    Neg,
+    Abs,
+    Exp,
+    Sqrt,
+    Tanh,
+    Relu,
+    Gelu,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reduce {
+    Sum,
+    Mean,
+    Max,
+    Min,
+    ArgMax,
+}
+
+/// Executes tensor instructions for one kind of device.
+pub trait TensorBackend {
+    fn name(&self) -> &str;
+    /// Matrix product, batched over leading dimensions, which broadcast.
+    fn matmul(&self, a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError>;
+    /// Element-wise arithmetic and comparison with broadcasting.
+    fn elementwise(&self, op: ElemOp, a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError>;
+    fn map(&self, op: MapOp, a: &Tensor) -> Tensor;
+    /// Reduces along `axis`, or over every element when `axis` is `None`.
+    fn reduce(&self, op: Reduce, a: &Tensor, axis: Option<i64>) -> Result<Tensor, TensorError>;
+    fn softmax(&self, a: &Tensor, axis: i64) -> Result<Tensor, TensorError>;
+    /// Copies a tensor to another device.
+    fn transfer(&self, a: &Tensor, to: Device) -> Result<Tensor, TensorError>;
+}
+
+/// Runs every tensor operation on the CPU, for any device. Results are
+/// tagged with the operands' device, so placement rules are enforced exactly
+/// as they would be with real accelerators.
+pub struct ReferenceBackend;
+
+fn normalize_axis(axis: i64, ndim: usize) -> Result<usize, TensorError> {
+    let n = ndim as i64;
+    let a = if axis < 0 { axis + n } else { axis };
+    if (0..n).contains(&a) {
+        Ok(a as usize)
+    } else {
+        Err(TensorError::Shape(format!(
+            "axis {axis} is out of range for a tensor with {ndim} dimensions"
+        )))
+    }
+}
+
+/// Splits a shape around `axis` into (outer, length, inner) element counts.
+fn around_axis(shape: &[usize], axis: usize) -> (usize, usize, usize) {
+    let outer = shape[..axis].iter().product();
+    let inner = shape[axis + 1..].iter().product();
+    (outer, shape[axis], inner)
+}
+
+fn gelu(x: f32) -> f32 {
+    const C: f32 = 0.797_884_6; // sqrt(2 / pi)
+    0.5 * x * (1.0 + (C * (x + 0.044_715 * x * x * x)).tanh())
+}
+
+impl TensorBackend for ReferenceBackend {
+    fn name(&self) -> &str {
+        "reference (cpu)"
+    }
+
+    fn matmul(&self, a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError> {
+        if a.ndim() == 0 || b.ndim() == 0 {
+            return Err(TensorError::Shape(
+                "`@` needs tensors with at least one dimension; use `*` for scalars".into(),
+            ));
+        }
+        // A vector on the left is a row, a vector on the right a column.
+        let a_shape: Vec<usize> = if a.ndim() == 1 {
+            vec![1, a.shape[0]]
+        } else {
+            a.shape.clone()
+        };
+        let b_shape: Vec<usize> = if b.ndim() == 1 {
+            vec![b.shape[0], 1]
+        } else {
+            b.shape.clone()
+        };
+        let (m, k) = (a_shape[a_shape.len() - 2], a_shape[a_shape.len() - 1]);
+        let (k2, n) = (b_shape[b_shape.len() - 2], b_shape[b_shape.len() - 1]);
+        if k != k2 {
+            return Err(TensorError::Shape(format!(
+                "cannot multiply {:?} @ {:?}: inner dimensions {k} and {k2} differ",
+                a.shape, b.shape
+            )));
+        }
+        let a_batch = &a_shape[..a_shape.len() - 2];
+        let b_batch = &b_shape[..b_shape.len() - 2];
+        let batch = broadcast_shapes(a_batch, b_batch)?;
+        let batches: usize = batch.iter().product();
+        let a_offsets = broadcast_offsets(a_batch, &batch);
+        let b_offsets = broadcast_offsets(b_batch, &batch);
+
+        let mut out = vec![0.0f32; batches * m * n];
+        for bi in 0..batches {
+            let a_mat = &a.data[a_offsets[bi] * m * k..][..m * k];
+            let b_mat = &b.data[b_offsets[bi] * k * n..][..k * n];
+            let o_mat = &mut out[bi * m * n..][..m * n];
+            // i-k-j order: the inner loop walks rows of `b` and `out`
+            // contiguously, so it vectorizes and stays in cache.
+            for i in 0..m {
+                let o_row = &mut o_mat[i * n..(i + 1) * n];
+                for p in 0..k {
+                    let av = a_mat[i * k + p];
+                    if av == 0.0 {
+                        continue;
+                    }
+                    let b_row = &b_mat[p * n..(p + 1) * n];
+                    for (o, &bv) in o_row.iter_mut().zip(b_row) {
+                        *o += av * bv;
+                    }
+                }
+            }
+        }
+
+        let mut shape = batch;
+        if a.ndim() > 1 {
+            shape.push(m);
+        }
+        if b.ndim() > 1 {
+            shape.push(n);
+        }
+        Tensor::new(shape, out, a.device)
+    }
+
+    fn elementwise(&self, op: ElemOp, a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError> {
+        let f = |x: f32, y: f32| -> f32 {
+            match op {
+                ElemOp::Add => x + y,
+                ElemOp::Sub => x - y,
+                ElemOp::Mul => x * y,
+                ElemOp::Div => x / y,
+                ElemOp::Pow => x.powf(y),
+                ElemOp::Lt => f32::from(u8::from(x < y)),
+                ElemOp::LtEq => f32::from(u8::from(x <= y)),
+                ElemOp::Gt => f32::from(u8::from(x > y)),
+                ElemOp::GtEq => f32::from(u8::from(x >= y)),
+            }
+        };
+        let device = a.device;
+        if a.shape == b.shape {
+            let data = a.data.iter().zip(&b.data).map(|(&x, &y)| f(x, y)).collect();
+            return Tensor::new(a.shape.clone(), data, device);
+        }
+        if b.data.len() == 1 && b.ndim() <= a.ndim() {
+            let y = b.data[0];
+            let data = a.data.iter().map(|&x| f(x, y)).collect();
+            return Tensor::new(a.shape.clone(), data, device);
+        }
+        if a.data.len() == 1 && a.ndim() <= b.ndim() {
+            let x = a.data[0];
+            let data = b.data.iter().map(|&y| f(x, y)).collect();
+            return Tensor::new(b.shape.clone(), data, device);
+        }
+        let shape = broadcast_shapes(&a.shape, &b.shape)?;
+        let ao = broadcast_offsets(&a.shape, &shape);
+        let bo = broadcast_offsets(&b.shape, &shape);
+        let data = ao
+            .iter()
+            .zip(&bo)
+            .map(|(&i, &j)| f(a.data[i], b.data[j]))
+            .collect();
+        Tensor::new(shape, data, device)
+    }
+
+    fn map(&self, op: MapOp, a: &Tensor) -> Tensor {
+        let f: fn(f32) -> f32 = match op {
+            MapOp::Neg => |x| -x,
+            MapOp::Abs => f32::abs,
+            MapOp::Exp => f32::exp,
+            MapOp::Sqrt => f32::sqrt,
+            MapOp::Tanh => f32::tanh,
+            MapOp::Relu => |x| x.max(0.0),
+            MapOp::Gelu => gelu,
+        };
+        Tensor {
+            shape: a.shape.clone(),
+            data: a.data.iter().map(|&x| f(x)).collect(),
+            device: a.device,
+        }
+    }
+
+    fn reduce(&self, op: Reduce, a: &Tensor, axis: Option<i64>) -> Result<Tensor, TensorError> {
+        let combine = |values: &mut dyn Iterator<Item = f32>| -> f32 {
+            match op {
+                Reduce::Sum => values.sum(),
+                Reduce::Mean => {
+                    let (sum, count) = values.fold((0.0, 0usize), |(s, c), v| (s + v, c + 1));
+                    if count == 0 {
+                        f32::NAN
+                    } else {
+                        sum / count as f32
+                    }
+                }
+                Reduce::Max => values.fold(f32::NEG_INFINITY, f32::max),
+                Reduce::Min => values.fold(f32::INFINITY, f32::min),
+                Reduce::ArgMax => {
+                    let mut best = (0usize, f32::NEG_INFINITY);
+                    for (i, v) in values.enumerate() {
+                        if v > best.1 {
+                            best = (i, v);
+                        }
+                    }
+                    best.0 as f32
+                }
+            }
+        };
+        match axis {
+            None => {
+                if a.data.is_empty() && matches!(op, Reduce::Max | Reduce::Min | Reduce::ArgMax) {
+                    return Err(TensorError::Shape("reduction of an empty tensor".into()));
+                }
+                let value = combine(&mut a.data.iter().copied());
+                Ok(Tensor::scalar(value, a.device))
+            }
+            Some(axis) => {
+                let axis = normalize_axis(axis, a.ndim())?;
+                let (outer, len, inner) = around_axis(&a.shape, axis);
+                let mut data = Vec::with_capacity(outer * inner);
+                for o in 0..outer {
+                    for i in 0..inner {
+                        let mut values = (0..len).map(|j| a.data[(o * len + j) * inner + i]);
+                        data.push(combine(&mut values));
+                    }
+                }
+                let mut shape = a.shape.clone();
+                shape.remove(axis);
+                Tensor::new(shape, data, a.device)
+            }
+        }
+    }
+
+    fn softmax(&self, a: &Tensor, axis: i64) -> Result<Tensor, TensorError> {
+        if a.ndim() == 0 {
+            return Ok(Tensor::scalar(1.0, a.device));
+        }
+        let axis = normalize_axis(axis, a.ndim())?;
+        let (outer, len, inner) = around_axis(&a.shape, axis);
+        let mut data = a.data.clone();
+        for o in 0..outer {
+            for i in 0..inner {
+                let at = |j: usize| (o * len + j) * inner + i;
+                let max = (0..len)
+                    .map(|j| data[at(j)])
+                    .fold(f32::NEG_INFINITY, f32::max);
+                let mut sum = 0.0;
+                for j in 0..len {
+                    let e = (data[at(j)] - max).exp();
+                    data[at(j)] = e;
+                    sum += e;
+                }
+                for j in 0..len {
+                    data[at(j)] /= sum;
+                }
+            }
+        }
+        Tensor::new(a.shape.clone(), data, a.device)
+    }
+
+    fn transfer(&self, a: &Tensor, to: Device) -> Result<Tensor, TensorError> {
+        let mut moved = a.clone();
+        moved.device = to;
+        Ok(moved)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn t(shape: &[usize], data: &[f32]) -> Tensor {
+        Tensor::new(shape.to_vec(), data.to_vec(), Device::Cpu).unwrap()
+    }
+
+    #[test]
+    fn matmul_2d() {
+        let a = t(&[2, 3], &[1., 2., 3., 4., 5., 6.]);
+        let b = t(&[3, 2], &[7., 8., 9., 10., 11., 12.]);
+        let c = ReferenceBackend.matmul(&a, &b).unwrap();
+        assert_eq!(c.shape, vec![2, 2]);
+        assert_eq!(c.data, vec![58., 64., 139., 154.]);
+    }
+
+    #[test]
+    fn matmul_broadcasts_a_shared_weight_over_a_batch() {
+        let x = t(&[2, 1, 2], &[1., 2., 3., 4.]);
+        let w = t(&[2, 2], &[1., 0., 0., 1.]);
+        let y = ReferenceBackend.matmul(&x, &w).unwrap();
+        assert_eq!(y.shape, vec![2, 1, 2]);
+        assert_eq!(y.data, x.data);
+    }
+
+    #[test]
+    fn matmul_with_vectors() {
+        let m = t(&[2, 2], &[1., 2., 3., 4.]);
+        let v = t(&[2], &[1., 1.]);
+        assert_eq!(ReferenceBackend.matmul(&m, &v).unwrap().data, vec![3., 7.]);
+        assert_eq!(ReferenceBackend.matmul(&v, &m).unwrap().data, vec![4., 6.]);
+        assert_eq!(
+            ReferenceBackend.matmul(&v, &v).unwrap().shape,
+            Vec::<usize>::new()
+        );
+    }
+
+    #[test]
+    fn matmul_rejects_mismatched_shapes() {
+        let a = t(&[2, 3], &[0.; 6]);
+        assert!(matches!(
+            ReferenceBackend.matmul(&a, &a),
+            Err(TensorError::Shape(_))
+        ));
+    }
+
+    #[test]
+    fn broadcasting() {
+        let a = t(&[2, 3], &[1., 2., 3., 4., 5., 6.]);
+        let row = t(&[3], &[10., 20., 30.]);
+        let col = t(&[2, 1], &[100., 200.]);
+        let r = ReferenceBackend.elementwise(ElemOp::Add, &a, &row).unwrap();
+        assert_eq!(r.data, vec![11., 22., 33., 14., 25., 36.]);
+        let c = ReferenceBackend.elementwise(ElemOp::Add, &a, &col).unwrap();
+        assert_eq!(c.data, vec![101., 102., 103., 204., 205., 206.]);
+        assert!(broadcast_shapes(&[2, 3], &[2]).is_err());
+    }
+
+    #[test]
+    fn selection() {
+        let a = t(&[2, 3], &[1., 2., 3., 4., 5., 6.]);
+        let last_col = a.select(&[Sub::full(), Sub::Index(-1)]).unwrap();
+        assert_eq!((last_col.shape, last_col.data), (vec![2], vec![3., 6.]));
+        let row = a.select(&[Sub::Index(1)]).unwrap();
+        assert_eq!(row.data, vec![4., 5., 6.]);
+        let reversed = a
+            .select(&[
+                Sub::Ellipsis,
+                Sub::Slice {
+                    start: None,
+                    stop: None,
+                    step: Some(-1),
+                },
+            ])
+            .unwrap();
+        assert_eq!(reversed.data, vec![3., 2., 1., 6., 5., 4.]);
+        let expanded = a.select(&[Sub::NewAxis]).unwrap();
+        assert_eq!(expanded.shape, vec![1, 2, 3]);
+        let scalar = a.select(&[Sub::Index(0), Sub::Index(2)]).unwrap();
+        assert_eq!((scalar.shape.len(), scalar.data[0]), (0, 3.));
+    }
+
+    #[test]
+    fn reductions_and_softmax() {
+        let a = t(&[2, 2], &[1., 5., 3., 2.]);
+        assert_eq!(
+            ReferenceBackend.reduce(Reduce::Sum, &a, None).unwrap().data,
+            vec![11.]
+        );
+        assert_eq!(
+            ReferenceBackend
+                .reduce(Reduce::Sum, &a, Some(0))
+                .unwrap()
+                .data,
+            vec![4., 7.]
+        );
+        assert_eq!(
+            ReferenceBackend
+                .reduce(Reduce::ArgMax, &a, Some(-1))
+                .unwrap()
+                .data,
+            vec![1., 0.]
+        );
+        let s = ReferenceBackend.softmax(&a, -1).unwrap();
+        assert!((s.data[0] + s.data[1] - 1.0).abs() < 1e-6);
+        assert!(s.data[1] > s.data[0]);
+    }
+
+    #[test]
+    fn transpose() {
+        let a = t(&[2, 3], &[1., 2., 3., 4., 5., 6.]);
+        let at = a.transpose();
+        assert_eq!(at.shape, vec![3, 2]);
+        assert_eq!(at.data, vec![1., 4., 2., 5., 3., 6.]);
+    }
+
+    #[test]
+    fn python_slices() {
+        assert_eq!(
+            slice_indices(None, None, None, 4).unwrap(),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(slice_indices(Some(-2), None, None, 4).unwrap(), vec![2, 3]);
+        assert_eq!(
+            slice_indices(None, None, Some(-1), 3).unwrap(),
+            vec![2, 1, 0]
+        );
+        assert_eq!(
+            slice_indices(Some(1), Some(100), Some(2), 6).unwrap(),
+            vec![1, 3, 5]
+        );
+        assert!(slice_indices(None, None, Some(0), 3).is_err());
+    }
+}

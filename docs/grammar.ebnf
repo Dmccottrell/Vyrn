@@ -352,7 +352,10 @@ subscript     = expression
               | [ expression ] ":" [ expression ] [ ":" [ expression ] ]
               | "..." ;
 
+(* In an expression `tensor` is the builtin that builds a tensor:
+   tensor([[1, 2], [3, 4]]). In a type it starts a tensor type.               *)
 atom          = IDENT
+              | "tensor"
               | literal
               | "(" [ expression_list ] ")"
               | "[" [ expression_list | expression comp_clauses ] "]"

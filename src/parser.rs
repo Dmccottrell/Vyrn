@@ -2411,6 +2411,15 @@ impl Parser {
                     None => ExprKind::Name(Ident { name, span }),
                 }
             }
+            // `tensor` names a type, and in an expression it is the builtin
+            // that builds one: `tensor([[1, 2], [3, 4]])`.
+            Tk::Keyword(K::Tensor) => {
+                let span = self.bump().span;
+                ExprKind::Name(Ident {
+                    name: "tensor".to_string(),
+                    span,
+                })
+            }
             Tk::Punct(P::LParen) => return self.paren(),
             Tk::Punct(P::LBracket) => return self.list(),
             Tk::Punct(P::LBrace) => return self.map(),

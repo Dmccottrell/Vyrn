@@ -3,8 +3,8 @@
 A gradually typed, garbage-collector-free language for machine learning, web
 services and WebAssembly, and games and systems code.
 
-Status: grammar v0.4, with a lexer and AST definitions in Rust. There is no
-parser yet.
+Status: grammar v0.4, with a lexer, parser and bytecode interpreter in Rust.
+The type checker, borrow checker and native backends do not exist yet.
 
 ## Documents
 
@@ -26,8 +26,14 @@ cargo test
 ```
 
 ```bash
-cargo run -- lex examples/inference.vyrn
+cargo run --release -- run examples/grade.vyrn
 ```
+
+```bash
+cargo run -- bytecode examples/grade.vyrn
+```
+
+`vyrn parse` prints the syntax tree and `vyrn lex` the tokens.
 
 | Module | Contents |
 |---|---|
@@ -35,3 +41,9 @@ cargo run -- lex examples/inference.vyrn
 | `src/token.rs` | Token, keyword and operator definitions |
 | `src/lexer.rs` | Source text to tokens, with error recovery and rendered diagnostics |
 | `src/ast.rs` | Syntax tree, with empty type and placement slots for semantic analysis |
+| `src/parser.rs` | Recursive-descent parser with error recovery and hints |
+| `src/pretty.rs` | Compact text form of the syntax tree |
+| `src/vm/` | Bytecode compiler, register VM, tensor backends and builtins (see `docs/architecture.md` section 2.4) |
+
+Only `examples/grade.vyrn` runs as is: the other examples call library
+functions (`load_level`, `load_model`, `web.serve`, ...) that do not exist yet.
