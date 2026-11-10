@@ -14,6 +14,7 @@ use std::rc::Rc;
 
 use super::program::Proto;
 use super::tensor::{Device, Tensor};
+use super::tokenizer::Tokenizer;
 
 /// An interned name: a field, method or type name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -80,6 +81,7 @@ pub enum Value {
     Task(Rc<Value>),
     /// A runtime error raised by the VM itself.
     Error(Rc<ErrorValue>),
+    Tokenizer(Rc<Tokenizer>),
     /// An argument the caller left out. Never visible to programs.
     Missing,
 }
@@ -125,6 +127,7 @@ impl Value {
             Value::Iter(_) => "iterator",
             Value::Task(_) => "task",
             Value::Error(_) => "error",
+            Value::Tokenizer(_) => "tokenizer",
             Value::Missing => "missing",
         }
     }

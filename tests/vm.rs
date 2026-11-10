@@ -851,3 +851,79 @@ fn quantized_tensors_are_read_only() {
         "unknown element type `f8`; use f32, f16, bf16, q8 or q4"
     );
 }
+
+// ---- model files, tokenizers, files and JSON --------------------------------
+
+fn fixture(name: &str) -> String {
+    format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
+}
+
+#[test]
+fn loads_safetensors_written_by_the_reference_library() {
+    assert_eq!(
+        main(&format!(
+            "w = load_weights(\"{}\")\n\
+             for name in sorted(w.keys()): print(name, w[name].shape, w[name].dtype, w[name])\n\
+             print(load_weights(\"{}\", q4)[\"layer.0.weight\"].dtype)",
+            fixture("weights.safetensors"),
+            fixture("weights.safetensors")
+        )),
+        "layer.0.bias (4,) f16 tensor([0.5, -1.25, 3.0, 65504.0], dtype=f16)\n\
+         layer.0.weight (2, 3) f32 tensor([[0.0, 0.25, 0.5], [0.75, 1.0, 1.25]])\n\
+         positions (2,) f32 tensor([7.0, -9.0])\n\
+         scale () f32 tensor(2.5)\n\
+         q4\n"
+    );
+}
+
+#[test]
+fn weights_round_trip_through_a_file() {
+    let path = std::env::temp_dir().join(format!("vyrn-test-{}.safetensors", std::process::id()));
+    let path = path.to_string_lossy();
+    assert_eq!(
+        main(&format!(
+            "save_weights(\"{path}\", {{\"w\": tensor([[1.5, -2.0]]), \"h\": tensor([0.1, 7.0], f16), \"b\": tensor([3.0], bf16)}})\n\
+             back = load_weights(\"{path}\")\n\
+             print(back[\"w\"], back[\"h\"], back[\"b\"])\n\
+             try:\n\
+             \x20   save_weights(\"{path}\", {{\"q\": ones(32).to(q4)}})\n\
+             catch IoError as e: print(\"refused\")\n\
+             end"
+        )),
+        "tensor([[1.5, -2.0]]) tensor([0.099975586, 7.0], dtype=f16) tensor([3.0], dtype=bf16)\nrefused\n"
+    );
+    let _ = std::fs::remove_file(&*path);
+}
+
+#[test]
+fn tokenizers_encode_and_decode() {
+    assert_eq!(
+        main(&format!(
+            "tok = load_tokenizer(\"{}\")\n\
+             ids = tok.encode(\"Hello world<|endoftext|>\")\n\
+             print(ids, tok.decode(ids), tok.token_id(\"<|endoftext|>\"), tok.vocab_size)",
+            fixture("tokenizers/gpt2.json")
+        )),
+        "[40, 69, 290, 79, 521, 0] Hello world<|endoftext|> 0 539\n"
+    );
+}
+
+#[test]
+fn files_and_json() {
+    let path = std::env::temp_dir().join(format!("vyrn-test-{}.json", std::process::id()));
+    let path = path.to_string_lossy();
+    assert_eq!(
+        main(&format!(
+            "data = {{\"name\": \"Ada\", \"scores\": [90, 85.5], \"ok\": true, \"none\": none}}\n\
+             write_text(\"{path}\", to_json(data))\n\
+             back = parse_json(read_text(\"{path}\"))\n\
+             print(back, back == data)"
+        )),
+        "{\"name\": \"Ada\", \"scores\": [90, 85.5], \"ok\": true, \"none\": none} true\n"
+    );
+    let _ = std::fs::remove_file(&*path);
+    assert_eq!(
+        runtime_error("main:\n    read_text(\"/no/such/file\")\nend\n").kind,
+        "IoError"
+    );
+}

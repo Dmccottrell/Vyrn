@@ -70,6 +70,13 @@ pub static NATIVES: &[Native] = &[
     fixed("argmax", &["x", "axis"], 1, argmax),
     fixed("tensor", &["data", "dtype"], 1, tensor),
     fixed("memory", &["x"], 1, memory),
+    fixed("load_weights", &["path", "dtype"], 1, load_weights),
+    fixed("save_weights", &["path", "tensors"], 2, save_weights),
+    fixed("load_tokenizer", &["path"], 1, load_tokenizer),
+    fixed("read_text", &["path"], 1, read_text),
+    fixed("write_text", &["path", "text"], 2, write_text),
+    fixed("parse_json", &["text"], 1, parse_json),
+    fixed("to_json", &["value"], 1, to_json),
     variadic("zeros", zeros),
     variadic("ones", ones),
     variadic("rand", rand),
@@ -515,6 +522,85 @@ fn dtype_arg(value: &Value) -> VmResult<DType> {
     })
 }
 
+fn string_arg<'a>(value: &'a Value, what: &str) -> VmResult<&'a str> {
+    match value {
+        Value::Str(s) => Ok(s.as_str()),
+        other => Err(type_error(format!(
+            "{what} must be a string, not {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn io_error(message: String) -> Value {
+    err("IoError", message)
+}
+
+/// `load_weights(path, dtype?)`: the tensors of a safetensors file, as a
+/// map from name to tensor, created on the current device and optionally
+/// converted while loading: `load_weights("model.safetensors", q4)`.
+fn load_weights(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let path = string_arg(&args[0], "the path")?;
+    let dtype = opt(args, 1).map(dtype_arg).transpose()?;
+    let tensors = super::weights::load(path, ctx.current_device(), dtype).map_err(io_error)?;
+    let mut map = Map::default();
+    for (name, tensor) in tensors {
+        let key = Value::str(name);
+        if let Some(hashed) = Key::from_value(&key) {
+            map.insert(hashed, key, Value::tensor(tensor));
+        }
+    }
+    Ok(Value::Map(Rc::new(RefCell::new(map))))
+}
+
+/// `save_weights(path, tensors)`: writes a map of name to tensor.
+fn save_weights(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let path = string_arg(&args[0], "the path")?;
+    let Value::Map(map) = &args[1] else {
+        return Err(type_error("`save_weights` takes a map from name to tensor"));
+    };
+    let map = map.borrow();
+    let mut tensors = Vec::with_capacity(map.len());
+    for (k, v) in map.entries() {
+        match (k, v) {
+            (Value::Str(name), Value::Tensor(t)) => tensors.push(((**name).clone(), &**t)),
+            _ => return Err(type_error("`save_weights` takes a map from name to tensor")),
+        }
+    }
+    super::weights::save(path, &tensors).map_err(io_error)?;
+    Ok(Value::None)
+}
+
+fn load_tokenizer(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let path = string_arg(&args[0], "the path")?;
+    let tokenizer = super::tokenizer::Tokenizer::from_file(path).map_err(io_error)?;
+    Ok(Value::Tokenizer(Rc::new(tokenizer)))
+}
+
+fn read_text(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let path = string_arg(&args[0], "the path")?;
+    std::fs::read_to_string(path)
+        .map(Value::str)
+        .map_err(|e| io_error(format!("cannot read {path}: {e}")))
+}
+
+fn write_text(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let path = string_arg(&args[0], "the path")?;
+    let text = ops::display(&ctx.program, &args[1]);
+    std::fs::write(path, text).map_err(|e| io_error(format!("cannot write {path}: {e}")))?;
+    Ok(Value::None)
+}
+
+fn parse_json(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let text = string_arg(&args[0], "the JSON text")?;
+    let json = super::json::parse(text).map_err(|e| err("ValueError", e))?;
+    Ok(ops::from_json(&json))
+}
+
+fn to_json(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    Ok(Value::str(ops::to_json(&ctx.program, &args[0])))
+}
+
 /// Bytes of tensor memory inside a value.
 fn memory(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     Ok(Value::Int(ops::tensor_bytes(&args[0]) as i64))
@@ -743,6 +829,50 @@ pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value>
                 _ => Err(no_method(receiver, name)),
             }
         }
+        Value::Tokenizer(tokenizer) => match name {
+            "encode" => {
+                arity(1)?;
+                let text = string_arg(&rest[0], "the text")?;
+                Ok(Value::list(
+                    tokenizer
+                        .encode(text)
+                        .into_iter()
+                        .map(|id| Value::Int(i64::from(id)))
+                        .collect(),
+                ))
+            }
+            "decode" => {
+                arity(1)?;
+                let ids = match &rest[0] {
+                    Value::Int(id) => vec![*id],
+                    other => ops::collect(other)?
+                        .iter()
+                        .map(|v| match v {
+                            Value::Int(i) => Ok(*i),
+                            Value::Float(f) if f.fract() == 0.0 => Ok(*f as i64),
+                            other => Err(type_error(format!(
+                                "a token id must be an integer, not {}",
+                                other.type_name()
+                            ))),
+                        })
+                        .collect::<VmResult<_>>()?,
+                };
+                let ids: Vec<u32> = ids
+                    .into_iter()
+                    .filter_map(|i| u32::try_from(i).ok())
+                    .collect();
+                Ok(Value::str(tokenizer.decode(&ids)))
+            }
+            "token_id" => {
+                arity(1)?;
+                let token = string_arg(&rest[0], "the token")?;
+                Ok(tokenizer
+                    .token_id(token)
+                    .map(|id| Value::Int(i64::from(id)))
+                    .unwrap_or(Value::None))
+            }
+            _ => Err(no_method(receiver, name)),
+        },
         Value::Map(map) => match name {
             "keys" => Ok(Value::list(
                 map.borrow()

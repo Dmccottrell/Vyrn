@@ -768,6 +768,11 @@ pub fn get_attr(value: &Value, name: &str) -> VmResult<Value> {
             _ => {}
         }
     }
+    if let Value::Tokenizer(t) = value {
+        if name == "vocab_size" {
+            return Ok(Value::Int(t.vocab_size() as i64));
+        }
+    }
     if let Value::Error(e) = value {
         match name {
             "message" => return Ok(Value::str(e.message.clone())),
@@ -1166,6 +1171,9 @@ fn write_value(program: &Program, value: &Value, quoted: bool, out: &mut String)
             let _ = write!(out, "{}: {}", e.kind, e.message);
         }
         Value::Missing => out.push_str("<missing>"),
+        Value::Tokenizer(t) => {
+            let _ = write!(out, "<tokenizer with {} tokens>", t.vocab_size());
+        }
     }
 }
 
@@ -1187,6 +1195,30 @@ fn write_instance(program: &Program, inst: &Instance, out: &mut String) {
         write_value(program, value, true, out);
     }
     out.push(')');
+}
+
+/// Converts parsed JSON to a value: objects become maps, arrays lists, and
+/// whole numbers integers.
+pub fn from_json(json: &super::json::Json) -> Value {
+    use super::json::Json;
+    match json {
+        Json::Null => Value::None,
+        Json::Bool(b) => Value::Bool(*b),
+        Json::Number(n) if n.fract() == 0.0 && n.abs() < 9.0e15 => Value::Int(*n as i64),
+        Json::Number(n) => Value::Float(*n),
+        Json::String(s) => Value::str(s.clone()),
+        Json::Array(items) => Value::list(items.iter().map(from_json).collect()),
+        Json::Object(entries) => {
+            let mut map = Map::default();
+            for (k, v) in entries {
+                let key = Value::str(k.clone());
+                if let Some(hashed) = Key::from_value(&key) {
+                    map.insert(hashed, key, from_json(v));
+                }
+            }
+            Value::Map(Rc::new(RefCell::new(map)))
+        }
+    }
 }
 
 /// Serializes a value as JSON, the default response format of routes.

@@ -9,12 +9,15 @@
 pub mod builtins;
 pub mod compiler;
 pub mod dtype;
+pub mod json;
 pub mod machine;
 pub mod op;
 pub mod ops;
 pub mod program;
 pub mod tensor;
+pub mod tokenizer;
 pub mod value;
+pub mod weights;
 
 use std::cell::RefCell;
 use std::fmt;
