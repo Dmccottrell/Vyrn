@@ -8,7 +8,10 @@
 //! implements the same trait and is installed with
 //! [`crate::vm::Vm::set_gpu_backend`].
 
+use std::borrow::Cow;
 use std::fmt;
+
+use super::dtype::{DType, Storage};
 
 /// Where a tensor's memory lives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -26,14 +29,15 @@ impl fmt::Display for Device {
     }
 }
 
-/// A dense, row-major tensor of 32-bit floats.
+/// A dense, row-major tensor.
 ///
-/// Declared element types such as `f16` and `bf16` are computed in `f32` by
-/// the interpreter; reduced precision is a concern of the release backend.
+/// Values may be stored as `f32`, `f16`, `bf16`, or block-quantized `q8` and
+/// `q4` (see [`super::dtype`]). Every operation computes in `f32`; results
+/// are `f32` tensors. Lower precision is for weights, to save memory.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tensor {
     pub shape: Vec<usize>,
-    pub data: Vec<f32>,
+    pub storage: Storage,
     pub device: Device,
 }
 
@@ -54,7 +58,7 @@ impl Tensor {
         }
         Ok(Tensor {
             shape,
-            data,
+            storage: Storage::F32(data),
             device,
         })
     }
@@ -63,7 +67,7 @@ impl Tensor {
         let n = shape.iter().product();
         Tensor {
             shape,
-            data: vec![value; n],
+            storage: Storage::F32(vec![value; n]),
             device,
         }
     }
@@ -71,8 +75,59 @@ impl Tensor {
     pub fn scalar(value: f32, device: Device) -> Tensor {
         Tensor {
             shape: Vec::new(),
-            data: vec![value],
+            storage: Storage::F32(vec![value]),
             device,
+        }
+    }
+
+    pub fn dtype(&self) -> DType {
+        self.storage.dtype()
+    }
+
+    /// Number of elements.
+    pub fn numel(&self) -> usize {
+        self.storage.len()
+    }
+
+    /// Bytes of memory the values occupy.
+    pub fn nbytes(&self) -> usize {
+        self.storage.nbytes()
+    }
+
+    /// The values as `f32`, converted if they are stored another way.
+    pub fn values(&self) -> Cow<'_, [f32]> {
+        self.storage.values()
+    }
+
+    pub fn to_vec(&self) -> Vec<f32> {
+        self.values().into_owned()
+    }
+
+    pub fn value(&self, i: usize) -> f32 {
+        self.storage.value(i)
+    }
+
+    /// The values for changing in place. Only `f32` tensors can be changed
+    /// element by element.
+    pub fn data_mut(&mut self) -> Result<&mut Vec<f32>, TensorError> {
+        match &mut self.storage {
+            Storage::F32(v) => Ok(v),
+            other => Err(TensorError::Shape(format!(
+                "a {} tensor cannot be changed element by element; convert it with `.to(f32)` first",
+                other.dtype()
+            ))),
+        }
+    }
+
+    /// The same values stored as `dtype`.
+    pub fn to_dtype(&self, dtype: DType) -> Tensor {
+        if dtype == self.dtype() {
+            return self.clone();
+        }
+        Tensor {
+            shape: self.shape.clone(),
+            storage: Storage::from_f32(self.to_vec(), dtype),
+            device: self.device,
         }
     }
 
@@ -92,8 +147,9 @@ impl Tensor {
         }
         let (rows, cols) = (self.shape[n - 2], self.shape[n - 1]);
         let matrix = rows * cols;
-        let mut data = vec![0.0; self.data.len()];
-        for (batch, chunk) in self.data.chunks(matrix.max(1)).enumerate() {
+        let values = self.values();
+        let mut data = vec![0.0; values.len()];
+        for (batch, chunk) in values.chunks(matrix.max(1)).enumerate() {
             let out = &mut data[batch * matrix..(batch + 1) * matrix];
             for r in 0..rows {
                 for c in 0..cols {
@@ -103,15 +159,30 @@ impl Tensor {
         }
         let mut shape = self.shape.clone();
         shape.swap(n - 2, n - 1);
+        // A transposed matrix of weights keeps its precision.
         Tensor {
             shape,
-            data,
+            storage: Storage::F32(data),
             device: self.device,
         }
+        .to_dtype(self.dtype())
     }
 
+    /// The same values, viewed with another shape. The storage, quantized
+    /// or not, is kept as is.
     pub fn reshape(&self, shape: Vec<usize>) -> Result<Tensor, TensorError> {
-        Tensor::new(shape, self.data.clone(), self.device)
+        let expected: usize = shape.iter().product();
+        if expected != self.numel() {
+            return Err(TensorError::Shape(format!(
+                "cannot reshape {} values into {shape:?}",
+                self.numel()
+            )));
+        }
+        Ok(Tensor {
+            shape,
+            storage: self.storage.clone(),
+            device: self.device,
+        })
     }
 
     /// Selects elements, Python/NumPy style. The result keeps one dimension
@@ -190,7 +261,7 @@ impl Tensor {
                     .enumerate()
                     .map(|(d, &c)| picks[d][c] * strides[d])
                     .sum();
-                data.push(self.data[offset]);
+                data.push(self.storage.value(offset));
                 let mut d = picks.len();
                 while d > 0 {
                     d -= 1;
@@ -224,7 +295,7 @@ impl Tensor {
             })?;
             offset += i * strides[d];
         }
-        self.data[offset] = value;
+        self.data_mut()?[offset] = value;
         Ok(())
     }
 }
@@ -486,20 +557,35 @@ impl TensorBackend for ReferenceBackend {
         let b_offsets = broadcast_offsets(b_batch, &batch);
 
         let mut out = vec![0.0f32; batches * m * n];
+        let a_values = a.values();
+        // Weights stored at lower precision are converted one row at a
+        // time, so a quantized matrix is never expanded in memory.
+        let b_values = match &b.storage {
+            Storage::F32(v) => Some(v.as_slice()),
+            _ => None,
+        };
+        let mut row = vec![0.0f32; if b_values.is_some() { 0 } else { n }];
         for bi in 0..batches {
-            let a_mat = &a.data[a_offsets[bi] * m * k..][..m * k];
-            let b_mat = &b.data[b_offsets[bi] * k * n..][..k * n];
+            let a_mat = &a_values[a_offsets[bi] * m * k..][..m * k];
+            let b_start = b_offsets[bi] * k * n;
             let o_mat = &mut out[bi * m * n..][..m * n];
-            // i-k-j order: the inner loop walks rows of `b` and `out`
-            // contiguously, so it vectorizes and stays in cache.
-            for i in 0..m {
-                let o_row = &mut o_mat[i * n..(i + 1) * n];
-                for p in 0..k {
+            // p-outer order: each row of `b` is read once per batch, and
+            // the inner loop walks rows of `b` and `out` contiguously, so
+            // it vectorizes and stays in cache.
+            for p in 0..k {
+                let b_row: &[f32] = match b_values {
+                    Some(v) => &v[b_start + p * n..][..n],
+                    None => {
+                        b.storage.values_into(b_start + p * n, &mut row);
+                        &row
+                    }
+                };
+                for i in 0..m {
                     let av = a_mat[i * k + p];
                     if av == 0.0 {
                         continue;
                     }
-                    let b_row = &b_mat[p * n..(p + 1) * n];
+                    let o_row = &mut o_mat[i * n..(i + 1) * n];
                     for (o, &bv) in o_row.iter_mut().zip(b_row) {
                         *o += av * bv;
                     }
@@ -532,28 +618,25 @@ impl TensorBackend for ReferenceBackend {
             }
         };
         let device = a.device;
+        let (av, bv) = (a.values(), b.values());
         if a.shape == b.shape {
-            let data = a.data.iter().zip(&b.data).map(|(&x, &y)| f(x, y)).collect();
+            let data = av.iter().zip(bv.iter()).map(|(&x, &y)| f(x, y)).collect();
             return Tensor::new(a.shape.clone(), data, device);
         }
-        if b.data.len() == 1 && b.ndim() <= a.ndim() {
-            let y = b.data[0];
-            let data = a.data.iter().map(|&x| f(x, y)).collect();
+        if bv.len() == 1 && b.ndim() <= a.ndim() {
+            let y = bv[0];
+            let data = av.iter().map(|&x| f(x, y)).collect();
             return Tensor::new(a.shape.clone(), data, device);
         }
-        if a.data.len() == 1 && a.ndim() <= b.ndim() {
-            let x = a.data[0];
-            let data = b.data.iter().map(|&y| f(x, y)).collect();
+        if av.len() == 1 && a.ndim() <= b.ndim() {
+            let x = av[0];
+            let data = bv.iter().map(|&y| f(x, y)).collect();
             return Tensor::new(b.shape.clone(), data, device);
         }
         let shape = broadcast_shapes(&a.shape, &b.shape)?;
         let ao = broadcast_offsets(&a.shape, &shape);
         let bo = broadcast_offsets(&b.shape, &shape);
-        let data = ao
-            .iter()
-            .zip(&bo)
-            .map(|(&i, &j)| f(a.data[i], b.data[j]))
-            .collect();
+        let data = ao.iter().zip(&bo).map(|(&i, &j)| f(av[i], bv[j])).collect();
         Tensor::new(shape, data, device)
     }
 
@@ -569,7 +652,7 @@ impl TensorBackend for ReferenceBackend {
         };
         Tensor {
             shape: a.shape.clone(),
-            data: a.data.iter().map(|&x| f(x)).collect(),
+            storage: Storage::F32(a.values().iter().map(|&x| f(x)).collect()),
             device: a.device,
         }
     }
@@ -601,19 +684,21 @@ impl TensorBackend for ReferenceBackend {
         };
         match axis {
             None => {
-                if a.data.is_empty() && matches!(op, Reduce::Max | Reduce::Min | Reduce::ArgMax) {
+                let values = a.values();
+                if values.is_empty() && matches!(op, Reduce::Max | Reduce::Min | Reduce::ArgMax) {
                     return Err(TensorError::Shape("reduction of an empty tensor".into()));
                 }
-                let value = combine(&mut a.data.iter().copied());
+                let value = combine(&mut values.iter().copied());
                 Ok(Tensor::scalar(value, a.device))
             }
             Some(axis) => {
                 let axis = normalize_axis(axis, a.ndim())?;
                 let (outer, len, inner) = around_axis(&a.shape, axis);
+                let all = a.values();
                 let mut data = Vec::with_capacity(outer * inner);
                 for o in 0..outer {
                     for i in 0..inner {
-                        let mut values = (0..len).map(|j| a.data[(o * len + j) * inner + i]);
+                        let mut values = (0..len).map(|j| all[(o * len + j) * inner + i]);
                         data.push(combine(&mut values));
                     }
                 }
@@ -630,7 +715,7 @@ impl TensorBackend for ReferenceBackend {
         }
         let axis = normalize_axis(axis, a.ndim())?;
         let (outer, len, inner) = around_axis(&a.shape, axis);
-        let mut data = a.data.clone();
+        let mut data = a.to_vec();
         for o in 0..outer {
             for i in 0..inner {
                 let at = |j: usize| (o * len + j) * inner + i;
@@ -672,7 +757,7 @@ mod tests {
         let b = t(&[3, 2], &[7., 8., 9., 10., 11., 12.]);
         let c = ReferenceBackend.matmul(&a, &b).unwrap();
         assert_eq!(c.shape, vec![2, 2]);
-        assert_eq!(c.data, vec![58., 64., 139., 154.]);
+        assert_eq!(c.to_vec(), vec![58., 64., 139., 154.]);
     }
 
     #[test]
@@ -681,15 +766,21 @@ mod tests {
         let w = t(&[2, 2], &[1., 0., 0., 1.]);
         let y = ReferenceBackend.matmul(&x, &w).unwrap();
         assert_eq!(y.shape, vec![2, 1, 2]);
-        assert_eq!(y.data, x.data);
+        assert_eq!(y.to_vec(), x.to_vec());
     }
 
     #[test]
     fn matmul_with_vectors() {
         let m = t(&[2, 2], &[1., 2., 3., 4.]);
         let v = t(&[2], &[1., 1.]);
-        assert_eq!(ReferenceBackend.matmul(&m, &v).unwrap().data, vec![3., 7.]);
-        assert_eq!(ReferenceBackend.matmul(&v, &m).unwrap().data, vec![4., 6.]);
+        assert_eq!(
+            ReferenceBackend.matmul(&m, &v).unwrap().to_vec(),
+            vec![3., 7.]
+        );
+        assert_eq!(
+            ReferenceBackend.matmul(&v, &m).unwrap().to_vec(),
+            vec![4., 6.]
+        );
         assert_eq!(
             ReferenceBackend.matmul(&v, &v).unwrap().shape,
             Vec::<usize>::new()
@@ -711,9 +802,9 @@ mod tests {
         let row = t(&[3], &[10., 20., 30.]);
         let col = t(&[2, 1], &[100., 200.]);
         let r = ReferenceBackend.elementwise(ElemOp::Add, &a, &row).unwrap();
-        assert_eq!(r.data, vec![11., 22., 33., 14., 25., 36.]);
+        assert_eq!(r.to_vec(), vec![11., 22., 33., 14., 25., 36.]);
         let c = ReferenceBackend.elementwise(ElemOp::Add, &a, &col).unwrap();
-        assert_eq!(c.data, vec![101., 102., 103., 204., 205., 206.]);
+        assert_eq!(c.to_vec(), vec![101., 102., 103., 204., 205., 206.]);
         assert!(broadcast_shapes(&[2, 3], &[2]).is_err());
     }
 
@@ -721,9 +812,12 @@ mod tests {
     fn selection() {
         let a = t(&[2, 3], &[1., 2., 3., 4., 5., 6.]);
         let last_col = a.select(&[Sub::full(), Sub::Index(-1)]).unwrap();
-        assert_eq!((last_col.shape, last_col.data), (vec![2], vec![3., 6.]));
+        assert_eq!(
+            (last_col.shape.clone(), last_col.to_vec()),
+            (vec![2], vec![3., 6.])
+        );
         let row = a.select(&[Sub::Index(1)]).unwrap();
-        assert_eq!(row.data, vec![4., 5., 6.]);
+        assert_eq!(row.to_vec(), vec![4., 5., 6.]);
         let reversed = a
             .select(&[
                 Sub::Ellipsis,
@@ -734,37 +828,40 @@ mod tests {
                 },
             ])
             .unwrap();
-        assert_eq!(reversed.data, vec![3., 2., 1., 6., 5., 4.]);
+        assert_eq!(reversed.to_vec(), vec![3., 2., 1., 6., 5., 4.]);
         let expanded = a.select(&[Sub::NewAxis]).unwrap();
         assert_eq!(expanded.shape, vec![1, 2, 3]);
         let scalar = a.select(&[Sub::Index(0), Sub::Index(2)]).unwrap();
-        assert_eq!((scalar.shape.len(), scalar.data[0]), (0, 3.));
+        assert_eq!((scalar.shape.len(), scalar.value(0)), (0, 3.));
     }
 
     #[test]
     fn reductions_and_softmax() {
         let a = t(&[2, 2], &[1., 5., 3., 2.]);
         assert_eq!(
-            ReferenceBackend.reduce(Reduce::Sum, &a, None).unwrap().data,
+            ReferenceBackend
+                .reduce(Reduce::Sum, &a, None)
+                .unwrap()
+                .to_vec(),
             vec![11.]
         );
         assert_eq!(
             ReferenceBackend
                 .reduce(Reduce::Sum, &a, Some(0))
                 .unwrap()
-                .data,
+                .to_vec(),
             vec![4., 7.]
         );
         assert_eq!(
             ReferenceBackend
                 .reduce(Reduce::ArgMax, &a, Some(-1))
                 .unwrap()
-                .data,
+                .to_vec(),
             vec![1., 0.]
         );
         let s = ReferenceBackend.softmax(&a, -1).unwrap();
-        assert!((s.data[0] + s.data[1] - 1.0).abs() < 1e-6);
-        assert!(s.data[1] > s.data[0]);
+        assert!((s.value(0) + s.value(1) - 1.0).abs() < 1e-6);
+        assert!(s.value(1) > s.value(0));
     }
 
     #[test]
@@ -772,7 +869,32 @@ mod tests {
         let a = t(&[2, 3], &[1., 2., 3., 4., 5., 6.]);
         let at = a.transpose();
         assert_eq!(at.shape, vec![3, 2]);
-        assert_eq!(at.data, vec![1., 4., 2., 5., 3., 6.]);
+        assert_eq!(at.to_vec(), vec![1., 4., 2., 5., 3., 6.]);
+    }
+
+    #[test]
+    fn matmul_with_quantized_weights() {
+        let x: Vec<f32> = (0..2 * 64).map(|i| (i % 7) as f32 / 7.0 - 0.4).collect();
+        let w: Vec<f32> = (0..64 * 48)
+            .map(|i| ((i * 13) % 17) as f32 / 17.0 - 0.5)
+            .collect();
+        let x = t(&[2, 64], &x);
+        let w = t(&[64, 48], &w);
+        let exact = ReferenceBackend.matmul(&x, &w).unwrap().to_vec();
+        for (dtype, tolerance) in [
+            (DType::F16, 0.01),
+            (DType::BF16, 0.1),
+            (DType::Q8, 0.1),
+            (DType::Q4, 1.0),
+        ] {
+            let packed = w.to_dtype(dtype);
+            assert!(packed.nbytes() < w.nbytes());
+            let approx = ReferenceBackend.matmul(&x, &packed).unwrap();
+            assert_eq!(approx.dtype(), DType::F32);
+            for (e, a) in exact.iter().zip(approx.values().iter()) {
+                assert!((e - a).abs() < tolerance, "{dtype}: {e} vs {a}");
+            }
+        }
     }
 
     #[test]

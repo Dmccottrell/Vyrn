@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 use std::io::Write;
 use std::rc::Rc;
 
+use super::dtype::{DType, Storage};
 use super::program::{Program, TypeKind};
 use super::tensor::{
     normalize_index, slice_indices, widen, Device, ElemOp, MapOp, Sub, Tensor, TensorBackend,
@@ -348,7 +349,7 @@ pub fn equals(a: &Value, b: &Value) -> bool {
         }
         (Value::Object(x), Value::Object(y)) => Rc::ptr_eq(x, y),
         (Value::Range(x), Value::Range(y)) => x == y,
-        (Value::Tensor(x), Value::Tensor(y)) => x.shape == y.shape && x.data == y.data,
+        (Value::Tensor(x), Value::Tensor(y)) => x.shape == y.shape && x.values() == y.values(),
         (Value::Device(x), Value::Device(y)) => x == y,
         (Value::Type(x), Value::Type(y)) => x == y,
         (Value::Function(x), Value::Function(y)) => Rc::ptr_eq(x, y),
@@ -649,7 +650,7 @@ pub fn get_index(ctx: &mut Ctx, obj: &Value, index: &Value) -> VmResult<Value> {
         Value::Tensor(t) => {
             let selected = t.select(&tensor_subs(index)?).map_err(tensor_error)?;
             Ok(if selected.shape.is_empty() {
-                Value::Float(widen(selected.data[0]))
+                Value::Float(widen(selected.value(0)))
             } else {
                 Value::tensor(selected)
             })
@@ -735,7 +736,7 @@ pub fn get_attr(value: &Value, name: &str) -> VmResult<Value> {
     if let Value::Tensor(t) = value {
         let component = |i: usize| -> VmResult<Value> {
             if t.ndim() == 1 && i < t.shape[0] && t.shape[0] <= 4 {
-                Ok(Value::Float(widen(t.data[i])))
+                Ok(Value::Float(widen(t.value(i))))
             } else {
                 Err(err(
                     "FieldError",
@@ -750,6 +751,8 @@ pub fn get_attr(value: &Value, name: &str) -> VmResult<Value> {
             )),
             "ndim" => Ok(Value::Int(t.ndim() as i64)),
             "device" => Ok(Value::Device(t.device)),
+            "dtype" => Ok(Value::str(t.dtype().name())),
+            "nbytes" => Ok(Value::Int(t.nbytes() as i64)),
             "x" => component(0),
             "y" => component(1),
             "z" => component(2),
@@ -804,7 +807,7 @@ pub fn set_attr(value: &mut Value, name: &str, new: Value) -> VmResult<()> {
                 format!("`.{name}` needs a vector of up to 4 elements"),
             ));
         }
-        Rc::make_mut(t).data[slot] = number as f32;
+        Rc::make_mut(t).data_mut().map_err(tensor_error)?[slot] = number as f32;
         return Ok(());
     }
     Err(err(
@@ -858,20 +861,41 @@ pub fn make_iter(value: &Value) -> VmResult<Value> {
 
 /// The elements along a tensor's first dimension.
 pub fn tensor_rows(t: &Tensor) -> Vec<Value> {
+    let values = t.values();
     if t.ndim() <= 1 {
-        return t.data.iter().map(|&x| Value::Float(widen(x))).collect();
+        return values.iter().map(|&x| Value::Float(widen(x))).collect();
     }
     let row: usize = t.shape[1..].iter().product();
-    t.data
+    values
         .chunks(row.max(1))
         .map(|chunk| {
             Value::tensor(Tensor {
                 shape: t.shape[1..].to_vec(),
-                data: chunk.to_vec(),
+                storage: Storage::F32(chunk.to_vec()),
                 device: t.device,
             })
         })
         .collect()
+}
+
+/// Bytes of tensor memory a value holds, counting every tensor inside
+/// lists, tuples, maps and fields. Tensors shared between places are
+/// counted each time they appear.
+pub fn tensor_bytes(value: &Value) -> usize {
+    match value {
+        Value::Tensor(t) => t.nbytes(),
+        Value::List(items) => items.borrow().iter().map(tensor_bytes).sum(),
+        Value::Tuple(items) => items.iter().map(tensor_bytes).sum(),
+        Value::Map(map) => map
+            .borrow()
+            .entries()
+            .iter()
+            .map(|(_, v)| tensor_bytes(v))
+            .sum(),
+        Value::Struct(inst) => inst.fields.iter().map(tensor_bytes).sum(),
+        Value::Object(obj) => obj.borrow().fields.iter().map(tensor_bytes).sum(),
+        _ => 0,
+    }
 }
 
 /// Collects any iterable into a vector.
@@ -1039,7 +1063,7 @@ fn write_seq(program: &Program, items: &[Value], open: &str, close: &str, out: &
 
 fn write_tensor_data(t: &Tensor, dim: usize, offset: usize, out: &mut String) {
     if dim == t.ndim() {
-        out.push_str(&fmt_float(widen(t.data[offset])));
+        out.push_str(&fmt_float(widen(t.value(offset))));
         return;
     }
     let stride: usize = t.shape[dim + 1..].iter().product();
@@ -1114,10 +1138,13 @@ fn write_value(program: &Program, value: &Value, quoted: bool, out: &mut String)
         }
         Value::Tensor(t) => {
             out.push_str("tensor(");
-            if t.data.len() > 1000 {
+            if t.numel() > 1000 {
                 let _ = write!(out, "shape={:?}", t.shape);
             } else {
                 write_tensor_data(t, 0, 0, out);
+            }
+            if t.dtype() != DType::F32 {
+                let _ = write!(out, ", dtype={}", t.dtype());
             }
             if t.device != Device::Cpu {
                 let _ = write!(out, ", device={}", t.device);

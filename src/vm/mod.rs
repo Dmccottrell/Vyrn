@@ -8,6 +8,7 @@
 
 pub mod builtins;
 pub mod compiler;
+pub mod dtype;
 pub mod machine;
 pub mod op;
 pub mod ops;

@@ -816,3 +816,38 @@ fn main_receives_command_line_arguments() {
         .unwrap();
     assert_eq!(out.text(), "2 hello\n");
 }
+
+// ---- element types ----------------------------------------------------------
+
+#[test]
+fn tensors_store_lower_precision_weights() {
+    assert_eq!(
+        main(
+            "w = ones(64, 64)\n\
+             for dtype in [f32, f16, bf16, q8, q4]:\n\
+             \x20   packed = w.to(dtype)\n\
+             \x20   print(packed.dtype, packed.nbytes, (ones(1, 64) @ packed).sum())\n\
+             end\n\
+             print(tensor([0.5, 1.5], f16), tensor([1, 2]).dtype)\n\
+             print(memory([w, w.to(q4), \"not a tensor\"]))"
+        ),
+        "f32 16384 4096.0\n\
+         f16 8192 4096.0\n\
+         bf16 8192 4096.0\n\
+         q8 4352 4095.75\n\
+         q4 2304 4096.0\n\
+         tensor([0.5, 1.5], dtype=f16) f32\n\
+         18688\n"
+    );
+}
+
+#[test]
+fn quantized_tensors_are_read_only() {
+    let e = runtime_error("main:\n    v = vec3(1.0, 2.0, 3.0).to(q8)\n    v.x = 5.0\nend\n");
+    assert_eq!(e.kind, "ShapeError");
+    assert!(e.message.contains(".to(f32)"));
+    assert_eq!(
+        runtime_error("main:\n    x = ones(2).to(\"f8\")\nend\n").message,
+        "unknown element type `f8`; use f32, f16, bf16, q8 or q4"
+    );
+}

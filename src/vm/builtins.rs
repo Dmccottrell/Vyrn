@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
 
+use super::dtype::DType;
 use super::ops::{self, err, type_error, Ctx, VmResult};
 use super::tensor::{widen, Device, MapOp, Reduce, Tensor};
 use super::value::{Key, Map, Value};
@@ -67,7 +68,8 @@ pub static NATIVES: &[Native] = &[
     fixed("gelu", &["x"], 1, gelu),
     fixed("softmax", &["x", "axis"], 1, softmax),
     fixed("argmax", &["x", "axis"], 1, argmax),
-    fixed("tensor", &["data"], 1, tensor),
+    fixed("tensor", &["data", "dtype"], 1, tensor),
+    fixed("memory", &["x"], 1, memory),
     variadic("zeros", zeros),
     variadic("ones", ones),
     variadic("rand", rand),
@@ -92,6 +94,9 @@ pub fn constant(name: &str) -> Option<Value> {
         "cpu" => Some(Value::Device(Device::Cpu)),
         "gpu" => Some(Value::Gpus),
         "pi" => Some(Value::Float(std::f64::consts::PI)),
+        // Element types are values, so they can be passed around:
+        // `w.to(q4)`, `tensor(data, f16)`.
+        "f32" | "f16" | "bf16" | "q8" | "q4" => Some(Value::str(name)),
         _ => None,
     }
 }
@@ -272,7 +277,7 @@ fn reduce_scalar(t: &Tensor, op: Reduce) -> VmResult<Value> {
     let r = ReferenceBackend
         .reduce(op, t, None)
         .map_err(ops::tensor_error)?;
-    Ok(Value::Float(widen(r.data[0])))
+    Ok(Value::Float(widen(r.value(0))))
 }
 
 fn sum(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
@@ -281,7 +286,7 @@ fn sum(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
             .backend(t.device)
             .reduce(Reduce::Sum, t, None)
             .map_err(ops::tensor_error)?;
-        return Ok(Value::Float(widen(r.data[0])));
+        return Ok(Value::Float(widen(r.value(0))));
     }
     let mut total = Value::Int(0);
     for item in ops::collect(&args[0])? {
@@ -430,7 +435,7 @@ fn argmax(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         .reduce(Reduce::ArgMax, t, axis)
         .map_err(ops::tensor_error)?;
     Ok(if r.shape.is_empty() {
-        Value::Int(r.data[0] as i64)
+        Value::Int(r.value(0) as i64)
     } else {
         Value::tensor(r)
     })
@@ -451,7 +456,7 @@ fn flatten_into(
             if shape.len() == depth {
                 shape.extend_from_slice(&t.shape);
             }
-            data.extend_from_slice(&t.data);
+            data.extend_from_slice(&t.values());
             return Ok(());
         }
         other => {
@@ -484,9 +489,35 @@ fn tensor(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let mut data = Vec::new();
     flatten_into(&args[0], 0, &mut shape, &mut data)?;
     let device = ctx.current_device();
-    Tensor::new(shape, data, device)
-        .map(Value::tensor)
-        .map_err(ops::tensor_error)
+    let t = Tensor::new(shape, data, device).map_err(ops::tensor_error)?;
+    Ok(Value::tensor(match opt(args, 1) {
+        Some(dtype) => t.to_dtype(dtype_arg(dtype)?),
+        None => t,
+    }))
+}
+
+/// An element type given as `f16`, `q4` and so on.
+fn dtype_arg(value: &Value) -> VmResult<DType> {
+    let name = match value {
+        Value::Str(s) => s.as_str(),
+        other => {
+            return Err(type_error(format!(
+                "expected an element type such as `f16` or `q4`, not {}",
+                other.type_name()
+            )))
+        }
+    };
+    DType::from_name(name).ok_or_else(|| {
+        err(
+            "ValueError",
+            format!("unknown element type `{name}`; use f32, f16, bf16, q8 or q4"),
+        )
+    })
+}
+
+/// Bytes of tensor memory inside a value.
+fn memory(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    Ok(Value::Int(ops::tensor_bytes(&args[0]) as i64))
 }
 
 fn zeros(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
@@ -519,21 +550,21 @@ fn arange(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let n = usize::try_from(integer(&args[0], "`n`")?)
         .map_err(|_| err("ValueError", "`arange` needs a non-negative length"))?;
     let device = ctx.current_device();
-    Ok(Value::tensor(Tensor {
-        shape: vec![n],
-        data: (0..n).map(|i| i as f32).collect(),
-        device,
-    }))
+    Tensor::new(vec![n], (0..n).map(|i| i as f32).collect(), device)
+        .map(Value::tensor)
+        .map_err(ops::tensor_error)
 }
 
 fn eye(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let n = usize::try_from(integer(&args[0], "`n`")?)
         .map_err(|_| err("ValueError", "`eye` needs a non-negative size"))?;
-    let mut t = Tensor::filled(vec![n, n], 0.0, ctx.current_device());
+    let mut data = vec![0.0; n * n];
     for i in 0..n {
-        t.data[i * n + i] = 1.0;
+        data[i * n + i] = 1.0;
     }
-    Ok(Value::tensor(t))
+    Tensor::new(vec![n, n], data, ctx.current_device())
+        .map(Value::tensor)
+        .map_err(ops::tensor_error)
 }
 
 fn vector(ctx: &mut Ctx, args: &[Value], n: usize) -> VmResult<Value> {
@@ -547,11 +578,9 @@ fn vector(ctx: &mut Ctx, args: &[Value], n: usize) -> VmResult<Value> {
         .iter()
         .map(|v| number(v, "a vector component").map(|x| x as f32))
         .collect::<VmResult<_>>()?;
-    Ok(Value::tensor(Tensor {
-        shape: vec![n],
-        data,
-        device: ctx.current_device(),
-    }))
+    Tensor::new(vec![n], data, ctx.current_device())
+        .map(Value::tensor)
+        .map_err(ops::tensor_error)
 }
 
 fn vec2(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
@@ -759,9 +788,9 @@ pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value>
                     .map_err(ops::tensor_error)?;
                 Ok(if r.shape.is_empty() {
                     if op == Reduce::ArgMax {
-                        Value::Int(r.data[0] as i64)
+                        Value::Int(r.value(0) as i64)
                     } else {
-                        Value::Float(widen(r.data[0]))
+                        Value::Float(widen(r.value(0)))
                     }
                 } else {
                     Value::tensor(r)
@@ -775,21 +804,26 @@ pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value>
                 "argmax" => backend_reduce(ctx, Reduce::ArgMax),
                 "length" => {
                     arity(0)?;
-                    let squares: f32 = t.data.iter().map(|x| x * x).sum();
+                    let squares: f32 = t.values().iter().map(|x| x * x).sum();
                     Ok(Value::Float(widen(squares.sqrt())))
                 }
                 "reshape" => t
                     .reshape(dims(rest)?)
                     .map(Value::tensor)
                     .map_err(ops::tensor_error),
+                "to" => {
+                    arity(1)?;
+                    let dtype = dtype_arg(&rest[0])?;
+                    Ok(Value::tensor(t.to_dtype(dtype)))
+                }
                 "tolist" => {
                     arity(0)?;
                     Ok(tensor_to_list(t, 0, 0))
                 }
                 "item" => {
                     arity(0)?;
-                    if t.data.len() == 1 {
-                        Ok(Value::Float(widen(t.data[0])))
+                    if t.numel() == 1 {
+                        Ok(Value::Float(widen(t.value(0))))
                     } else {
                         Err(err(
                             "ValueError",
@@ -806,7 +840,7 @@ pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value>
 
 fn tensor_to_list(t: &Tensor, dim: usize, offset: usize) -> Value {
     if dim == t.ndim() {
-        return Value::Float(widen(t.data[offset]));
+        return Value::Float(widen(t.value(offset)));
     }
     let stride: usize = t.shape[dim + 1..].iter().product();
     Value::list(
