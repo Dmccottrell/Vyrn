@@ -7,6 +7,7 @@
 //! - [`value`], [`program`], [`ops`], [`builtins`]: runtime support
 
 pub mod builtins;
+pub mod clock;
 pub mod compiler;
 pub mod dtype;
 pub mod json;
@@ -18,6 +19,7 @@ pub mod task;
 pub mod tensor;
 pub mod tokenizer;
 pub mod value;
+pub mod web;
 pub mod weights;
 
 use std::cell::RefCell;

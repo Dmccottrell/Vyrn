@@ -82,6 +82,8 @@ pub enum Value {
     Task(Rc<TaskHandle>),
     /// A queue between tasks.
     Channel(Rc<RefCell<Channel>>),
+    /// A game loop's frame clock.
+    Clock(Rc<RefCell<super::clock::Clock>>),
     /// A runtime error raised by the VM itself.
     Error(Rc<ErrorValue>),
     Tokenizer(Rc<Tokenizer>),
@@ -133,6 +135,7 @@ impl Value {
             Value::Iter(_) => "iterator",
             Value::Task(_) => "task",
             Value::Channel(_) => "channel",
+            Value::Clock(_) => "Clock",
             Value::Error(_) => "error",
             Value::Tokenizer(_) => "tokenizer",
             Value::Cell(_) => "cell",

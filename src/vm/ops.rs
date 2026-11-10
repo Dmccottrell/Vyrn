@@ -49,6 +49,13 @@ pub struct Ctx {
     pub wakeups: Vec<super::task::TaskId>,
     /// The next task id to hand out.
     pub next_task: super::task::TaskId,
+    /// Servers started by `web.serve`.
+    pub servers: Vec<super::web::Server>,
+    /// Values route handlers receive by parameter name (`web.provide`).
+    pub providers: std::collections::HashMap<String, Value>,
+    /// Set by a builtin that blocks, such as `web.serve`: the calling task
+    /// waits for this task before continuing.
+    pub block_on: Option<Rc<super::task::TaskHandle>>,
 }
 
 impl Ctx {
@@ -758,6 +765,19 @@ pub fn set_index(obj: &mut Value, index: &Value, value: Value) -> VmResult<()> {
 
 /// Fields of builtin values: `t.T`, `t.shape`, `v.x` and so on.
 pub fn get_attr(value: &Value, name: &str) -> VmResult<Value> {
+    if let Value::Clock(clock) = value {
+        let c = clock.borrow();
+        return match name {
+            "running" => Ok(Value::Bool(c.running())),
+            "frame" => Ok(Value::Int(c.frame as i64)),
+            "hz" => Ok(Value::Float(c.hz)),
+            "dt" => Ok(Value::Float(c.step())),
+            "real_dt" => Ok(Value::Float(c.real_dt)),
+            "elapsed" => Ok(Value::Float(c.elapsed())),
+            "fps" => Ok(Value::Float(c.fps())),
+            _ => Err(err("FieldError", format!("a Clock has no field `{name}`"))),
+        };
+    }
     if let Value::Tensor(t) = value {
         let component = |i: usize| -> VmResult<Value> {
             if t.ndim() == 1 && i < t.shape[0] && t.shape[0] <= 4 {
@@ -1197,6 +1217,10 @@ fn write_value(program: &Program, value: &Value, quoted: bool, out: &mut String)
         }
         Value::Channel(c) => {
             let _ = write!(out, "<channel with {} waiting>", c.borrow().queue.len());
+        }
+        Value::Clock(c) => {
+            let c = c.borrow();
+            let _ = write!(out, "<Clock {} Hz, frame {}>", c.hz, c.frame);
         }
         Value::Error(e) => {
             let _ = write!(out, "{}: {}", e.kind, e.message);

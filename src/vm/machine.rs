@@ -21,10 +21,11 @@ use std::rc::Rc;
 use super::builtins;
 use super::op::Op;
 use super::ops::{self, err, type_error, Arith, Cmp, Ctx, VmResult};
-use super::program::{Capture, GlobalInit, ParamSource, Program, TypeKind};
+use super::program::{Capture, GlobalInit, ParamSource, Program, RouteParam, TypeKind};
 use super::task::{TaskHandle, TaskId, ROOT_TASK};
 use super::tensor::{ReferenceBackend, TensorBackend};
 use super::value::{Closure, Instance, Symbol, Value};
+use super::web;
 use crate::ast::{HttpMethod, PathSegment};
 
 /// Calls nested deeper than this fail with `StackOverflow`.
@@ -124,6 +125,9 @@ struct Suspended {
     handle: Option<Rc<TaskHandle>>,
 }
 
+/// A route handler and the arguments for one request.
+type RouteCall = (Rc<Closure>, Vec<Value>);
+
 /// How `await` came out.
 enum Awaited {
     Ready(Value),
@@ -192,6 +196,9 @@ impl Vm {
             timers: Vec::new(),
             wakeups: Vec::new(),
             next_task: super::task::ROOT_TASK,
+            servers: Vec::new(),
+            providers: HashMap::new(),
+            block_on: None,
         };
         Vm {
             program,
@@ -263,6 +270,7 @@ impl Vm {
         self.ready.clear();
         self.ctx.timers.clear();
         self.ctx.wakeups.clear();
+        self.ctx.servers.clear();
     }
 
     /// Runs tasks left by earlier calls until none can make progress, for
@@ -272,6 +280,19 @@ impl Vm {
             self.ready.extend(self.ctx.wakeups.drain(..));
             self.fire_timers();
             if self.ready.is_empty() {
+                if let Some(server) = self.ctx.servers.first() {
+                    // Serve until that server stops.
+                    let handle = server.handle.clone();
+                    handle.waiters.borrow_mut().push(self.current);
+                    let root = self.current;
+                    let saved = self.save_current();
+                    self.suspended.insert(root, saved);
+                    self.resume_next()?;
+                    if self.current != root {
+                        self.execute(root)?;
+                    }
+                    continue;
+                }
                 let Some(when) = self.ctx.timers.iter().map(|(t, _)| *t).min() else {
                     // Tasks still suspended wait on something only the host
                     // can provide; they stay until then.
@@ -319,46 +340,71 @@ impl Vm {
         providers: &HashMap<String, Value>,
     ) -> Result<Option<Value>, RuntimeError> {
         self.init()?;
-        let program = self.program.clone();
-        for route in &program.routes {
+        match self.resolve_route(method, path, &HashMap::new(), providers, None)? {
+            Some((handler, args)) => self.call_value(Value::Function(handler), args).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Finds the route for a request and builds its arguments. Path
+    /// parameters are converted to their declared types. Every other
+    /// parameter comes from the query string, then `body` from the request
+    /// body, then `providers`.
+    fn resolve_route(
+        &self,
+        method: HttpMethod,
+        path: &str,
+        query: &HashMap<String, String>,
+        providers: &HashMap<String, Value>,
+        body: Option<&Value>,
+    ) -> Result<Option<RouteCall>, RuntimeError> {
+        for route in &self.program.routes {
             if route.method != method {
                 continue;
             }
             let Some(captured) = match_path(&route.segments, path) else {
                 continue;
             };
+            let convert = |text: &str, param: &RouteParam, what: &str| {
+                convert_path_param(text, param.ty.as_deref()).ok_or_else(|| {
+                    RuntimeError::new(
+                        "BadRequest",
+                        format!(
+                            "{what} `{}` must be {}, got {text:?}",
+                            param.name,
+                            param.ty.as_deref().unwrap_or("text")
+                        ),
+                    )
+                })
+            };
             let mut args = Vec::with_capacity(route.params.len());
             for param in &route.params {
                 let value = match param.source {
                     ParamSource::Path => {
                         let text = captured.get(&param.name).cloned().unwrap_or_default();
-                        convert_path_param(&text, param.ty.as_deref()).ok_or_else(|| {
-                            RuntimeError::new(
-                                "BadRequest",
-                                format!(
-                                    "path parameter `{}` must be {}, got {text:?}",
-                                    param.name,
-                                    param.ty.as_deref().unwrap_or("text")
-                                ),
-                            )
-                        })?
+                        convert(&text, param, "path parameter")?
                     }
                     ParamSource::Provided => {
-                        providers.get(&param.name).cloned().ok_or_else(|| {
-                            RuntimeError::new(
-                                "MissingProvider",
-                                format!(
-                                    "the route needs a value for `{}`; pass it in `providers`",
-                                    param.name
-                                ),
-                            )
-                        })?
+                        if let Some(text) = query.get(&param.name) {
+                            convert(text, param, "query parameter")?
+                        } else if let (Some(body), "body") = (body, param.name.as_str()) {
+                            body.clone()
+                        } else {
+                            providers.get(&param.name).cloned().ok_or_else(|| {
+                                RuntimeError::new(
+                                    "MissingProvider",
+                                    format!(
+                                        "the route needs a value for `{}`; pass it as a query parameter or with `web.provide`",
+                                        param.name
+                                    ),
+                                )
+                            })?
+                        }
                     }
                 };
                 args.push(value);
             }
-            let handler = Value::Function(self.functions[route.proto].clone());
-            return self.call_value(handler, args).map(Some);
+            return Ok(Some((self.functions[route.proto].clone(), args)));
         }
         Ok(None)
     }
@@ -392,8 +438,14 @@ impl Vm {
                 Ok(()) => self.execute(root),
                 Err(e) => Err(self.runtime_error(e)),
             },
-            Value::Native(id) => builtins::call(id, &mut self.ctx, &self.stack[slot + 1..])
-                .map_err(|e| self.runtime_error(e)),
+            Value::Native(id) => {
+                let result = builtins::call(id, &mut self.ctx, &self.stack[slot + 1..])
+                    .map_err(|e| self.runtime_error(e));
+                // Nothing at host level can wait; `run_pending` drives a
+                // server started this way.
+                self.ctx.block_on = None;
+                result
+            }
             other => Err(RuntimeError::new(
                 "TypeError",
                 format!("{} is not callable", other.type_name()),
@@ -502,6 +554,9 @@ impl Vm {
         loop {
             self.ready.extend(self.ctx.wakeups.drain(..));
             self.fire_timers();
+            if !self.ctx.servers.is_empty() {
+                self.service_servers();
+            }
             while let Some(id) = self.ready.pop_front() {
                 if let Some(state) = self.suspended.remove(&id) {
                     self.load(id, state);
@@ -509,6 +564,15 @@ impl Vm {
                 }
             }
             let next_timer = self.ctx.timers.iter().map(|(t, _)| *t).min();
+            if self.ctx.servers.iter().any(|s| s.accepting()) {
+                // Wait for a connection, or for the next timer if sooner.
+                let mut wait = std::time::Duration::from_millis(2);
+                if let Some(when) = next_timer {
+                    wait = wait.min(when.saturating_duration_since(std::time::Instant::now()));
+                }
+                std::thread::sleep(wait);
+                continue;
+            }
             match next_timer {
                 Some(when) => {
                     let now = std::time::Instant::now();
@@ -530,6 +594,169 @@ impl Vm {
                     error.trace = self.trace();
                     return Err(error);
                 }
+            }
+        }
+    }
+
+    /// Sends the responses of finished handlers, starts a task for each
+    /// new request, and stops servers that are done. The current task's
+    /// state must already be saved, as for `resume_next`.
+    fn service_servers(&mut self) {
+        let mut servers = std::mem::take(&mut self.ctx.servers);
+        for server in &mut servers {
+            let mut i = 0;
+            while i < server.pending.len() {
+                if server.pending[i].0.is_done() {
+                    let (handle, mut stream) = server.pending.swap_remove(i);
+                    let result = handle.result.borrow().clone();
+                    if let Some(result) = result {
+                        self.response_for(result).write_to(&mut stream);
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            if !server.accepting() {
+                continue;
+            }
+            for mut stream in web::accept_ready(&server.listener, server.remaining) {
+                if let Some(n) = &mut server.remaining {
+                    *n -= 1;
+                }
+                match self.start_request(&mut stream) {
+                    Ok(handle) => server.pending.push((handle, stream)),
+                    Err(response) => response.write_to(&mut stream),
+                }
+            }
+        }
+        servers.retain(|server| {
+            if server.finished() {
+                let waiters = server.handle.finish(Ok(Value::None));
+                self.ready.extend(waiters);
+                false
+            } else {
+                true
+            }
+        });
+        // Servers started by the handlers just run come after these.
+        servers.append(&mut self.ctx.servers);
+        self.ctx.servers = servers;
+    }
+
+    /// Reads a request and starts its handler as a task, or returns the
+    /// response to send at once.
+    fn start_request(
+        &mut self,
+        stream: &mut std::net::TcpStream,
+    ) -> Result<Rc<TaskHandle>, web::Response> {
+        let request =
+            web::read_request(stream).map_err(|e| web::Response::error(400, "BadRequest", &e))?;
+        let Some(method) = HttpMethod::from_ident(&request.method) else {
+            return Err(web::Response::error(
+                405,
+                "MethodNotAllowed",
+                &format!("unknown method {}", request.method),
+            ));
+        };
+        let body = if request.body.is_empty() {
+            None
+        } else {
+            let text = String::from_utf8_lossy(&request.body).into_owned();
+            let is_json = request
+                .headers
+                .get("content-type")
+                .is_some_and(|t| t.contains("json"));
+            Some(match super::json::parse(&text) {
+                Ok(json) => ops::from_json(&json),
+                Err(e) if is_json => {
+                    return Err(web::Response::error(
+                        400,
+                        "BadRequest",
+                        &format!("invalid JSON: {e}"),
+                    ))
+                }
+                Err(_) => Value::str(text),
+            })
+        };
+        let resolved = self
+            .resolve_route(
+                method,
+                &request.path,
+                &request.query,
+                &self.ctx.providers,
+                body.as_ref(),
+            )
+            .map_err(|e| web::Response::error(web::status_for(&e.kind), &e.kind, &e.message))?;
+        let Some((handler, args)) = resolved else {
+            return Err(web::Response::error(
+                404,
+                "NotFound",
+                &format!("no route for {} {}", request.method, request.path),
+            ));
+        };
+        let id = self.ctx.new_task_id();
+        let handle = Rc::new(TaskHandle::new(id, handler.proto.name.clone()));
+        // The server reports the outcome, so it never goes unobserved.
+        handle.observed.set(true);
+        let argc = args.len();
+        let mut stack = Vec::with_capacity(argc + handler.proto.num_regs + 1);
+        stack.push(Value::Function(handler.clone()));
+        stack.extend(args);
+        self.load(
+            id,
+            Suspended {
+                stack,
+                frames: Vec::new(),
+                handlers: Vec::new(),
+                devices: Vec::new(),
+                entry_depth: 1,
+                handle: Some(handle.clone()),
+            },
+        );
+        let pushed = self.push_frame(handler, 0, 1, argc);
+        let state = self.save_current();
+        match pushed {
+            Ok(()) => {
+                self.suspended.insert(id, state);
+                self.ready.push_back(id);
+                Ok(handle)
+            }
+            Err(e) => {
+                let e = self.runtime_error(e);
+                Err(web::Response::error(500, &e.kind, &e.message))
+            }
+        }
+    }
+
+    /// The response for what a route handler returned or raised.
+    fn response_for(&self, result: Result<Value, Value>) -> web::Response {
+        match result {
+            Ok(value) => {
+                let (status, body) = match &value {
+                    Value::Tuple(items) if items.len() == 2 => match &items[0] {
+                        Value::Int(code) if (100..600).contains(code) => {
+                            (*code as u16, items[1].clone())
+                        }
+                        _ => (200, value.clone()),
+                    },
+                    _ => (200, value.clone()),
+                };
+                match body {
+                    Value::None => {
+                        web::Response::text(if status == 200 { 204 } else { status }, String::new())
+                    }
+                    Value::Str(text) => web::Response::text(status, text.to_string()),
+                    other => web::Response::json(status, self.to_json(&other)),
+                }
+            }
+            Err(failure) => {
+                let (kind, message) = match &failure {
+                    Value::Error(e) => (e.kind.to_string(), e.message.clone()),
+                    Value::Struct(inst) => (self.type_name(inst.ty), self.display(&failure)),
+                    Value::Object(obj) => (self.type_name(obj.borrow().ty), self.display(&failure)),
+                    other => ("Failure".to_string(), self.display(other)),
+                };
+                web::Response::error(web::status_for(&kind), &kind, &message)
             }
         }
     }
@@ -947,6 +1174,23 @@ impl Vm {
                     }
                 };
             }
+            // A builtin such as `web.serve` asked the task to wait.
+            macro_rules! block_on {
+                () => {
+                    if let Some(handle) = self.ctx.block_on.take() {
+                        if self.entry_depth > 1 {
+                            throw!(waiting_in_callback());
+                        }
+                        save_ip!();
+                        handle.waiters.borrow_mut().push(self.current);
+                        let id = self.current;
+                        let state = self.save_current();
+                        self.suspended.insert(id, state);
+                        self.resume_next()?;
+                        continue 'frames;
+                    }
+                };
+            }
             macro_rules! jump {
                 ($offset:expr) => {
                     ip = (ip as isize + $offset as isize) as usize
@@ -1326,6 +1570,7 @@ impl Vm {
                                     &self.stack[at + 1..at + 1 + argc as usize]
                                 ));
                                 self.stack[at] = result;
+                                block_on!();
                             }
                             Value::Type(t) => {
                                 let name = self.type_name(*t);
@@ -1389,6 +1634,7 @@ impl Vm {
                                     &self.stack[at + 1..at + 1 + count]
                                 ));
                                 self.stack[at] = result;
+                                block_on!();
                             }
                             _ => {}
                         }

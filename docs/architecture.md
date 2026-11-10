@@ -195,9 +195,24 @@ task waits on something that can never happen, the program stops with a
 warning. When `main` returns, tasks still running are cancelled; hosts
 that keep a program alive call `Vm::run_pending`.
 
+**Standard library in the interpreter.** `use std.web` (or `std.http`)
+brings in `web.serve(port, host, requests)` and `web.provide(name,
+value)`. The server is part of the scheduler: `web.serve` suspends the
+calling task, the scheduler accepts connections while tasks wait, and each
+request runs its route as a task, so a handler that awaits does not hold
+up other requests. Route parameters come from the path, then the query
+string, then `body` (the request body, parsed as JSON when it is JSON),
+then the providers. A string result is sent as text, `(status, body)`
+sets the status, `none` is 204, anything else is JSON; failures become
+JSON errors whose status follows the kind (`NotFound` 404, `BadRequest`
+400, otherwise 500). `Clock(hz, frames)` is in the prelude: `tick()` waits
+for the next frame and returns the fixed step, `running`, `frame`,
+`elapsed` and `fps` report on it, and `stop()` ends the loop.
+
 **Interpreter-only limitations.** `spawn` of a plain (non-`async`)
 function call runs it immediately. `par for` runs sequentially. Tasks
-share one OS thread.
+share one OS thread, and the HTTP server speaks plain HTTP/1.1 with one
+request per connection (no TLS or keep-alive).
 
 **Measured performance** (release build, best of 7, 4-core cloud VM,
 CPython 3.13 on the same programs, outputs cross-checked):

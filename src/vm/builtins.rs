@@ -98,7 +98,19 @@ pub static NATIVES: &[Native] = &[
     fixed("sleep", &["seconds"], 1, sleep),
     fixed("channel", &[], 0, channel),
     fixed("now", &[], 0, now),
+    fixed("Clock", &["hz", "frames"], 0, clock),
+    fixed("web.serve", &["port", "host", "requests"], 0, web_serve),
+    fixed("web.provide", &["name", "value"], 2, web_provide),
 ];
+
+/// The modules of the standard library that `use std.<name>` brings in,
+/// and the prefix of their builtins.
+pub fn std_module(name: &str) -> Option<&'static str> {
+    match name {
+        "web" | "http" => Some("web"),
+        _ => None,
+    }
+}
 
 pub fn lookup(name: &str) -> Option<u16> {
     NATIVES
@@ -394,6 +406,88 @@ fn sleep(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let until = std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds);
     ctx.timers.push((until, handle.clone()));
     Ok(Value::Task(handle))
+}
+
+/// `Clock(hz = 60, frames = none)`: a fixed-rate clock for game loops.
+/// `frames` stops it after that many ticks.
+fn clock(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let hz = match opt(args, 0) {
+        Some(v) => number(v, "`hz`")?,
+        None => 60.0,
+    };
+    if !(hz > 0.0 && hz.is_finite()) {
+        return Err(err("ValueError", "a Clock needs a positive `hz`"));
+    }
+    let limit = match opt(args, 1) {
+        Some(v) => {
+            let n = integer(v, "`frames`")?;
+            Some(u64::try_from(n).map_err(|_| err("ValueError", "`frames` must not be negative"))?)
+        }
+        None => None,
+    };
+    Ok(Value::Clock(Rc::new(RefCell::new(
+        super::clock::Clock::new(hz, limit),
+    ))))
+}
+
+/// `web.serve(port = 8080, host = "127.0.0.1", requests = none)`: answers
+/// HTTP requests with the program's routes. The calling task waits while
+/// the server runs; other tasks keep running. `requests` stops the server
+/// after that many requests, which is handy in tests.
+fn web_serve(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let port = match opt(args, 0) {
+        Some(v) => integer(v, "`port`")?,
+        None => 8080,
+    };
+    let port =
+        u16::try_from(port).map_err(|_| err("ValueError", format!("{port} is not a port")))?;
+    let host = match opt(args, 1) {
+        Some(Value::Str(s)) => s.to_string(),
+        Some(other) => {
+            return Err(type_error(format!(
+                "`host` must be a string, not {}",
+                other.type_name()
+            )))
+        }
+        None => "127.0.0.1".to_string(),
+    };
+    let remaining = match opt(args, 2) {
+        Some(v) => Some(
+            u64::try_from(integer(v, "`requests`")?)
+                .map_err(|_| err("ValueError", "`requests` must not be negative"))?,
+        ),
+        None => None,
+    };
+    let listener = std::net::TcpListener::bind((host.as_str(), port))
+        .map_err(|e| err("IoError", format!("cannot listen on {host}:{port}: {e}")))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| err("IoError", e.to_string()))?;
+    let bound = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+    let _ = writeln!(ctx.out, "serving on http://{host}:{bound}");
+    let _ = ctx.out.flush();
+    let id = ctx.new_task_id();
+    let handle = Rc::new(super::task::TaskHandle::new(id, "web.serve"));
+    handle.observed.set(true);
+    ctx.servers.push(super::web::Server {
+        listener,
+        handle: handle.clone(),
+        remaining,
+        pending: Vec::new(),
+    });
+    ctx.block_on = Some(handle);
+    Ok(Value::None)
+}
+
+/// `web.provide("db", value)`: route parameters named `db` receive `value`.
+fn web_provide(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let Value::Str(name) = &args[0] else {
+        return Err(type_error(
+            "`web.provide` takes the parameter name as a string",
+        ));
+    };
+    ctx.providers.insert(name.to_string(), args[1].clone());
+    Ok(Value::None)
 }
 
 /// `channel()`: a queue for passing values between tasks.
@@ -947,6 +1041,18 @@ pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value>
                 _ => Err(no_method(receiver, name)),
             }
         }
+        Value::Clock(clock) => match name {
+            "tick" => {
+                arity(0)?;
+                Ok(Value::Float(clock.borrow_mut().tick()))
+            }
+            "stop" => {
+                arity(0)?;
+                clock.borrow_mut().stopped = true;
+                Ok(Value::None)
+            }
+            _ => Err(no_method(receiver, name)),
+        },
         Value::Channel(ch) => match name {
             "send" => {
                 arity(1)?;

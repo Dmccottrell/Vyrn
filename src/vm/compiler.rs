@@ -207,6 +207,11 @@ struct Compiler {
     type_index: HashMap<String, u16>,
     globals: Vec<Global>,
     global_index: HashMap<String, GlobalKind>,
+    /// Standard library modules in scope: the name used in the program,
+    /// then the prefix of the module's builtins (`web` -> `web`).
+    modules: HashMap<String, &'static str>,
+    /// Builtins imported by name: `use std.web (serve)`.
+    imports: HashMap<String, u16>,
     symbols: Interner,
     routes: Vec<RouteDef>,
     main: Option<usize>,
@@ -327,6 +332,8 @@ impl Compiler {
             type_index: HashMap::new(),
             globals: Vec::new(),
             global_index: HashMap::new(),
+            modules: HashMap::new(),
+            imports: HashMap::new(),
             symbols: Interner::default(),
             routes: Vec::new(),
             main: None,
@@ -459,10 +466,8 @@ impl Compiler {
         consts: &mut Vec<&'a ConstDecl>,
     ) {
         match &item.kind {
-            ItemKind::Use(_)
-            | ItemKind::Trait(_)
-            | ItemKind::TypeAlias(_)
-            | ItemKind::Extern(_) => {}
+            ItemKind::Use(decl) => self.use_decl(decl),
+            ItemKind::Trait(_) | ItemKind::TypeAlias(_) | ItemKind::Extern(_) => {}
             ItemKind::RouteGroup(_) => {}
             ItemKind::Main(decl) => {
                 let slot = self.reserve_proto();
@@ -1144,6 +1149,74 @@ impl Compiler {
 
     // ==== names ============================================================
 
+    /// `use std.web` brings the module in as `web`; `use std.web (serve)`
+    /// brings in the names listed. Other modules belong to the package
+    /// system, which the interpreter leaves to the release toolchain.
+    fn use_decl(&mut self, decl: &UseDecl) {
+        let segments: Vec<&str> = decl.path.segments.iter().map(|s| s.name.as_str()).collect();
+        let [std, name] = segments[..] else {
+            return;
+        };
+        if std != "std" {
+            return;
+        }
+        let Some(prefix) = builtins::std_module(name) else {
+            self.error_hint(
+                format!("the standard library has no module `{name}`"),
+                decl.path.span,
+                "the interpreter provides `std.web`",
+            );
+            return;
+        };
+        match &decl.kind {
+            UseKind::Module { alias } => {
+                let local = alias.as_ref().map_or(name, |a| a.name.as_str());
+                self.modules.insert(local.to_string(), prefix);
+            }
+            UseKind::Names(names) => {
+                for item in names {
+                    match builtins::lookup(&format!("{prefix}.{}", item.name.name)) {
+                        Some(id) => {
+                            let local = item.alias.as_ref().unwrap_or(&item.name);
+                            self.imports.insert(local.name.clone(), id);
+                        }
+                        None => {
+                            self.error(
+                                format!("`std.{name}` has no `{}`", item.name.name),
+                                item.name.span,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The module a name refers to, unless a variable hides it.
+    fn module_prefix(&mut self, name: &str) -> Option<&'static str> {
+        let prefix = *self.modules.get(name)?;
+        let level = self.fns.len() - 1;
+        if self.resolve_in(level, name).is_some() || self.global_index.contains_key(name) {
+            return None;
+        }
+        Some(prefix)
+    }
+
+    /// The builtin that `module.name` refers to, as in `web.serve`.
+    fn module_member(&mut self, expr: &Expr) -> Option<Result<u16, (String, Span)>> {
+        let ExprKind::Field { base, name, .. } = &expr.kind else {
+            return None;
+        };
+        let ExprKind::Name(module) = &base.kind else {
+            return None;
+        };
+        let prefix = self.module_prefix(&module.name)?;
+        Some(
+            builtins::lookup(&format!("{prefix}.{}", name.name))
+                .ok_or_else(|| (format!("`std.{prefix}` has no `{}`", name.name), name.span)),
+        )
+    }
+
     fn resolve(&mut self, name: &str) -> Option<Resolved> {
         let level = self.fns.len() - 1;
         if let Some(found) = self.resolve_in(level, name) {
@@ -1151,6 +1224,9 @@ impl Compiler {
         }
         if let Some(global) = self.global_index.get(name) {
             return Some(Resolved::Global(global.slot()));
+        }
+        if let Some(&id) = self.imports.get(name) {
+            return Some(Resolved::Native(id));
         }
         if let Some(value) = builtins::constant(name) {
             return Some(Resolved::Constant(value));
@@ -2865,6 +2941,13 @@ impl Compiler {
                 let index = self.index_key(subscripts)?;
                 self.emit(Op::GetIndex { dst, obj, index });
             }
+            ExprKind::Field { .. } if self.module_member(expr).is_some() => {
+                match self.module_member(expr) {
+                    Some(Ok(id)) => self.load_const(dst, Value::Native(id))?,
+                    Some(Err((message, span))) => return Err(self.error(message, span)),
+                    None => {}
+                }
+            }
             ExprKind::Field {
                 base,
                 name,
@@ -3081,6 +3164,16 @@ impl Compiler {
                 }
                 _ => None,
             },
+            ExprKind::Field { .. } if matches!(self.module_member(callee), Some(Ok(_))) => {
+                let Some(Ok(id)) = self.module_member(callee) else {
+                    return None;
+                };
+                let native = &builtins::NATIVES[id as usize];
+                (!native.variadic).then(|| Signature {
+                    params: native.params.iter().map(|p| p.to_string()).collect(),
+                    required: native.required,
+                })
+            }
             ExprKind::Field { base, name, .. } => {
                 let enum_name = match &base.kind {
                     ExprKind::Name(ident) => ident.name.clone(),
@@ -3216,8 +3309,8 @@ impl Compiler {
                 self.patch_here(done);
                 return Ok(());
             }
-            let is_namespace =
-                matches!(&base.kind, ExprKind::Name(ident) if self.is_enum(&ident.name));
+            let is_namespace = matches!(&base.kind, ExprKind::Name(ident) if self.is_enum(&ident.name))
+                || self.module_member(callee).is_some();
             if !is_namespace {
                 return self.method_call(base, None, &name.name, args, dst);
             }
