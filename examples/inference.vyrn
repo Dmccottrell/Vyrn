@@ -1,0 +1,22 @@
+# Forward pass of a large model whose layers are spread over several GPUs.
+
+const GPUS = 4
+
+struct Layer[D]:
+    w_up: tensor[f16; D, 4 * D]
+    w_down: tensor[f16; 4 * D, D]
+    gain: tensor[f16; D]
+
+# `kernel` functions are shape-checked at compile time and lowered through MLIR.
+# B, T and D are shape variables: no declaration needed.
+kernel fn feed_forward(x: tensor[f16; B, T, D], w: Layer[D]) -> tensor[f16; B, T, D]:
+    let h = gelu(x @ w.w_up)                  # (B, T, D) @ (D, 4D) -> (B, T, 4D)
+    return (x + h @ w.w_down) * w.gain
+
+strict fn forward(layers: [Layer[D]], x: tensor[f16; B, T, D]) -> tensor[f16; B, D]:
+    var h = x
+    let per_gpu = len(layers) // GPUS
+    for i, layer in enumerate(layers):
+        on gpu[i // per_gpu]:                 # this layer's weights live here
+            h = feed_forward(h, layer)        # h changes device only at shard boundaries
+    return h[:, -1, :] on cpu                 # last-token slice, copied back to the host

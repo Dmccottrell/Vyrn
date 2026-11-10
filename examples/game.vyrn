@@ -1,0 +1,31 @@
+# A fixed-size entity pool updated in place, with no allocation in the loop.
+
+const MAX_ENTITIES = 4096
+const GRAVITY = vec3(0.0, -9.81, 0.0)
+
+@layout(soa)
+struct Entity:
+    pos: vec3
+    vel: vec3
+    health: f32 = 100.0
+    alive: bool = true
+
+    fn damage(mut self, amount: f32):
+        self.health -= amount
+        self.alive = self.health > 0.0
+
+# `mut world` borrows the pool exclusively; `for mut e` edits each entity in place.
+strict fn step(mut world: [Entity; MAX_ENTITIES], dt: f32):
+    for mut e in world:
+        if not e.alive: continue
+        e.vel += GRAVITY * dt
+        e.pos += e.vel * dt
+        if e.pos.y < 0.0:
+            e.pos.y = 0.0
+            e.damage(e.vel.length() * 0.5)
+
+fn main():
+    var world: [Entity; MAX_ENTITIES] = load_level("arena")
+    var clock = Clock(hz=120)
+    while clock.running:
+        step(mut world, clock.tick())

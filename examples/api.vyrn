@@ -1,0 +1,32 @@
+# A REST API: typed path parameters, injected dependencies, JSON out.
+
+from std.web import serve, NotFound
+from app.storage import Db
+
+struct User:
+    id: u64
+    name: str
+    email: str?
+
+# `id` comes from the URL, `db` from a registered provider.
+# A returned struct or dict is serialized to JSON.
+route GET "/users/{id}" (id: u64, db: Db) -> User ! NotFound:
+    return try await db.users.find(id)
+
+route GET "/users/{id}/summary" (id: u64, db: Db):
+    let user = try await db.users.find(id)
+    let orders = await db.orders.count(user_id=id)
+    return {
+        "id": user.id,
+        "name": user.name,
+        "orders": orders,
+        "vip": orders > 100,
+    }
+
+routes "/admin":
+    @require(role="admin")
+    route POST "/users" (body: User, db: Db) -> (int, User):
+        let created = try await db.users.insert(body)
+        return 201, created
+
+await serve(port=8080, workers=cpu.count)
