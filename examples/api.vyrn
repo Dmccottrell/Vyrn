@@ -1,32 +1,41 @@
-# A REST API: typed path parameters, injected dependencies, JSON out.
+# Example C (web dev): async routes returning JSON.
 
-from std.web import serve, NotFound
-from app.storage import Db
+use std.web
+use app.storage (Db)
 
-struct User:
+struct User
     id: u64
     name: str
     email: str?
+end
 
 # `id` comes from the URL, `db` from a registered provider.
-# A returned struct or dict is serialized to JSON.
-route GET "/users/{id}" (id: u64, db: Db) -> User ! NotFound:
+route GET "/users/{id}" (id: u64, db: Db) returns User, fails NotFound
     return try await db.users.find(id)
+end
 
-route GET "/users/{id}/summary" (id: u64, db: Db):
-    let user = try await db.users.find(id)
-    let orders = await db.orders.count(user_id=id)
+route GET "/users/{id}/summary" (id: u64, db: Db)
+    # Both queries run concurrently.
+    let user, orders = await join(
+        db.users.find(id),
+        db.orders.count(user_id = id),
+    )
     return {
         "id": user.id,
         "name": user.name,
         "orders": orders,
         "vip": orders > 100,
     }
+end
 
-routes "/admin":
-    @require(role="admin")
-    route POST "/users" (body: User, db: Db) -> (int, User):
+routes "/admin"
+    @require(role = "admin")
+    route POST "/users" (body: User, db: Db) returns (int, User)
         let created = try await db.users.insert(body)
         return 201, created
+    end
+end
 
-await serve(port=8080, workers=cpu.count)
+main
+    web.serve(port = 8080)
+end

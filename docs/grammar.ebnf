@@ -1,5 +1,5 @@
 (* ============================================================================
-   Vyrn Language Grammar -- v0.1 draft
+   Vyrn Language Grammar -- v0.3
    File extension: .vyrn
 
    Notation
@@ -9,134 +9,67 @@
      "x"    terminal              UPPER  token produced by the lexer (section 9)
 
    Layout
-     Blocks are delimited by indentation. The lexer emits NEWLINE at the end of
-     each logical line and INDENT / DEDENT when indentation changes. Blank lines
-     and comments produce no tokens. Inside ( ), [ ] and { } newlines and
-     indentation are ignored, so any bracketed construct may span lines.
+     Indentation is not significant. Every block is closed by `end`.
+     A statement ends at NEWLINE. The lexer emits at most one NEWLINE between
+     tokens and none at the start of a file. It emits no NEWLINE
+       - inside ( ), [ ] or { }
+       - after a token that cannot end a statement (a binary operator, an
+         assignment operator, `,` or `.`), so long expressions may wrap.
    ============================================================================ *)
 
 
 (* ---- 1. Module ----------------------------------------------------------- *)
 
-module        = { NEWLINE | statement } ;
+(* The top level holds declarations only. Execution starts at `main`.
+   A program has exactly one `main`; a file without one is a library.          *)
+module        = { item } ;
 
-statement     = simple_stmt NEWLINE
-              | compound_stmt ;
+item          = use_decl
+              | main_decl
+              | { DOC_COMMENT } { decorator } [ "pub" ] declaration ;
 
-block         = simple_stmt NEWLINE
-              | NEWLINE INDENT statement { statement } DEDENT ;
-
-
-(* ---- 2. Simple statements ------------------------------------------------ *)
-
-simple_stmt   = import_stmt
-              | binding_stmt
+declaration   = const_decl
               | type_alias
-              | expr_stmt
-              | return_stmt
-              | raise_stmt
-              | defer_stmt
-              | "break"
-              | "continue"
-              | "pass" ;
+              | fn_decl
+              | struct_decl
+              | class_decl
+              | enum_decl
+              | trait_decl
+              | impl_decl
+              | route_decl
+              | route_group
+              | extern_decl ;
 
-import_stmt   = "import" import_name { "," import_name }
-              | "from" dotted_name "import" ( "*" | import_name { "," import_name } ) ;
-import_name   = dotted_name [ "as" IDENT ] ;
+use_decl      = "use" dotted_name
+                [ "as" IDENT | "(" use_name { "," use_name } [ "," ] ")" ] NEWLINE ;
+use_name      = IDENT [ "as" IDENT ] ;
 dotted_name   = IDENT { "." IDENT } ;
 
-(* let = immutable, var = mutable, const = compile-time constant.
-   In dynamic (non-strict) code a bare `x = 1` also introduces a mutable name. *)
-binding_stmt  = [ "pub" ] ( "let" | "var" | "const" ) bind_target
-                [ ":" type ] [ "=" expression_list ] ;
-bind_target   = bind_name { "," bind_name } ;
-bind_name     = IDENT | "_" | "(" bind_target ")" ;
+main_decl     = "main" [ "(" [ params ] ")" ] NEWLINE block "end" NEWLINE ;
 
-type_alias    = [ "pub" ] "type" IDENT [ generic_params ] "=" type ;
-
-(* Covers bare expressions, assignment, annotated assignment and augmented
-   assignment. The left side of an assignment must be an assignable place
-   (name, field, subscript or tuple of those); this is checked after parsing. *)
-expr_stmt     = expression_list
-                [ ":" type [ "=" expression_list ]
-                | "=" expression_list
-                | assign_op expression_list ] ;
-assign_op     = "+=" | "-=" | "*=" | "/=" | "//=" | "%=" | "@=" | "**="
-              | "&=" | "|=" | "^=" | "<<=" | ">>=" | "??=" ;
-
-return_stmt   = "return" [ expression_list ] ;
-raise_stmt    = "raise" expression ;
-defer_stmt    = "defer" expression ;
-
-
-(* ---- 3. Compound statements ---------------------------------------------- *)
-
-compound_stmt = declaration
-              | if_stmt
-              | while_stmt
-              | for_stmt
-              | match_stmt
-              | try_stmt
-              | with_stmt
-              | on_stmt
-              | unsafe_stmt ;
-
-if_stmt       = "if" condition ":" block
-                { "elif" condition ":" block }
-                [ "else" ":" block ] ;
-while_stmt    = "while" condition ":" block ;
-condition     = expression
-              | "let" pattern "=" expression ;
-
-(* `for mut e in xs` borrows each element mutably, `for own e in xs` consumes
-   the collection. `par for` runs iterations in parallel (threads or devices);
-   `async for` awaits an async stream. *)
-for_stmt      = [ "async" | "par" ] "for" [ pass_mode ] bind_target
-                "in" expression ":" block ;
-
-match_stmt    = "match" expression ":" NEWLINE INDENT case_clause { case_clause } DEDENT ;
-case_clause   = "case" pattern [ "if" expression ] ":" block ;
-
-try_stmt      = "try" ":" block
-                { "catch" [ type [ "as" IDENT ] ] ":" block }
-                [ "finally" ":" block ] ;
-
-with_stmt     = [ "async" ] "with" with_item { "," with_item } ":" block ;
-with_item     = expression [ "as" IDENT ] ;
-
-(* Device scope: every tensor allocated and every kernel dispatched inside the
-   block targets the given device, e.g. `on gpu[0]:`, `on gpu[0..4]:`, `on cpu:`. *)
-on_stmt       = "on" or_expr ":" block ;
-
-unsafe_stmt   = "unsafe" ":" block ;
-
-
-(* ---- 4. Declarations ----------------------------------------------------- *)
-
-declaration   = { decorator } [ "pub" ]
-                ( fn_decl
-                | struct_decl
-                | class_decl
-                | enum_decl
-                | trait_decl
-                | impl_decl
-                | route_decl
-                | route_group
-                | extern_decl ) ;
+const_decl    = "const" IDENT [ ":" type ] "=" expression NEWLINE ;
+type_alias    = "type" IDENT [ generic_params ] "=" type NEWLINE ;
 
 decorator     = "@" dotted_name [ "(" [ arguments ] ")" ] NEWLINE ;
+
+block         = { statement } ;
+
+
+(* ---- 2. Declarations ----------------------------------------------------- *)
 
 (* Functions.
      async   returns a future; may use await
      strict  every binding must be statically typed; no dynamic dispatch
-     kernel  strict + lowered through MLIR for CPU SIMD / GPU execution
+     kernel  strict + compiled for CPU SIMD / GPU execution
      export  exposed to the host ABI, e.g. export "wasm" fn render()          *)
-fn_decl       = fn_head ":" block ;
+fn_decl       = fn_head ( NEWLINE block "end" NEWLINE
+                        | "=" expression NEWLINE ) ;
 fn_sig        = fn_head NEWLINE ;
 fn_head       = { fn_modifier } "fn" IDENT [ generic_params ]
-                "(" [ params ] ")" [ "->" return_type ] ;
+                "(" [ params ] ")" [ result ] ;
 fn_modifier   = "async" | "strict" | "kernel" | "export" [ STRING ] ;
-return_type   = type [ "!" type ] ;
+result        = "returns" type [ "," "fails" type ]
+              | "fails" type ;
 
 (* Parameter passing. No lifetime annotations exist in the language.
      x: T        shared read-only borrow (the default)
@@ -144,62 +77,151 @@ return_type   = type [ "!" type ] ;
      own x: T    ownership is moved into the callee
    An omitted type means `any` (dynamically typed).                            *)
 params        = param { "," param } [ "," ] ;
-param         = [ pass_mode ] IDENT [ ":" type ] [ "=" expression ]
-              | "*" IDENT [ ":" type ]
-              | "**" IDENT [ ":" type ] ;
+param         = [ pass_mode ] IDENT [ ":" type ] [ "=" expression ] ;
 pass_mode     = "mut" | "own" ;
 
 generic_params = "[" generic_param { "," generic_param } "]" ;
 generic_param  = IDENT [ ":" type { "+" type } ] ;
 
-(* struct: value type, statically sized, stored inline, no header.
+(* struct: value type, statically sized, stored inline.
    class:  reference type, heap allocated, automatically reference counted.   *)
-struct_decl   = "struct" IDENT [ generic_params ] ":" type_body ;
-class_decl    = "class" IDENT [ generic_params ] ":" type_body ;
-type_body     = NEWLINE INDENT member { member } DEDENT ;
+struct_decl   = "struct" IDENT [ generic_params ] NEWLINE { member } "end" NEWLINE ;
+class_decl    = "class" IDENT [ generic_params ] NEWLINE { member } "end" NEWLINE ;
 member        = field_decl
-              | method_decl
-              | "pass" NEWLINE ;
-field_decl    = [ "pub" ] IDENT ":" type [ "=" expression ] NEWLINE ;
-method_decl   = { decorator } [ "pub" ] fn_decl ;
+              | method_decl ;
+field_decl    = [ "pub" ] IDENT ( ":" type [ "=" expression ]
+                                | "=" expression ) NEWLINE ;
+method_decl   = { DOC_COMMENT } { decorator } [ "pub" ] fn_decl ;
 
-enum_decl     = "enum" IDENT [ generic_params ] ":"
-                NEWLINE INDENT enum_member { enum_member } DEDENT ;
-enum_member   = variant | method_decl ;
+enum_decl     = "enum" IDENT [ generic_params ] NEWLINE
+                { variant | method_decl } "end" NEWLINE ;
 variant       = IDENT [ "(" variant_field { "," variant_field } ")"
                       | "=" expression ] NEWLINE ;
 variant_field = [ IDENT ":" ] type ;
 
-trait_decl    = "trait" IDENT [ generic_params ] [ "(" type { "," type } ")" ] ":"
-                NEWLINE INDENT trait_member { trait_member } DEDENT ;
-trait_member  = fn_sig | method_decl | "pass" NEWLINE ;
+(* Trait members are signatures only in v0.3. *)
+trait_decl    = "trait" IDENT [ generic_params ] [ "(" type { "," type } ")" ] NEWLINE
+                { fn_sig } "end" NEWLINE ;
 
-impl_decl     = "impl" [ generic_params ] [ type "for" ] type ":"
-                NEWLINE INDENT method_decl { method_decl } DEDENT ;
+impl_decl     = "impl" [ generic_params ] type [ "for" type ] NEWLINE
+                { method_decl } "end" NEWLINE ;
 
-(* HTTP routing. A route is an implicitly async function bound to a method and
-   a path template. Parameters named in the path are parsed from the URL;
-   struct-typed parameters are decoded from the request body; anything else is
-   resolved from registered providers. The return value is serialized (JSON by
-   default) according to its type.                                             *)
-route_decl    = "route" http_method STRING [ "(" [ params ] ")" ]
-                [ "->" return_type ] ":" block ;
-route_group   = "routes" STRING ":" NEWLINE INDENT route_item { route_item } DEDENT ;
-route_item    = { decorator } ( route_decl | route_group ) ;
+(* HTTP routing. The path is an ordinary string token. Each {name} in it is a
+   path parameter and must match a parameter of the same name. Other
+   parameters are the request body (struct types) or registered providers.
+   A route body is implicitly async; its result is serialized (JSON by
+   default). The HTTP method names are contextual: they are keywords only
+   directly after `route`.                                                     *)
+route_decl    = "route" http_method STRING [ "(" [ params ] ")" ] [ result ] NEWLINE
+                block "end" NEWLINE ;
+route_group   = "routes" STRING NEWLINE { route_item } "end" NEWLINE ;
+route_item    = { DOC_COMMENT } { decorator } ( route_decl | route_group ) ;
 http_method   = "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
               | "HEAD" | "OPTIONS" | "WS" | "SSE" ;
 
 (* Foreign functions: extern "c", extern "js" (WebAssembly host imports). *)
-extern_decl   = "extern" STRING
-                ( fn_sig
-                | ":" NEWLINE INDENT fn_sig { fn_sig } DEDENT ) ;
+extern_decl   = "extern" STRING ( fn_sig
+                                | NEWLINE { fn_sig } "end" NEWLINE ) ;
 
 
-(* ---- 5. Types ------------------------------------------------------------ *)
+(* ---- 3. Statements ------------------------------------------------------- *)
 
-(* A trailing `on <device>` pins the storage of a value to a device:
-   `w: tensor[f16; V, D] on gpu[0]`.                                           *)
-type          = union_type [ "on" or_expr ] ;
+statement     = simple_stmt NEWLINE
+              | compound_stmt ;
+
+simple_stmt   = binding_stmt
+              | expr_stmt
+              | return_stmt
+              | fail_stmt
+              | defer_stmt
+              | "stop"
+              | "skip" ;
+
+(* let = immutable, var = mutable, const = compile-time constant.
+   Names must be introduced with one of these before they are assigned.        *)
+binding_stmt  = ( "let" | "var" | "const" ) bind_target
+                [ ":" type ] [ "=" expression_list ] ;
+bind_target   = bind_name { "," bind_name } ;
+bind_name     = IDENT | "_" | "(" bind_target ")" ;
+
+(* The left side of an assignment must be an assignable place (name, field,
+   subscript, or a tuple of those); this is checked after parsing.             *)
+expr_stmt     = expression_list [ ( "=" | assign_op ) expression_list ] ;
+assign_op     = "+=" | "-=" | "*=" | "/=" | "@=" | "**="
+              | "&=" | "|=" | "^=" | "<<=" | ">>=" | "??=" ;
+
+return_stmt   = "return" [ expression_list ] ;
+fail_stmt     = "fail" expression ;
+defer_stmt    = "defer" expression ;
+
+compound_stmt = if_stmt
+              | while_stmt
+              | loop_stmt
+              | for_stmt
+              | match_stmt
+              | try_stmt
+              | with_stmt
+              | on_stmt
+              | region_stmt
+              | unsafe_stmt
+              | { decorator } fn_decl ;
+
+(* Two forms. The one-line form takes single statements and has no `end`:
+       if lives == 0 then stop
+   The block form always closes with `end`. `else if` on one line continues
+   the chain and shares the single closing `end`.                              *)
+if_stmt       = "if" condition
+                ( "then" simple_stmt [ "else" simple_stmt ] NEWLINE
+                | NEWLINE block
+                  { "else" "if" condition NEWLINE block }
+                  [ "else" NEWLINE block ]
+                  "end" NEWLINE ) ;
+condition     = expression
+              | "let" pattern "=" expression ;
+
+while_stmt    = "while" condition NEWLINE block "end" NEWLINE ;
+loop_stmt     = "loop" NEWLINE block "end" NEWLINE ;
+
+(* `in` is used for iteration and membership only.
+   `for mut e in xs` borrows each element mutably; `for own e in xs` consumes
+   the collection. `par for` runs iterations in parallel; `async for` awaits
+   an async stream.                                                            *)
+for_stmt      = [ "async" | "par" ] "for" [ pass_mode ] bind_target
+                "in" expression NEWLINE block "end" NEWLINE ;
+
+match_stmt    = "match" expression NEWLINE
+                { match_arm }
+                [ "else" ( simple_stmt NEWLINE | NEWLINE block ) ]
+                "end" NEWLINE ;
+match_arm     = "is" pattern [ "if" expression ] arm_body ;
+arm_body      = "then" simple_stmt NEWLINE
+              | NEWLINE block ;
+
+try_stmt      = "try" NEWLINE block
+                { "catch" [ type [ "as" IDENT ] ] NEWLINE block }
+                [ "finally" NEWLINE block ]
+                "end" NEWLINE ;
+
+with_stmt     = [ "async" ] "with" with_item { "," with_item } NEWLINE block "end" NEWLINE ;
+with_item     = expression [ "as" IDENT ] ;
+
+(* `on` is the single placement keyword. Its target is either a device
+   (cpu, gpu[0], gpu[0 to 3]) or a memory region (frame). Inside the block,
+   allocations and tensor kernels use that target.                             *)
+on_stmt       = "on" coalesce NEWLINE block "end" NEWLINE ;
+
+(* Declares a memory arena named IDENT. Everything placed `on` it is released
+   in one step when the block ends.                                            *)
+region_stmt   = "region" IDENT NEWLINE block "end" NEWLINE ;
+
+unsafe_stmt   = "unsafe" NEWLINE block "end" NEWLINE ;
+
+
+(* ---- 4. Types ------------------------------------------------------------ *)
+
+(* A trailing `on <target>` pins storage to a device or a region:
+     w: tensor[f16; V, D] on gpu[0]        contacts: [Contact] on frame        *)
+type          = union_type [ "on" coalesce ] ;
 union_type    = optional_type { "|" optional_type } ;
 optional_type = primary_type { "?" } ;
 
@@ -207,22 +229,21 @@ primary_type  = "any"
               | named_type
               | tensor_type
               | "[" type [ ";" expression ] "]"
-              | "{" type [ ":" type ] "}"
+              | "{" type ":" type "}"
               | "(" [ type { "," type } ] ")"
-              | "fn" "(" [ type { "," type } ] ")" [ "->" type ]
+              | "fn" "(" [ type { "," type } ] ")" [ "returns" type ]
               | ownership primary_type ;
 
 (* [T]      growable list          [T; N]   fixed array, stored inline
-   {K: V}   map                    {T}      set
-   (A, B)   tuple                  T?       optional                           *)
+   {K: V}   map                    (A, B)   tuple
+   T?       optional               A | B    union                              *)
 
 named_type    = dotted_name [ "[" generic_arg { "," generic_arg } "]" ] ;
 generic_arg   = type | INT ;
 
 (* tensor[dtype; d0, d1, ...]. A dimension is a constant expression, a shape
    variable (any free identifier, implicitly generic over the function), `_`
-   for "unchecked", or `...` for "any number of leading dimensions".
-   Shapes are checked at compile time in strict code and at run time otherwise. *)
+   for "unchecked", or `...` for "any number of leading dimensions".           *)
 tensor_type   = "tensor" "[" type [ ";" dim { "," dim } ] "]" ;
 dim           = "_" | "..." | sum ;
 
@@ -234,17 +255,19 @@ dim           = "_" | "..." | sum ;
 ownership     = "ref" [ "mut" ] | "shared" | "weak" | "ptr" ;
 
 
-(* ---- 6. Expressions (lowest to highest precedence) ----------------------- *)
+(* ---- 5. Expressions (lowest to highest precedence) ----------------------- *)
 
 expression_list = expression { "," expression } [ "," ] ;
 
 expression    = lambda
-              | conditional ;
+              | if_expr
+              | pipeline ;
 lambda        = [ "async" ] "fn" "(" [ params ] ")" "=>" expression ;
-conditional   = pipeline [ "if" pipeline "else" expression ] ;
+if_expr       = "if" expression "then" expression "else" expression ;
 pipeline      = placement { "|>" placement } ;
 
-(* `x on gpu[1]` yields x placed on (moved or copied to) the given device. *)
+(* `x on gpu[1]` yields x placed on that device; `x on frame` allocates the
+   result in that region.                                                      *)
 placement     = coalesce [ "on" coalesce ] ;
 coalesce      = or_expr { "??" or_expr } ;
 or_expr       = and_expr { "or" and_expr } ;
@@ -252,17 +275,21 @@ and_expr      = not_expr { "and" not_expr } ;
 not_expr      = "not" not_expr
               | comparison ;
 comparison    = range_expr { comp_op range_expr } ;
-comp_op       = "==" | "!=" | "<" | "<=" | ">" | ">="
-              | "in" | "not" "in" | "is" | "is" "not" ;
-range_expr    = bit_or [ ( ".." | "..=" ) bit_or ] ;
+comp_op       = "==" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "not" "in" ;
+
+(* `a to b` includes b; `a until b` excludes it; `by` sets the step. *)
+range_expr    = bit_or [ ( "to" | "until" ) bit_or [ "by" bit_or ] ] ;
 bit_or        = bit_xor { "|" bit_xor } ;
 bit_xor       = bit_and { "^" bit_and } ;
 bit_and       = shift { "&" shift } ;
 shift         = sum { ( "<<" | ">>" ) sum } ;
 sum           = term { ( "+" | "-" ) term } ;
 
-(* `@` is matrix multiplication; it broadcasts over leading batch dimensions. *)
-term          = unary { ( "*" | "/" | "//" | "%" | "@" ) unary } ;
+(* Tensor arithmetic follows NumPy and PyTorch:
+     *   element-wise product (with broadcasting)
+     @   matrix product, batched over leading dimensions
+     /   true division;  div  integer division;  mod  remainder               *)
+term          = unary { ( "*" | "/" | "div" | "mod" | "@" ) unary } ;
 unary         = ( "-" | "+" | "~" ) unary
               | "await" unary
               | "spawn" unary
@@ -273,43 +300,42 @@ power         = postfix [ "**" unary ] ;
 
 (*  await e   suspend until the future e completes
     spawn e   start e as a concurrent task and return its handle
-    try e     unwrap a `T ! E` result, returning the error to the caller
+    try e     unwrap a result, passing a failure up to the caller
     move e    give up ownership of e                                           *)
 
+(* A postfix apostrophe transposes the last two dimensions: A' *)
 postfix       = atom { trailer } ;
 trailer       = "." IDENT
               | "?." IDENT
               | "(" [ arguments ] ")"
-              | "[" subscripts "]" ;
+              | "[" subscripts "]"
+              | "'" ;
 
-(* A leading `mut` at the call site makes mutation visible to the reader:
-   `integrate(mut world, dt)`.                                                 *)
+(* `mut` at the call site makes mutation visible: step(mut world, dt) *)
 arguments     = argument { "," argument } [ "," ] ;
 argument      = [ "mut" ] expression
-              | IDENT "=" expression
-              | "*" expression
-              | "**" expression ;
+              | IDENT "=" expression ;
 
-(* Indexing and slicing. Works on lists, arrays and N-dimensional tensors:
-     t[i, j]        element           t[:, 0]        column
-     t[1:9:2, ...]  strided slice     t[..., _]      append a new axis
-     t[mask]        boolean mask      t[idx]         gather by index tensor    *)
+(* Indexing and slicing for lists, arrays and tensors:
+     t[i, j]             element          t[all, 0]          first column
+     t[1 until 9 by 2]   strided slice    t[all, last]       last column
+     t[..., _]           add a new axis   t[mask]  t[idx]    mask / gather
+   `all` and `last` are contextual: they have these meanings only inside [ ]. *)
 subscripts    = subscript { "," subscript } [ "," ] ;
 subscript     = expression
-              | [ expression ] ":" [ expression ] [ ":" [ expression ] ]
+              | "all"
               | "..."
               | "_" ;
 
 atom          = IDENT
               | literal
-              | "(" [ expression_list | expression comp_clauses ] ")"
+              | "last"
+              | "(" [ expression_list ] ")"
               | "[" [ expression_list | expression comp_clauses ] "]"
-              | "{" [ dict_items | dict_item comp_clauses
-                    | expression_list | expression comp_clauses ] "}" ;
+              | "{" [ map_items | map_item comp_clauses ] "}" ;
 
-dict_items    = dict_item { "," dict_item } [ "," ] ;
-dict_item     = expression ":" expression
-              | "**" expression ;
+map_items     = map_item { "," map_item } [ "," ] ;
+map_item      = expression ":" expression ;
 
 comp_clauses  = comp_for { comp_for | comp_if } ;
 comp_for      = "for" bind_target "in" pipeline ;
@@ -318,14 +344,14 @@ comp_if       = "if" pipeline ;
 literal       = INT | FLOAT | STRING | "true" | "false" | "none" ;
 
 
-(* ---- 7. Patterns --------------------------------------------------------- *)
+(* ---- 6. Patterns --------------------------------------------------------- *)
 
 (* A bare identifier binds a new name; a dotted name is compared by value;
    `Name(...)` destructures a struct or enum variant.                          *)
 pattern       = or_pattern [ "as" IDENT ] ;
-or_pattern    = primary_pat { "|" primary_pat } ;
+or_pattern    = primary_pat { "or" primary_pat } ;
 primary_pat   = "_"
-              | literal_pat [ ( ".." | "..=" ) literal_pat ]
+              | literal_pat [ ( "to" | "until" ) literal_pat ]
               | IDENT
               | IDENT "." dotted_name
               | dotted_name "(" [ pattern_arg { "," pattern_arg } ] ")"
@@ -335,23 +361,38 @@ literal_pat   = [ "-" ] ( INT | FLOAT )
               | STRING | "true" | "false" | "none" ;
 pattern_arg   = [ IDENT "=" ] pattern ;
 seq_pat       = pattern
-              | "*" ( IDENT | "_" ) ;
+              | "..." [ IDENT ] ;
 
 
-(* ---- 8. Reserved words --------------------------------------------------- *)
+(* ---- 7. Reserved words --------------------------------------------------- *)
 
-(* Hard keywords (never valid as identifiers):
-     and any as async await break case catch class const continue defer elif
-     else enum export extern false finally fn for from if impl import in is
-     kernel let match move mut none not on or own par pass ptr pub raise ref
-     return route routes shared spawn strict struct tensor trait true try type
-     unsafe var weak while with
+(* Hard keywords:
+     and any as async await by catch class const defer div else end enum
+     export extern fail fails false finally fn for if impl in is kernel let
+     loop main match mod move mut none not on or own par ptr pub ref region
+     return returns route routes shared skip spawn stop strict struct tensor
+     then to trait true try type unsafe until use var weak while with
 
-   Contextual keywords (reserved only directly after `route`):
-     GET POST PUT PATCH DELETE HEAD OPTIONS WS SSE
+   A word directly after `.` or `?.` is always an identifier, so fields and
+   methods may use these names (range.end, player.move).
+
+   Contextual keywords:
+     GET POST PUT PATCH DELETE HEAD OPTIONS WS SSE     directly after `route`
+     all last                                          inside [ ] subscripts
 
    Ordinary predeclared names (not keywords): self, cpu, gpu, int, float, str,
    bool, i8..i64, u8..u64, f16, f32, f64, bf16, vec2, vec3, vec4, mat4, ...    *)
+
+
+(* ---- 8. Changes from v0.2 ------------------------------------------------ *)
+
+(* 1. `*` is element-wise; `@` is the matrix product. The dotted operators
+      (.* ./ .^) are removed; `**` is power.
+   2. Blocks close with `end`. Indentation is not significant.
+   3. `on` is the only placement keyword, for devices and regions alike.
+      `in` means iteration and membership only.
+   4. Route paths are quoted strings; path parameters are typed in the
+      parameter list.                                                          *)
 
 
 (* ---- 9. Lexical grammar -------------------------------------------------- *)
@@ -372,20 +413,21 @@ EXPONENT      = ( "e" | "E" ) [ "+" | "-" ] DEC_DIGITS ;
 INT_SUFFIX    = "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" ;
 FLOAT_SUFFIX  = "f16" | "f32" | "f64" | "bf16" ;
 
-(* Prefix f = interpolated ("{expr}" is evaluated), r = raw, b = bytes. *)
-STRING        = [ "f" | "r" | "b" | "fr" ] ( SHORT_STRING | LONG_STRING ) ;
-SHORT_STRING  = '"' { STRING_CHAR | ESCAPE } '"' ;
-LONG_STRING   = '"""' { ANY_CHAR } '"""' ;
+(* Every string interpolates: "{expr}" evaluates expr. Write \{ for a literal
+   brace. The r prefix makes a raw string: no escapes, no interpolation.
+   A route path is a STRING whose {name} holes name path parameters.           *)
+STRING        = [ "r" ] ( SHORT_STRING | LONG_STRING ) ;
+SHORT_STRING  = '"' { STRING_CHAR | ESCAPE | INTERPOLATION } '"' ;
+LONG_STRING   = '"""' { ANY_CHAR | ESCAPE | INTERPOLATION } '"""' ;
+INTERPOLATION = "{" source text of one expression "}" ;
 ESCAPE        = "\" ( "n" | "t" | "r" | "0" | "\" | '"' | "{" | "}"
                     | "x" HEX_DIGIT HEX_DIGIT
                     | "u{" HEX_DIGIT { HEX_DIGIT } "}" ) ;
 
 COMMENT       = "#" { any character except newline } ;      (* discarded *)
-DOC_COMMENT   = "##" { any character except newline } ;     (* attached to the next declaration *)
+DOC_COMMENT   = "##" { any character except newline } ;     (* kept; the following NEWLINE is not emitted *)
 
-NEWLINE       = end of a logical line (outside brackets) ;
-INDENT        = indentation deeper than the enclosing block (4 spaces; tabs are an error) ;
-DEDENT        = indentation returning to an enclosing block ;
+NEWLINE       = end of a line, subject to the layout rules at the top of this file ;
 
 LETTER        = "a".."z" | "A".."Z" | any Unicode XID_Start character ;
 DIGIT         = "0".."9" ;

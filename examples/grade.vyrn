@@ -1,0 +1,26 @@
+# Example A (beginner): a grade calculator.
+
+fn letter_for(score)
+    if score >= 90 then return "A"
+    if score >= 80 then return "B"
+    if score >= 70 then return "C"
+    return "F"
+end
+
+main
+    let scores = [92, 78, 85, 61]
+
+    var total = 0
+    for score in scores
+        total += score
+    end
+
+    let average = total / scores.count
+    print("Average: {average}, grade {letter_for(average)}")
+
+    for score in scores
+        if score < 70
+            print("{score} needs another try")
+        end
+    end
+end

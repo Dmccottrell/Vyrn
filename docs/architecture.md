@@ -1,6 +1,6 @@
 # Vyrn Master Architecture: Tiered Compiler and Data-Oriented Runtime
 
-Status: draft v0.1. Nothing described here is implemented yet. Numbers marked
+Status: draft v0.1, code samples updated to grammar v0.3. Nothing described here is implemented yet. Numbers marked
 "target" are design budgets, not measurements.
 
 Companion documents: [`grammar.ebnf`](grammar.ebnf) defines the syntax used in
@@ -195,24 +195,26 @@ Consequences:
 
 ### 3.3 Game entity example
 
-```python
+```vyrn
 const GRAVITY = vec3(0.0, -9.81, 0.0)
 
-struct Entity:
+struct Entity
     pos: vec3
     vel: vec3
     health: f32 = 100.0
     name: str
     alive: bool = true
+end
 
-strict fn step(mut world: [Entity], dt: f32):
-    for mut e in world:
-        if not e.alive: continue
+strict fn step(mut world: [Entity], dt: f32)
+    for mut e in world
+        if not e.alive then skip
         e.vel += GRAVITY * dt
         e.pos += e.vel * dt
+    end
+end
 
-fn lowest_point(world: [Entity]) -> f32:
-    return min(world.pos[:, 1])
+fn lowest_point(world: [Entity]) returns f32 = min(world.pos[all, 1])
 ```
 
 What the compiler does with it:
@@ -222,7 +224,7 @@ What the compiler does with it:
 - `alive` is a bitset, so the skip test processes 64 entities per word.
 - The loop body has no aliasing (exclusive borrow) and no calls, so the release
   backend vectorizes it.
-- `world.pos[:, 1]` is a strided view over the `pos` column. No copy is made.
+- `world.pos[all, 1]` is a strided view over the `pos` column. No copy is made.
 
 No layout annotation appears in the source.
 
@@ -236,8 +238,8 @@ OOP is supported, with defaults chosen so that it does not undo the layout model
   them when the set of implementers is known.
 - Recommended decision: **single implementation inheritance for `class` only, no
   inheritance for `struct`.** Struct layouts stay flat and predictable; classes
-  keep the modelling tool people expect. The v0.1 grammar has no inheritance
-  clause yet, so this needs a grammar addition (`class Enemy(Actor):`).
+  keep the modelling tool people expect. The v0.3 grammar has no inheritance
+  clause yet, so this needs a grammar addition (`class Enemy(Actor)`).
 - Guidance enforced by lints, not by the type system: classes for long-lived
   objects with identity (scenes, services, connections), structs in collections
   for anything that exists in the thousands.
@@ -287,7 +289,8 @@ is an empirical workstream, not something this document can settle.
 ### 4.2 Devices in the type system
 
 - A tensor type carries its device: `tensor[f16; V, D] on gpu[0]`.
-- `on gpu[i]:` sets the device for allocations and kernels in a block.
+- `on gpu[i] ... end` sets the device for allocations and kernels in a block.
+  The same keyword names a memory region: `on frame ... end`.
 - `x on gpu[1]` is an explicit transfer. Mixing devices in one operation without
   a transfer is a compile error in strict code and a trap in dynamic code, so
   hidden host-device copies cannot occur.
@@ -303,7 +306,7 @@ may not fit on one device.
 - **Weights are memory-mapped.** A model file is a header plus aligned raw
   columns. Loading maps the file and transfers each shard to its device from
   pinned memory. Startup cost is I/O, not parsing.
-- **Sharding is declared, not hand-coded.** `on gpu[0..4]` on a weight collection
+- **Sharding is declared, not hand-coded.** `on gpu[0 to 3]` on a weight collection
   asks the planner to place layers across devices; the planner balances memory
   and minimizes the number of activation transfers.
 - **Pipeline parallelism for inference.** Each device runs its contiguous slice
@@ -332,22 +335,26 @@ not do it.
 
 ### 4.5 Tensor example
 
-```python
+```vyrn
 kernel fn attention(
     q: tensor[f16; B, H, T, D],
     k: tensor[f16; B, H, T, D],
     v: tensor[f16; B, H, T, D],
     mask: tensor[bool; T, T],
-) -> tensor[f16; B, H, T, D]:
-    let scores = (q @ k.mT) / sqrt(D)
-    return softmax(where(mask, scores, -inf), axis=-1) @ v
+) returns tensor[f16; B, H, T, D]
+    let scores = (q @ k') / sqrt(D)
+    return softmax(where(mask, scores, -inf), axis = -1) @ v
+end
 
-strict fn generate(model: Model on gpu[0..4], prompt: tensor[i32; B, T]) -> tensor[i32; B]:
+strict fn generate(model: Model on gpu[0 to 3], prompt: tensor[i32; B, T]) returns tensor[i32; B]
     var h = model.embed[prompt]
-    for layer in model.layers:
-        on layer.device:
+    for layer in model.layers
+        on layer.device
             h = layer.forward(h)
-    return argmax(h[:, -1, :] @ model.unembed, axis=-1) on cpu
+        end
+    end
+    return argmax(h[all, last] @ model.unembed, axis = -1) on cpu
+end
 ```
 
 What the compiler does with it:
@@ -356,7 +363,7 @@ What the compiler does with it:
   the softmax are fused where profitable and emitted as PTX. A mismatch between
   the shapes of `q`, `k` and `v` is a compile error.
 - `model.embed[prompt]` is a gather, a native indexing form.
-- `on layer.device:` moves `h` only when consecutive layers are on different
+- `on layer.device` moves `h` only when consecutive layers are on different
   devices.
 - The final `on cpu` is the only host transfer, and it moves `B` integers.
 
@@ -398,7 +405,7 @@ common causes statically and detects the rest.
 | Cause | Handling |
 |---|---|
 | Holding a lock across `await` | Compile error |
-| Acquiring two locks in inconsistent order | `with a.lock(), b.lock():` acquires in a canonical order. Nested acquisition of two `Mutex` values requires declared lock levels, checked at compile time |
+| Acquiring two locks in inconsistent order | `with a.lock(), b.lock()` acquires in a canonical order. Nested acquisition of two `Mutex` values requires declared lock levels, checked at compile time |
 | Re-locking a held mutex | Compile error when visible in one function; dev-tier trap otherwise |
 | Tasks waiting on each other through channels | Not prevented statically. The dev tier maintains a wait-for graph and reports the cycle with task backtraces |
 | Forgotten task that never completes | Prevented by structured concurrency |
@@ -420,13 +427,15 @@ code that compiles, and channel deadlocks diagnosed in development.
 - Provider parameters (database pools, configuration) are resolved at compile
   time; a missing provider is a compile error.
 
-```python
-route GET "/users/{id}" (id: u64, db: Db) -> User ! NotFound:
+```vyrn
+route GET "/users/{id}" (id: u64, db: Db) returns User, fails NotFound
     return try await db.users.find(id)
+end
 
-route POST "/generate" (req: Prompt, model: Model) -> Completion:
+route POST "/generate" (req: Prompt, model: Model) returns Completion
     let tokens = await model.generate(req.tokens)
-    return Completion(text=decode(tokens))
+    return Completion(text = decode(tokens))
+end
 ```
 
 ### 5.5 WebAssembly

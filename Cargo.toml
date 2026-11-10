@@ -1,0 +1,16 @@
+[package]
+name = "vyrn"
+version = "0.3.0"
+edition = "2021"
+description = "Compiler front end for the Vyrn programming language"
+license = "MIT"
+
+[lib]
+name = "vyrn"
+path = "src/lib.rs"
+
+[[bin]]
+name = "vyrn"
+path = "src/main.rs"
+
+[dependencies]
