@@ -142,8 +142,9 @@ Purpose: maximum steady-state speed. Compile time is unconstrained.
 ### 2.4 The interpreter (implemented)
 
 The REPL and `vyrn run` use a bytecode interpreter that compiles straight from
-the syntax tree (`src/vm`). It needs no type information, so it runs the
-dynamic subset of the language today, ahead of type checking and VIR.
+the syntax tree (`src/vm`), after the checks in `src/check.rs` (section 2.5).
+It needs no type information beyond those checks, so it also runs
+unannotated, Python-style code.
 
 **Register machine, not stack machine.** Each frame owns up to 256 registers;
 instructions name their operands directly. `total = total + x` is one `Add`
@@ -585,11 +586,38 @@ end
 7. **Class inheritance** is limited to one base class (section 3.4); whether
    that is enough for real game and UI code needs validating.
 
+### 2.5 Checks before code generation (implemented)
+
+`src/check.rs` runs on the syntax tree before the interpreter compiles it,
+and `vyrn check <file>` runs it alone. It reports only what it is sure of:
+anything it cannot infer is `any`, so unannotated code behaves as in
+Python and annotations buy static errors where they are written.
+
+| Rule | Example it rejects |
+|---|---|
+| Annotated bindings, assignments, arguments, returns and fields match | `let n: int = "seven"`, `area(2, "3")` |
+| A function with a return type returns on every path | `fn sign(x: int) -> int` ending in an `if` with no `else` |
+| Fields and methods exist on structs and classes declared in the file (base classes included) | `p.z` on a `Point` |
+| Obvious operator mistakes between known scalars | `1 + "a"` |
+| `let` is not reassigned, passed as `mut`, or changed through a struct field or `mut self` method | `let limit = 10` then `limit = 20` |
+| `strict`/`kernel`: typed parameters, no `any`, variables declared with `let`/`var`, parameters read-only unless `mut` | `strict fn scale(v, k: float)` |
+| No use after `move`, including "may have been moved" across branches and loop iterations | `keep(move xs)` then `print(xs)` |
+| A `mut` argument is the only use of that variable in the call | `swap(mut xs, mut xs)`, `add(mut xs, xs)` |
+| An argument for a `mut` parameter says `mut` | `reset(xs)` where `reset(mut xs)` |
+| The list a `for mut` loop changes is not used inside it | `for mut x in xs: x += len(xs)` |
+| Changing a field of a plain `for` loop's struct copy, which is lost | `for e in es: e.hp = 10` |
+
+The `for mut` rule is what makes the interpreter's in-place loop sound: the
+loop moves each element out of the list while the body runs, so any other
+use of the list inside could see the gap. What is not checked yet: generic
+types, trait conformance, borrows through aliases (`ys = xs` then a use of
+`ys` inside `for mut x in xs`), and references stored in other values.
+
 ## 7. Build order
 
 1. Front end to VIR, with the borrow checker, validated by an interpreter.
-   *Done so far: lexer, parser, AST and the bytecode interpreter (section 2.4).
-   Type checking, the borrow checker and VIR are next.*
+   *Done so far: lexer, parser, AST, the bytecode interpreter (section 2.4)
+   and gradual type and borrow checks (section 2.5). VIR is next.*
 2. Dev backend for x86-64. This is the first usable compiler.
 3. SoA collections and regions.
 4. Async runtime and `route`.

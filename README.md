@@ -39,7 +39,7 @@ To run `gpu[...]` blocks on a real GPU (Vulkan, Metal or DirectX 12):
 cargo run --release --features gpu -- run program.vyrn
 ```
 
-`vyrn parse` prints the syntax tree and `vyrn lex` the tokens.
+`vyrn check` reports type and borrow errors without running, `vyrn parse` prints the syntax tree and `vyrn lex` the tokens.
 
 | Module | Contents |
 |---|---|
@@ -49,6 +49,7 @@ cargo run --release --features gpu -- run program.vyrn
 | `src/ast.rs` | Syntax tree, with empty type and placement slots for semantic analysis |
 | `src/parser.rs` | Recursive-descent parser with error recovery and hints |
 | `src/pretty.rs` | Compact text form of the syntax tree |
+| `src/check.rs` | Gradual type checks, `let`/`strict` rules and borrow checks (`vyrn check <file>`) |
 | `src/vm/` | Bytecode compiler, register VM, tensor backends and builtins (see `docs/architecture.md` section 2.4) |
 
 Only `examples/grade.vyrn` runs as is: the other examples call functions

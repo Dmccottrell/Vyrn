@@ -715,7 +715,7 @@ fn small_transformer_block_runs_on_gpus() {
          \x20   w_up: tensor[f16; D, H]\n\
          \x20   w_down: tensor[f16; H, D]\n\
          end\n\
-         kernel fn feed_forward(x, w: Layer):\n\
+         kernel fn feed_forward(x: tensor[f32], w: Layer):\n\
          \x20   let h = gelu(x @ w.w_up)\n\
          \x20   return x + h @ w.w_down\n\
          end\n\
@@ -771,7 +771,7 @@ fn uncaught_user_failures_report_their_type() {
 #[test]
 fn runtime_type_errors() {
     assert_eq!(
-        runtime_error("main:\n    x = 1 + \"a\"\nend\n").message,
+        runtime_error("fn add(a, b): return a + b\nmain:\n    x = add(1, \"a\")\nend\n").message,
         "cannot apply `+` to int and str"
     );
     assert_eq!(

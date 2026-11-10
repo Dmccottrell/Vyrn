@@ -8,9 +8,12 @@
 //! - [`vm`]: a bytecode compiler and register-based virtual machine that runs
 //!   programs, for `vyrn run` and the REPL
 //!
-//! Type checking, borrow checking and the native backends come next.
+//! - [`check`]: gradual type checking, `let`/`strict` rules and borrow checks
+//!
+//! The native backends come next.
 
 pub mod ast;
+pub mod check;
 pub mod diagnostic;
 pub mod lexer;
 pub mod parser;

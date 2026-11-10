@@ -2,6 +2,7 @@
 //!
 //! - `vyrn lex <file>` prints the token stream.
 //! - `vyrn parse <file>` prints the syntax tree in compact form.
+//! - `vyrn check <file>` reports type, `let`, `strict` and borrow errors.
 //! - `vyrn bytecode <file>` prints the compiled bytecode.
 //! - `vyrn run <file>` compiles the file and runs its `main:` block.
 
@@ -9,7 +10,7 @@ use std::process::ExitCode;
 use vyrn::vm::{self, Vm};
 use vyrn::{parse_recovering, pretty, Lexer};
 
-const USAGE: &str = "usage: vyrn <run|bytecode|parse|lex> <file.vyrn>";
+const USAGE: &str = "usage: vyrn <run|check|bytecode|parse|lex> <file.vyrn>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -27,6 +28,7 @@ fn main() -> ExitCode {
     match command.as_str() {
         "lex" => lex(file, &src),
         "parse" => parse(file, &src),
+        "check" => check(file, &src),
         "bytecode" => bytecode(file, &src),
         "run" => run(file, &src, rest),
         _ => {
@@ -63,6 +65,24 @@ fn parse(file: &str, src: &str) -> ExitCode {
     }
     print!("{}", pretty::module(&module));
     ExitCode::SUCCESS
+}
+
+/// Parses and checks a file without compiling it, so it works on code that
+/// uses libraries the interpreter does not have.
+fn check(file: &str, src: &str) -> ExitCode {
+    let (module, mut diagnostics) = parse_recovering(src);
+    if diagnostics.is_empty() {
+        diagnostics = vyrn::check::check(&module);
+    }
+    for diagnostic in &diagnostics {
+        eprintln!("{}", diagnostic.render(file, src));
+    }
+    if diagnostics.is_empty() {
+        println!("{file}: ok");
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 fn compile(file: &str, src: &str) -> Option<vm::Program> {

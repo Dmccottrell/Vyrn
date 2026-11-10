@@ -65,6 +65,10 @@ impl fmt::Display for RunError {
 /// Parses and compiles source code.
 pub fn compile_source(src: &str) -> Result<Program, Vec<Diagnostic>> {
     let module = crate::parser::parse(src)?;
+    let problems = crate::check::check(&module);
+    if !problems.is_empty() {
+        return Err(problems);
+    }
     compile(&module)
 }
 
