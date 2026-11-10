@@ -168,12 +168,23 @@ CPU and is installed for all devices by default, so GPU-targeted code runs
 anywhere with placement rules still enforced. A CUDA, Metal or WebGPU backend
 implements the same trait and is installed with `Vm::set_gpu_backend`.
 
-**Interpreter-only limitations.** `with` and `async for` are compile errors.
-`spawn` runs its call immediately and `await` takes the result: correct, but
-not concurrent. `par for` runs sequentially. Closures capture by value.
-Keyword arguments are resolved at compile time, so they work for top-level
-functions, structs and builtins but not for closures or methods. Tensors are
-`f32` regardless of the declared element type.
+**Closures and calls.** Variables that closures use live in shared cells,
+so assignments are seen on both sides and nested functions can recurse;
+loop variables are new in each iteration, so each closure keeps its own.
+Keyword arguments are matched at compile time when the callee is known and
+by a `CallKw` instruction at run time otherwise (closures, methods, values
+passed around). `with` closes its resources in reverse order on every exit.
+
+**Tensor storage.** Tensors store `f32`, `f16`, `bf16`, or block-quantized
+`q8`/`q4` (llama.cpp's Q8_0/Q4_0 layout). Compute is `f32`; matrix products
+convert quantized weights a row at a time, never expanding them. Every
+tensor counts against its device's memory, and `set_memory_limit` makes a
+device enforce a capacity, so running out of GPU memory is caught in
+development.
+
+**Interpreter-only limitations.** `async for` is a compile error. `spawn`
+runs its call immediately and `await` takes the result: correct, but not
+concurrent. `par for` runs sequentially.
 
 **Measured performance** (release build, best of 7, 4-core cloud VM,
 CPython 3.13 on the same programs, outputs cross-checked):

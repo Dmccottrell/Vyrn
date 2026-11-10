@@ -82,6 +82,9 @@ pub enum Value {
     /// A runtime error raised by the VM itself.
     Error(Rc<ErrorValue>),
     Tokenizer(Rc<Tokenizer>),
+    /// A variable shared between a function and the closures inside it.
+    /// Never visible to programs: reading the variable reads the cell.
+    Cell(Rc<RefCell<Value>>),
     /// An argument the caller left out. Never visible to programs.
     Missing,
 }
@@ -128,6 +131,7 @@ impl Value {
             Value::Task(_) => "task",
             Value::Error(_) => "error",
             Value::Tokenizer(_) => "tokenizer",
+            Value::Cell(_) => "cell",
             Value::Missing => "missing",
         }
     }

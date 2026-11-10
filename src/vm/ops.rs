@@ -1185,6 +1185,7 @@ fn write_value(program: &Program, value: &Value, quoted: bool, out: &mut String)
             let _ = write!(out, "{}: {}", e.kind, e.message);
         }
         Value::Missing => out.push_str("<missing>"),
+        Value::Cell(cell) => write_value(program, &cell.borrow(), quoted, out),
         Value::Tokenizer(t) => {
             let _ = write!(out, "<tokenizer with {} tokens>", t.vocab_size());
         }

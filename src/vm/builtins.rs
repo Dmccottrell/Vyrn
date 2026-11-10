@@ -655,19 +655,20 @@ fn set_memory_limit(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 fn fit(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let items = ops::collect(&args[0])?;
     let device = device_arg(&args[1])?;
-    let budget =
-        match opt(args, 2) {
-            Some(Value::None) | None => match super::tensor::memory_limit(device) {
-                Some(limit) => limit.saturating_sub(super::tensor::memory_used(device)),
-                None => return Err(err(
+    let budget = match opt(args, 2) {
+        Some(Value::None) | None => match super::tensor::memory_limit(device) {
+            Some(limit) => limit.saturating_sub(super::tensor::memory_used(device)),
+            None => {
+                return Err(err(
                     "ValueError",
                     format!(
                         "give `fit` a budget, or set a limit for {device} with `set_memory_limit`"
                     ),
-                )),
-            },
-            Some(budget) => byte_count(budget)?,
-        };
+                ))
+            }
+        },
+        Some(budget) => byte_count(budget)?,
+    };
     let rest = match opt(args, 3) {
         Some(v) => v.clone(),
         None => Value::Device(Device::Cpu),

@@ -11,7 +11,7 @@
 //! result, and a local used as an operand is read in place, so
 //! `total = total + x` is a single `Add`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use super::builtins;
@@ -62,7 +62,11 @@ impl GlobalKind {
 
 enum Resolved {
     Local(u8),
+    /// A local held in a shared cell, because a closure captures it.
+    Cell(u8),
     Capture(u8),
+    /// A captured variable held in a shared cell.
+    UpCell(u8),
     Global(u16),
     Native(u16),
     Constant(Value),
@@ -102,13 +106,20 @@ struct FnState {
     required: usize,
     /// Names in scope, innermost block last. Hidden registers (loop counters
     /// and the like) are recorded with an empty name.
-    scopes: Vec<Vec<(String, u8)>>,
+    scopes: Vec<Vec<(String, u8, bool)>>,
     scope_starts: Vec<usize>,
     next_reg: usize,
     max_reg: usize,
     loops: Vec<LoopCtx>,
     cleanups: Vec<Cleanup>,
-    captures: Vec<(String, Capture)>,
+    captures: Vec<(String, Capture, bool)>,
+    /// Names that closures inside this function refer to. Variables with
+    /// these names live in shared cells.
+    cells: HashSet<String>,
+    /// Parameters with a shared cell: (parameter register, cell register).
+    /// The cell's value is copied back before returning, so `mut`
+    /// parameters still write back.
+    param_cells: Vec<(u8, u8)>,
 }
 
 impl FnState {
@@ -128,6 +139,8 @@ impl FnState {
             loops: Vec::new(),
             cleanups: Vec::new(),
             captures: Vec::new(),
+            cells: HashSet::new(),
+            param_cells: Vec::new(),
         }
     }
 }
@@ -377,7 +390,7 @@ impl Compiler {
 
         // Pass 2: compile.
         let init = self.reserve_proto();
-        self.begin_fn("<module>".into(), &[]);
+        self.begin_fn("<module>".into(), &[], HashSet::new());
         for c in consts {
             self.set_pos(c.value.span);
             if let Some(GlobalKind::Const { slot }) = self.global_index.get(&c.name.name).cloned() {
@@ -711,7 +724,8 @@ impl Compiler {
                     .iter()
                     .map(|p| (p.name.name.clone(), p.default.as_ref()))
                     .collect();
-                self.begin_fn("main".into(), &params);
+                let cells = nested_names(&decl.body.stmts, &params);
+                self.begin_fn("main".into(), &params, cells);
                 self.stmts(&decl.body.stmts);
                 let proto = self.end_fn();
                 self.set_proto(slot, proto);
@@ -738,7 +752,7 @@ impl Compiler {
             Plan::Ctor { slot, ty } => {
                 let fields = all_fields.get(&ty).cloned().unwrap_or_default();
                 let name = self.symbols.name(self.types[ty as usize].name).to_string();
-                self.begin_fn(name, &fields);
+                self.begin_fn(name, &fields, HashSet::new());
                 if let Ok(r) = self.alloc() {
                     self.emit(Op::MakeInstance { dst: r, ty });
                     self.emit(Op::Return { src: r });
@@ -753,9 +767,11 @@ impl Compiler {
                     .iter()
                     .map(|p| (p.name.name.clone(), p.default.as_ref()))
                     .collect();
+                let cells = nested_names(&decl.body.stmts, &params);
                 self.begin_fn(
                     format!("{} {}", decl.method.as_str(), decl.path.template()),
                     &params,
+                    cells,
                 );
                 self.stmts(&decl.body.stmts);
                 let proto = self.end_fn();
@@ -769,7 +785,11 @@ impl Compiler {
             .iter()
             .map(|p| (p.name.name.clone(), p.default.as_ref()))
             .collect();
-        self.begin_fn(name, &list);
+        let cells = match body {
+            FnBody::Block(block) => nested_names(&block.stmts, &list),
+            FnBody::Signature => HashSet::new(),
+        };
+        self.begin_fn(name, &list, cells);
         if let FnBody::Block(block) = body {
             self.stmts(&block.stmts);
         }
@@ -875,8 +895,14 @@ impl Compiler {
         &mut self.fns[last]
     }
 
-    fn begin_fn(&mut self, name: String, params: &[(String, Option<&Expr>)]) {
+    fn begin_fn(
+        &mut self,
+        name: String,
+        params: &[(String, Option<&Expr>)],
+        cells: HashSet<String>,
+    ) {
         let mut state = FnState::new(name);
+        state.cells = cells;
         state.params = params.iter().map(|(n, _)| self.symbols.intern(n)).collect();
         state.required =
             required_count(&params.iter().map(|(_, d)| d.is_some()).collect::<Vec<_>>());
@@ -890,7 +916,7 @@ impl Compiler {
                 self.error(format!("the parameter `{name}` appears twice"), self.span);
             }
             if let Ok(r) = self.alloc() {
-                self.bind_name(name, r);
+                self.bind_plain(name, r);
             }
         }
         for (i, (_, default)) in params.iter().enumerate() {
@@ -905,9 +931,32 @@ impl Compiler {
                 self.patch_here(skip);
             }
         }
+        // A parameter that closures capture gets a cell of its own.
+        for (i, (name, _)) in params.iter().enumerate() {
+            if self.f().cells.contains(name) {
+                if let Ok(cell) = self.alloc() {
+                    self.emit(Op::Move {
+                        dst: cell,
+                        src: i as u8,
+                    });
+                    self.emit(Op::MakeCell { reg: cell });
+                    self.bind_entry(name, cell, true);
+                    self.f().param_cells.push((i as u8, cell));
+                }
+            }
+        }
+    }
+
+    /// Copies parameter cells back into the parameters before a return.
+    fn sync_param_cells(&mut self) {
+        let pairs = self.f().param_cells.clone();
+        for (param, cell) in pairs {
+            self.emit(Op::GetCell { dst: param, cell });
+        }
     }
 
     fn end_fn(&mut self) -> Proto {
+        self.sync_param_cells();
         self.emit(Op::ReturnNone);
         let f = self.fns.pop().expect("a function is being compiled");
         Proto {
@@ -919,7 +968,7 @@ impl Compiler {
             params: f.params,
             required: f.required,
             num_regs: f.max_reg.max(1),
-            captures: f.captures.into_iter().map(|(_, c)| c).collect(),
+            captures: f.captures.into_iter().map(|(_, c, _)| c).collect(),
         }
     }
 
@@ -1052,21 +1101,37 @@ impl Compiler {
         }
     }
 
+    /// Declares `name` as the variable in `reg`, which already holds its
+    /// value. A variable that closures capture is moved into a shared cell.
     fn bind_name(&mut self, name: &str, reg: u8) {
+        let cell = self.f().cells.contains(name);
+        if cell {
+            self.emit(Op::MakeCell { reg });
+        }
+        self.bind_entry(name, reg, cell);
+    }
+
+    /// Declares `name` without a cell: for loop variables, which are new in
+    /// each iteration, so a closure keeps the value of its own iteration.
+    fn bind_plain(&mut self, name: &str, reg: u8) {
+        self.bind_entry(name, reg, false);
+    }
+
+    fn bind_entry(&mut self, name: &str, reg: u8, cell: bool) {
         if let Some(scope) = self.f().scopes.last_mut() {
-            scope.push((name.to_string(), reg));
+            scope.push((name.to_string(), reg, cell));
         }
     }
 
     fn hide(&mut self, reg: u8) {
-        self.bind_name("", reg);
+        self.bind_plain("", reg);
     }
 
     fn is_named_local(&mut self, reg: u8) -> bool {
         self.f()
             .scopes
             .iter()
-            .any(|s| s.iter().any(|(n, r)| *r == reg && !n.is_empty()))
+            .any(|s| s.iter().any(|(n, r, _)| *r == reg && !n.is_empty()))
     }
 
     /// Frees temporaries after a statement, keeping the variables it
@@ -1076,7 +1141,7 @@ impl Compiler {
         let top = f
             .scopes
             .last()
-            .and_then(|s| s.iter().map(|(_, r)| *r as usize + 1).max())
+            .and_then(|s| s.iter().map(|(_, r, _)| *r as usize + 1).max())
             .unwrap_or(0);
         f.next_reg = before.max(top);
     }
@@ -1103,27 +1168,43 @@ impl Compiler {
         }
         let f = &self.fns[level];
         for scope in f.scopes.iter().rev() {
-            if let Some((_, r)) = scope.iter().rev().find(|(n, _)| n == name) {
-                return Some(Resolved::Local(*r));
+            if let Some((_, r, cell)) = scope.iter().rev().find(|(n, _, _)| n == name) {
+                return Some(if *cell {
+                    Resolved::Cell(*r)
+                } else {
+                    Resolved::Local(*r)
+                });
             }
         }
-        if let Some(i) = f.captures.iter().position(|(n, _)| n == name) {
-            return Some(Resolved::Capture(i as u8));
+        if let Some(i) = f.captures.iter().position(|(n, _, _)| n == name) {
+            let cell = f.captures[i].2;
+            return Some(if cell {
+                Resolved::UpCell(i as u8)
+            } else {
+                Resolved::Capture(i as u8)
+            });
         }
         if level == 0 {
             return None;
         }
-        let capture = match self.resolve_in(level - 1, name)? {
-            Resolved::Local(r) => Capture::Local(r),
-            Resolved::Capture(i) => Capture::Outer(i),
+        let (capture, cell) = match self.resolve_in(level - 1, name)? {
+            Resolved::Local(r) => (Capture::Local(r), false),
+            Resolved::Cell(r) => (Capture::Local(r), true),
+            Resolved::Capture(i) => (Capture::Outer(i), false),
+            Resolved::UpCell(i) => (Capture::Outer(i), true),
             _ => return None,
         };
         let f = &mut self.fns[level];
         if f.captures.len() >= 255 {
             return None;
         }
-        f.captures.push((name.to_string(), capture));
-        Some(Resolved::Capture((f.captures.len() - 1) as u8))
+        f.captures.push((name.to_string(), capture, cell));
+        let index = (f.captures.len() - 1) as u8;
+        Some(if cell {
+            Resolved::UpCell(index)
+        } else {
+            Resolved::Capture(index)
+        })
     }
 
     fn local_of(&mut self, expr: &Expr) -> Option<u8> {
@@ -1139,7 +1220,10 @@ impl Compiler {
     /// Whether `expr` names storage that an assignment could write back to.
     fn is_place(&mut self, expr: &Expr) -> bool {
         match &expr.kind {
-            ExprKind::Name(_) => self.local_of(expr).is_some(),
+            ExprKind::Name(id) => matches!(
+                self.resolve(&id.name),
+                Some(Resolved::Local(_) | Resolved::Cell(_) | Resolved::UpCell(_))
+            ),
             ExprKind::Field {
                 base,
                 optional: false,
@@ -1157,8 +1241,8 @@ impl Compiler {
             candidates.extend(
                 scope
                     .iter()
-                    .filter(|(n, _)| !n.is_empty())
-                    .map(|(n, _)| n.clone()),
+                    .filter(|(n, _, _)| !n.is_empty())
+                    .map(|(n, _, _)| n.clone()),
             );
         }
         let best = candidates
@@ -1245,7 +1329,7 @@ impl Compiler {
                 let finally = t.finally.as_ref().map(|b| Rc::new(b.stmts.clone()));
                 self.try_finally(&t.body.stmts, &t.catches, finally)
             }
-            StmtKind::With { .. } => Err(self.unsupported("`with` blocks", stmt.span)),
+            StmtKind::With { items, body, .. } => self.with_stmt(items, body, stmt.span),
             StmtKind::On(on) => {
                 let mark = self.mark();
                 let target = self.expr_any(&on.target)?;
@@ -1274,6 +1358,61 @@ impl Compiler {
         }
     }
 
+    /// `with a as x, b:` holds each resource in a hidden variable and runs
+    /// the body as a `try` whose `finally` calls `close()` on each, last
+    /// opened first, however the body ends.
+    fn with_stmt(&mut self, items: &[WithItem], body: &Block, span: Span) -> CResult<()> {
+        self.push_scope();
+        let mut closes = Vec::with_capacity(items.len());
+        for (i, item) in items.iter().enumerate() {
+            let hidden = format!("$with{}_{i}", self.f().code.len());
+            let r = self.alloc()?;
+            self.expr_to(&item.value, r)?;
+            self.bind_name(&hidden, r);
+            if let Some(binding) = &item.binding {
+                let named = self.alloc()?;
+                self.emit(Op::Move { dst: named, src: r });
+                self.bind_name(&binding.name, named);
+            }
+            let resource = Expr::new(
+                NodeId(0),
+                ExprKind::Name(Ident {
+                    name: hidden,
+                    span: item.value.span,
+                }),
+                item.value.span,
+            );
+            let close = Expr::new(
+                NodeId(0),
+                ExprKind::Call {
+                    callee: Box::new(Expr::new(
+                        NodeId(0),
+                        ExprKind::Field {
+                            base: Box::new(resource),
+                            name: Ident {
+                                name: "close".into(),
+                                span: item.value.span,
+                            },
+                            optional: false,
+                        },
+                        item.value.span,
+                    )),
+                    args: Vec::new(),
+                },
+                item.value.span,
+            );
+            closes.push(Stmt {
+                id: NodeId(0),
+                span,
+                kind: StmtKind::Expr(close),
+            });
+        }
+        closes.reverse();
+        let result = self.try_finally(&body.stmts, &[], Some(Rc::new(closes)));
+        self.pop_scope();
+        result
+    }
+
     fn nested_item(&mut self, item: &Item) -> CResult<()> {
         let ItemKind::Fn(f) = &item.kind else {
             return Err(self.error(
@@ -1285,20 +1424,40 @@ impl Compiler {
             return Ok(());
         };
         let r = self.alloc()?;
+        // Declared before its body is compiled, so the function can call
+        // itself through the shared cell.
+        let recursive = self.f().cells.contains(&f.name.name);
+        if recursive {
+            self.emit(Op::LoadNone { dst: r });
+            self.bind_name(&f.name.name, r);
+        }
         let params: Vec<(String, Option<&Expr>)> = f
             .params
             .iter()
             .map(|p| (p.name.name.clone(), p.default.as_ref()))
             .collect();
-        self.begin_fn(f.name.name.clone(), &params);
+        let cells = nested_names(&body.stmts, &params);
+        self.begin_fn(f.name.name.clone(), &params, cells);
         self.stmts(&body.stmts);
         let proto = self.end_fn();
         let index = self.add_proto(proto)?;
-        self.emit(Op::MakeClosure {
-            dst: r,
-            proto: index,
-        });
-        self.bind_name(&f.name.name, r);
+        if recursive {
+            let closure = self.alloc()?;
+            self.emit(Op::MakeClosure {
+                dst: closure,
+                proto: index,
+            });
+            self.emit(Op::SetCell {
+                cell: r,
+                src: closure,
+            });
+        } else {
+            self.emit(Op::MakeClosure {
+                dst: r,
+                proto: index,
+            });
+            self.bind_name(&f.name.name, r);
+        }
         Ok(())
     }
 
@@ -1388,16 +1547,21 @@ impl Compiler {
                         self.release(mark);
                         return Ok(());
                     }
-                    Some(Resolved::Capture(_)) => {
-                        return Err(self.error_hint(
-                            format!("cannot assign to `{}` here", ident.name),
-                            target.span,
-                            "it belongs to an enclosing function; a closure captures variables by value",
-                        ))
+                    Some(Resolved::Cell(_) | Resolved::UpCell(_)) => {
+                        let v = self.expr_any(value)?;
+                        return self.store_place(target, v);
                     }
+                    Some(Resolved::Capture(_)) => return Err(self.error_hint(
+                        format!("cannot assign to `{}` here", ident.name),
+                        target.span,
+                        "a loop variable is new in each iteration, so a closure keeps its own copy",
+                    )),
                     Some(Resolved::Global(_)) => {
                         return Err(self.error(
-                            format!("cannot assign to `{}`: it is a top-level constant or declaration", ident.name),
+                            format!(
+                                "cannot assign to `{}`: it is a top-level constant or declaration",
+                                ident.name
+                            ),
                             target.span,
                         ))
                     }
@@ -1497,6 +1661,14 @@ impl Compiler {
                     if r != src {
                         self.emit(Op::Move { dst: r, src });
                     }
+                    Ok(())
+                }
+                Some(Resolved::Cell(cell)) => {
+                    self.emit(Op::SetCell { cell, src });
+                    Ok(())
+                }
+                Some(Resolved::UpCell(idx)) => {
+                    self.emit(Op::SetUpval { idx, src });
                     Ok(())
                 }
                 Some(Resolved::Capture(_)) | Some(Resolved::Global(_)) => {
@@ -1608,6 +1780,7 @@ impl Compiler {
             None => None,
         };
         self.emit_cleanups(0);
+        self.sync_param_cells();
         match src {
             Some(src) => self.emit(Op::Return { src }),
             None => self.emit(Op::ReturnNone),
@@ -1745,7 +1918,7 @@ impl Compiler {
                     self.hide(r);
                 }
                 match target {
-                    BindTarget::Name(ident) => self.bind_name(&ident.name, regs[3]),
+                    BindTarget::Name(ident) => self.bind_plain(&ident.name, regs[3]),
                     _ => self.hide(regs[3]),
                 }
                 let mark = self.mark();
@@ -1784,7 +1957,7 @@ impl Compiler {
         self.release(mark);
         let item = self.alloc()?;
         match target {
-            BindTarget::Name(ident) => self.bind_name(&ident.name, item),
+            BindTarget::Name(ident) => self.bind_plain(&ident.name, item),
             _ => self.hide(item),
         }
         let top = self.here();
@@ -1880,7 +2053,7 @@ impl Compiler {
             obj: list,
             index,
         });
-        self.bind_name(&ident.name, item);
+        self.bind_plain(&ident.name, item);
         self.f()
             .cleanups
             .push(Cleanup::WriteBack { list, index, item });
@@ -2410,6 +2583,12 @@ impl Compiler {
             Some(Resolved::Capture(idx)) => {
                 self.emit(Op::GetCapture { dst, idx });
             }
+            Some(Resolved::Cell(cell)) => {
+                self.emit(Op::GetCell { dst, cell });
+            }
+            Some(Resolved::UpCell(idx)) => {
+                self.emit(Op::GetUpval { dst, idx });
+            }
             Some(Resolved::Global(idx)) => {
                 self.emit(Op::GetGlobal { dst, idx });
             }
@@ -2730,7 +2909,14 @@ impl Compiler {
                     .iter()
                     .map(|p| (p.name.name.clone(), p.default.as_ref()))
                     .collect();
-                self.begin_fn("<lambda>".into(), &list);
+                let mut cells = HashSet::new();
+                scan_expr(body, false, &mut cells);
+                for (_, default) in &list {
+                    if let Some(d) = default {
+                        scan_expr(d, false, &mut cells);
+                    }
+                }
+                self.begin_fn("<lambda>".into(), &list, cells);
                 if let Ok(r) = self.expr_any(body) {
                     self.emit(Op::Return { src: r });
                 }
@@ -3014,6 +3200,9 @@ impl Compiler {
             }
         }
         let sig = self.signature_of(callee);
+        if sig.is_none() && args.iter().any(|a| a.name.is_some()) {
+            return self.call_with_keywords(callee, None, None, args, dst);
+        }
         let ordered = self.order_args(callee, args, sig)?;
         if ordered.len() > 250 {
             return Err(self.error("too many arguments for the interpreter", callee.span));
@@ -3050,6 +3239,84 @@ impl Compiler {
 
     /// Calls method `name` on `receiver`. `evaluated` holds the receiver if
     /// the caller has already computed it.
+    /// A call whose keyword arguments are matched to parameters when it
+    /// runs, because the compiler cannot see the callee: a closure, a value
+    /// passed in, or a method. Positional arguments come first, then the
+    /// keyword arguments, then a tuple of their names.
+    fn call_with_keywords(
+        &mut self,
+        callee: &Expr,
+        receiver: Option<(&Expr, Option<u8>)>,
+        method: Option<&str>,
+        args: Vec<CallArg>,
+        dst: u8,
+    ) -> CResult<()> {
+        let mut seen_keyword = false;
+        for arg in &args {
+            if arg.name.is_some() {
+                seen_keyword = true;
+            } else if seen_keyword {
+                return Err(self.error(
+                    "positional arguments must come before keyword arguments",
+                    arg.expr.span,
+                ));
+            }
+        }
+        if args.len() > 249 {
+            return Err(self.error("too many arguments for the interpreter", callee.span));
+        }
+        let names: Vec<Value> = args.iter().filter_map(|a| a.name.map(Value::str)).collect();
+        let func = self.alloc()?;
+        let recv = match receiver {
+            Some(_) => Some(self.alloc()?),
+            None => None,
+        };
+        let regs = self.alloc_n(args.len() + 1)?;
+        match (receiver, recv) {
+            (Some((expr, evaluated)), Some(r)) => match evaluated {
+                Some(value) => {
+                    self.emit(Op::Move { dst: r, src: value });
+                }
+                None => self.expr_to(expr, r)?,
+            },
+            _ => self.expr_to(callee, func)?,
+        }
+        for (arg, &r) in args.iter().zip(&regs) {
+            self.expr_to(arg.expr, r)?;
+        }
+        self.load_const(regs[args.len()], Value::tuple(names))?;
+        let argc = args.len() as u8;
+        match method {
+            Some(name) => {
+                let n = self.name_index(name)?;
+                self.emit(Op::CallMethodKw {
+                    base: func,
+                    argc,
+                    name: n,
+                });
+            }
+            None => {
+                self.emit(Op::CallKw { func, argc });
+            }
+        }
+        if let (Some((expr, _)), Some(r)) = (receiver, recv) {
+            if self.is_place(expr) {
+                self.store_place(expr, r)?;
+            }
+        }
+        // `mut` is only allowed on positional arguments, which keep their
+        // registers.
+        for (arg, &r) in args.iter().zip(&regs) {
+            if arg.is_mut && arg.name.is_none() && self.is_place(arg.expr) {
+                self.store_place(arg.expr, r)?;
+            }
+        }
+        if dst != func {
+            self.emit(Op::Move { dst, src: func });
+        }
+        Ok(())
+    }
+
     fn method_call(
         &mut self,
         receiver: &Expr,
@@ -3058,12 +3325,14 @@ impl Compiler {
         args: Vec<CallArg>,
         dst: u8,
     ) -> CResult<()> {
-        if let Some(arg) = args.iter().find(|a| a.name.is_some()) {
-            return Err(self.error_hint(
-                "keyword arguments are not supported in method calls yet",
-                arg.expr.span,
-                "pass the arguments by position",
-            ));
+        if args.iter().any(|a| a.name.is_some()) {
+            return self.call_with_keywords(
+                receiver,
+                Some((receiver, evaluated)),
+                Some(name),
+                args,
+                dst,
+            );
         }
         if args.len() > 250 {
             return Err(self.error("too many arguments for the interpreter", receiver.span));
@@ -3100,5 +3369,271 @@ impl Compiler {
             self.emit(Op::Move { dst, src: base });
         }
         Ok(())
+    }
+}
+
+// ==== variables captured by closures ===========================================
+
+/// Names used inside the closures and nested functions of a function body.
+/// Variables of the function with these names are held in shared cells.
+/// Over-approximating is harmless: a cell that is never shared costs one
+/// indirection.
+fn nested_names(stmts: &[Stmt], params: &[(String, Option<&Expr>)]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for stmt in stmts {
+        scan_stmt(stmt, false, &mut names);
+    }
+    for (_, default) in params {
+        if let Some(d) = default {
+            scan_expr(d, false, &mut names);
+        }
+    }
+    names
+}
+
+fn scan_block(block: &Block, inside: bool, names: &mut HashSet<String>) {
+    for stmt in &block.stmts {
+        scan_stmt(stmt, inside, names);
+    }
+}
+
+fn scan_condition(condition: &Condition, inside: bool, names: &mut HashSet<String>) {
+    match condition {
+        Condition::Expr(e) => scan_expr(e, inside, names),
+        Condition::Let { pattern, value } => {
+            scan_pattern(pattern, inside, names);
+            scan_expr(value, inside, names);
+        }
+    }
+}
+
+fn scan_pattern(pattern: &Pattern, inside: bool, names: &mut HashSet<String>) {
+    match &pattern.kind {
+        PatternKind::Value(path) if inside => {
+            names.insert(path.segments[0].name.clone());
+        }
+        PatternKind::Destructure { args, .. } => {
+            for arg in args {
+                scan_pattern(&arg.pattern, inside, names);
+            }
+        }
+        PatternKind::Tuple(items) | PatternKind::List(items) => {
+            for item in items {
+                if let SeqPattern::Item(p) = item {
+                    scan_pattern(p, inside, names);
+                }
+            }
+        }
+        PatternKind::Or(alternatives) => {
+            for p in alternatives {
+                scan_pattern(p, inside, names);
+            }
+        }
+        PatternKind::As { pattern, .. } => scan_pattern(pattern, inside, names),
+        _ => {}
+    }
+}
+
+fn scan_stmt(stmt: &Stmt, inside: bool, names: &mut HashSet<String>) {
+    match &stmt.kind {
+        StmtKind::Binding(b) => {
+            if let Some(v) = &b.value {
+                scan_expr(v, inside, names);
+            }
+        }
+        StmtKind::Expr(e) | StmtKind::Fail(e) | StmtKind::Defer(e) => scan_expr(e, inside, names),
+        StmtKind::Assign { target, value, .. } => {
+            scan_expr(target, inside, names);
+            scan_expr(value, inside, names);
+        }
+        StmtKind::Return(v) => {
+            if let Some(v) = v {
+                scan_expr(v, inside, names);
+            }
+        }
+        StmtKind::Stop | StmtKind::Skip => {}
+        StmtKind::If(i) => {
+            for (condition, body) in &i.branches {
+                scan_condition(condition, inside, names);
+                scan_block(body, inside, names);
+            }
+            if let Some(body) = &i.else_body {
+                scan_block(body, inside, names);
+            }
+        }
+        StmtKind::While { condition, body } => {
+            scan_condition(condition, inside, names);
+            scan_block(body, inside, names);
+        }
+        StmtKind::Loop(body) | StmtKind::Unsafe(body) => scan_block(body, inside, names),
+        StmtKind::For(f) => {
+            scan_expr(&f.iter, inside, names);
+            scan_block(&f.body, inside, names);
+        }
+        StmtKind::Match(m) => {
+            scan_expr(&m.scrutinee, inside, names);
+            for arm in &m.arms {
+                scan_pattern(&arm.pattern, inside, names);
+                if let Some(g) = &arm.guard {
+                    scan_expr(g, inside, names);
+                }
+                scan_block(&arm.body, inside, names);
+            }
+            if let Some(body) = &m.else_body {
+                scan_block(body, inside, names);
+            }
+        }
+        StmtKind::Try(t) => {
+            scan_block(&t.body, inside, names);
+            for c in &t.catches {
+                scan_block(&c.body, inside, names);
+            }
+            if let Some(body) = &t.finally {
+                scan_block(body, inside, names);
+            }
+        }
+        StmtKind::With { items, body, .. } => {
+            for item in items {
+                scan_expr(&item.value, inside, names);
+            }
+            scan_block(body, inside, names);
+        }
+        StmtKind::On(on) => {
+            scan_expr(&on.target, inside, names);
+            scan_block(&on.body, inside, names);
+        }
+        StmtKind::Region(region) => scan_block(&region.body, inside, names),
+        StmtKind::Item(item) => {
+            if let ItemKind::Fn(f) = &item.kind {
+                for p in &f.params {
+                    if let Some(d) = &p.default {
+                        scan_expr(d, true, names);
+                    }
+                }
+                if let FnBody::Block(body) = &f.body {
+                    scan_block(body, true, names);
+                }
+            }
+        }
+    }
+}
+
+fn scan_expr(expr: &Expr, inside: bool, names: &mut HashSet<String>) {
+    match &expr.kind {
+        ExprKind::Int { .. } | ExprKind::Float { .. } | ExprKind::Bool(_) | ExprKind::None => {}
+        ExprKind::Name(ident) => {
+            if inside {
+                names.insert(ident.name.clone());
+            }
+        }
+        ExprKind::Str(segments) => {
+            for segment in segments {
+                if let StrSegment::Interp(e) = segment {
+                    scan_expr(e, inside, names);
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::List(items) => {
+            for item in items {
+                scan_expr(item, inside, names);
+            }
+        }
+        ExprKind::Map(entries) => {
+            for (k, v) in entries {
+                scan_expr(k, inside, names);
+                scan_expr(v, inside, names);
+            }
+        }
+        ExprKind::ListComp { element, clauses } => {
+            scan_expr(element, inside, names);
+            scan_clauses(clauses, inside, names);
+        }
+        ExprKind::MapComp {
+            key,
+            value,
+            clauses,
+        } => {
+            scan_expr(key, inside, names);
+            scan_expr(value, inside, names);
+            scan_clauses(clauses, inside, names);
+        }
+        ExprKind::Unary { operand, .. } => scan_expr(operand, inside, names),
+        ExprKind::Binary { lhs, rhs, .. }
+        | ExprKind::Coalesce { lhs, rhs }
+        | ExprKind::Pipeline { lhs, rhs }
+        | ExprKind::MatMul { lhs, rhs } => {
+            scan_expr(lhs, inside, names);
+            scan_expr(rhs, inside, names);
+        }
+        ExprKind::Compare { operands, .. } => {
+            for operand in operands {
+                scan_expr(operand, inside, names);
+            }
+        }
+        ExprKind::Range {
+            start, end, step, ..
+        } => {
+            scan_expr(start, inside, names);
+            scan_expr(end, inside, names);
+            if let Some(s) = step {
+                scan_expr(s, inside, names);
+            }
+        }
+        ExprKind::Placement { value, target, .. } => {
+            scan_expr(value, inside, names);
+            scan_expr(target, inside, names);
+        }
+        ExprKind::Index { base, subscripts } => {
+            scan_expr(base, inside, names);
+            for sub in subscripts {
+                match sub {
+                    Subscript::Index(e) => scan_expr(e, inside, names),
+                    Subscript::Slice {
+                        start, stop, step, ..
+                    } => {
+                        for part in [start, stop, step].into_iter().flatten() {
+                            scan_expr(part, inside, names);
+                        }
+                    }
+                    Subscript::Ellipsis(_) => {}
+                }
+            }
+        }
+        ExprKind::Field { base, .. } => scan_expr(base, inside, names),
+        ExprKind::Call { callee, args } => {
+            scan_expr(callee, inside, names);
+            for a in args {
+                scan_expr(&a.value, inside, names);
+            }
+        }
+        ExprKind::Await(e) | ExprKind::Spawn(e) | ExprKind::Try(e) | ExprKind::Move(e) => {
+            scan_expr(e, inside, names)
+        }
+        ExprKind::If {
+            then_value,
+            condition,
+            else_value,
+        } => {
+            scan_expr(then_value, inside, names);
+            scan_expr(condition, inside, names);
+            scan_expr(else_value, inside, names);
+        }
+        ExprKind::Lambda { params, body, .. } => {
+            for p in params {
+                if let Some(d) = &p.default {
+                    scan_expr(d, true, names);
+                }
+            }
+            scan_expr(body, true, names);
+        }
+    }
+}
+
+fn scan_clauses(clauses: &[CompClause], inside: bool, names: &mut HashSet<String>) {
+    for clause in clauses {
+        match clause {
+            CompClause::For { iter, .. } => scan_expr(iter, inside, names),
+            CompClause::If(e) => scan_expr(e, inside, names),
+        }
     }
 }

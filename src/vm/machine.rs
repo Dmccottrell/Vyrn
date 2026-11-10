@@ -366,6 +366,79 @@ impl Vm {
 
     /// Pops the finished frame. Returns the value if the frame was the
     /// entry point of the current `execute`.
+    /// Puts keyword arguments in parameter order. The `argc` arguments
+    /// start at `start`; the tuple of keyword names is in the register after
+    /// them and names the last ones. Returns the number of arguments now in
+    /// place, with left-out ones marked missing so defaults apply.
+    fn match_keywords(
+        &mut self,
+        start: usize,
+        argc: usize,
+        params: &[String],
+        required: usize,
+        name: &str,
+    ) -> VmResult<usize> {
+        let names: Vec<String> = match &self.stack[start + argc] {
+            Value::Tuple(items) => items
+                .iter()
+                .map(|n| match n {
+                    Value::Str(s) => (**s).clone(),
+                    _ => String::new(),
+                })
+                .collect(),
+            _ => return Err(err("InternalError", "keyword names are missing")),
+        };
+        let positional = argc - names.len();
+        if positional > params.len() {
+            return Err(err(
+                "CallError",
+                format!(
+                    "`{name}` takes {} argument{}, got {positional}",
+                    params.len(),
+                    if params.len() == 1 { "" } else { "s" }
+                ),
+            ));
+        }
+        let mut slots = vec![Value::Missing; params.len()];
+        for (i, slot) in slots.iter_mut().enumerate().take(positional) {
+            *slot = std::mem::replace(&mut self.stack[start + i], Value::None);
+        }
+        for (k, keyword) in names.iter().enumerate() {
+            let Some(index) = params.iter().position(|p| p == keyword) else {
+                return Err(err(
+                    "CallError",
+                    format!(
+                        "`{name}` has no parameter `{keyword}`; its parameters are: {}",
+                        params.join(", ")
+                    ),
+                ));
+            };
+            if !matches!(slots[index], Value::Missing) {
+                return Err(err("CallError", format!("`{keyword}` is given twice")));
+            }
+            slots[index] = std::mem::replace(&mut self.stack[start + positional + k], Value::None);
+        }
+        if let Some(missing) =
+            (0..required.min(slots.len())).find(|&i| matches!(slots[i], Value::Missing))
+        {
+            return Err(err(
+                "CallError",
+                format!("`{name}` is missing the argument `{}`", params[missing]),
+            ));
+        }
+        while matches!(slots.last(), Some(Value::Missing)) {
+            slots.pop();
+        }
+        let count = slots.len();
+        if self.stack.len() < start + count + 1 {
+            self.stack.resize(start + count + 1, Value::None);
+        }
+        for (i, value) in slots.into_iter().enumerate() {
+            self.stack[start + i] = value;
+        }
+        Ok(count)
+    }
+
     #[inline]
     fn finish_frame(&mut self, value: Value, entry_depth: usize) -> Option<Value> {
         let Some(frame) = self.frames.pop() else {
@@ -640,6 +713,37 @@ impl Vm {
                     Op::GetCapture { dst, idx } => {
                         reg!(dst) = closure.captures[idx as usize].clone();
                     }
+                    Op::MakeCell { reg } => {
+                        let value = std::mem::replace(&mut reg!(reg), Value::None);
+                        reg!(reg) = Value::Cell(Rc::new(RefCell::new(value)));
+                    }
+                    Op::GetCell { dst, cell } => {
+                        let value = match &reg!(cell) {
+                            Value::Cell(c) => c.borrow().clone(),
+                            other => other.clone(),
+                        };
+                        reg!(dst) = value;
+                    }
+                    Op::SetCell { cell, src } => {
+                        let value = reg!(src).clone();
+                        match &reg!(cell) {
+                            Value::Cell(c) => *c.borrow_mut() = value,
+                            _ => reg!(cell) = value,
+                        }
+                    }
+                    Op::GetUpval { dst, idx } => {
+                        let value = match &closure.captures[idx as usize] {
+                            Value::Cell(c) => c.borrow().clone(),
+                            other => other.clone(),
+                        };
+                        reg!(dst) = value;
+                    }
+                    Op::SetUpval { idx, src } => {
+                        let value = reg!(src).clone();
+                        if let Value::Cell(c) = &closure.captures[idx as usize] {
+                            *c.borrow_mut() = value;
+                        }
+                    }
                     Op::MakeClosure { dst, proto: index } => {
                         let target = self.program.protos[index as usize].clone();
                         let captures = target
@@ -901,6 +1005,99 @@ impl Vm {
                                 throw!(type_error(format!("{} is not callable", other.type_name())))
                             }
                         }
+                    }
+                    Op::CallKw { func, argc } => {
+                        let at = base + func as usize;
+                        let callee = self.stack[at].clone();
+                        let (params, required, name): (Vec<String>, usize, String) = match &callee {
+                            Value::Function(c) => (
+                                c.proto
+                                    .params
+                                    .iter()
+                                    .map(|p| self.program.symbols.name(*p).to_string())
+                                    .collect(),
+                                c.proto.required,
+                                c.proto.name.clone(),
+                            ),
+                            Value::Native(id) => {
+                                let native = &builtins::NATIVES[*id as usize];
+                                if native.variadic {
+                                    throw!(type_error(format!(
+                                        "`{}` takes no keyword arguments",
+                                        native.name
+                                    )));
+                                }
+                                (
+                                    native.params.iter().map(|p| p.to_string()).collect(),
+                                    native.required,
+                                    native.name.to_string(),
+                                )
+                            }
+                            other => {
+                                throw!(type_error(format!("{} is not callable", other.type_name())))
+                            }
+                        };
+                        let count = check!(self.match_keywords(
+                            at + 1,
+                            argc as usize,
+                            &params,
+                            required,
+                            &name
+                        ));
+                        match callee {
+                            Value::Function(c) => {
+                                save_ip!();
+                                check!(self.push_frame(c, at, at + 1, count));
+                                continue 'frames;
+                            }
+                            Value::Native(id) => {
+                                let result = check!(builtins::call(
+                                    id,
+                                    &mut self.ctx,
+                                    &self.stack[at + 1..at + 1 + count]
+                                ));
+                                self.stack[at] = result;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Op::CallMethodKw {
+                        base: b,
+                        argc,
+                        name,
+                    } => {
+                        let result_at = base + b as usize;
+                        let receiver = result_at + 1;
+                        let symbol = proto.names[name as usize];
+                        let ty = match &self.stack[receiver] {
+                            Value::Struct(inst) => Some(inst.ty),
+                            Value::Object(obj) => Some(obj.borrow().ty),
+                            _ => None,
+                        };
+                        let method = ty.and_then(|ty| self.methods.get(&(ty, symbol)).cloned());
+                        let Some(method) = method else {
+                            throw!(type_error(format!(
+                                "`.{}()` takes no keyword arguments here; pass them by position",
+                                self.program.symbols.name(symbol)
+                            )));
+                        };
+                        // `self` is matched by position, the rest by name.
+                        let params: Vec<String> = method.proto.params[1..]
+                            .iter()
+                            .map(|p| self.program.symbols.name(*p).to_string())
+                            .collect();
+                        let required = method.proto.required.saturating_sub(1);
+                        let name = method.proto.name.clone();
+                        let count = check!(self.match_keywords(
+                            receiver + 1,
+                            argc as usize,
+                            &params,
+                            required,
+                            &name
+                        ));
+                        save_ip!();
+                        check!(self.push_frame(method, result_at, receiver, count + 1));
+                        continue 'frames;
                     }
                     Op::CallMethod {
                         base: b,

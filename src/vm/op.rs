@@ -59,6 +59,28 @@ pub enum Op {
         dst: u8,
         idx: u8,
     },
+    /// Moves the value in `reg` into a new shared cell, for a variable that
+    /// closures capture.
+    MakeCell {
+        reg: u8,
+    },
+    GetCell {
+        dst: u8,
+        cell: u8,
+    },
+    SetCell {
+        cell: u8,
+        src: u8,
+    },
+    /// Reads a captured variable held in a shared cell.
+    GetUpval {
+        dst: u8,
+        idx: u8,
+    },
+    SetUpval {
+        idx: u8,
+        src: u8,
+    },
     /// Creates a closure over `proto`, capturing variables from this frame.
     MakeClosure {
         dst: u8,
@@ -254,6 +276,18 @@ pub enum Op {
     Call {
         func: u8,
         argc: u8,
+    },
+    /// Like `Call`, with keyword arguments: the last arguments are matched
+    /// to parameters by the names in the tuple in the register after them.
+    CallKw {
+        func: u8,
+        argc: u8,
+    },
+    /// Like `CallMethod`, with keyword arguments named as for `CallKw`.
+    CallMethodKw {
+        base: u8,
+        argc: u8,
+        name: u8,
     },
     /// Calls method `name` on the receiver in `base + 1`, with `argc`
     /// arguments after it. The result goes to `base`.

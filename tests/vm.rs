@@ -725,8 +725,8 @@ fn compile_time_errors() {
         ["cannot assign to `N`: it is a top-level constant or declaration"]
     );
     assert_eq!(
-        compile_errors("main:\n    with open(p) as f: f.read()\nend\n"),
-        ["`with` blocks are not supported by the interpreter yet"]
+        compile_errors("main:\n    async for x in xs: print(x)\nend\n"),
+        ["`async for` loops are not supported by the interpreter yet"]
     );
 }
 
@@ -969,5 +969,102 @@ fn fit_needs_a_budget_or_a_limit() {
         runtime_error("main:\n    x = fit([ones(2)], gpu[3])\nend\n")
             .message
             .contains("set_memory_limit")
+    );
+}
+
+// ---- keyword arguments, closures and with -------------------------------------
+
+#[test]
+fn keyword_arguments_reach_closures_methods_and_builtins() {
+    assert_eq!(
+        run(
+            "struct Box:\n    w: float\n    fn scaled(self, factor = 2.0, offset = 0.0): return self.w * factor + offset\nend\n\
+             fn make(): return fn(x, scale = 1, bias = 0) => x * scale + bias\n\
+             main:\n\
+             \x20   f = make()\n\
+             \x20   print(f(3), f(3, bias = 1), f(x = 2, scale = 10), f(1, 2, bias = 5))\n\
+             \x20   b = Box(1.5)\n\
+             \x20   print(b.scaled(), b.scaled(offset = 1.0), b.scaled(factor = 4.0, offset = 0.5))\n\
+             \x20   g = softmax\n\
+             \x20   print(g(tensor([0.0, 0.0]), axis = -1))\n\
+             end\n"
+        ),
+        "3 4 20 7\n3.0 4.0 6.5\ntensor([0.5, 0.5])\n"
+    );
+    assert_eq!(
+        runtime_error("main:\n    f = fn(x) => x\n    f(1, size = 2)\nend\n").message,
+        "`<lambda>` has no parameter `size`; its parameters are: x"
+    );
+    assert_eq!(
+        runtime_error("main:\n    f = fn(x, y) => x\n    f(y = 2)\nend\n").message,
+        "`<lambda>` is missing the argument `x`"
+    );
+}
+
+#[test]
+fn closures_share_the_variables_they_capture() {
+    assert_eq!(
+        run("fn counter():\n\
+             \x20   count = 0\n\
+             \x20   fn next():\n\
+             \x20       count += 1\n\
+             \x20       return count\n\
+             \x20   end\n\
+             \x20   return next\n\
+             end\n\
+             fn outer(mut xs):\n\
+             \x20   add = fn(x) => xs.append(x)\n\
+             \x20   add(1)\n\
+             \x20   xs = xs + [99]\n\
+             \x20   return len(xs)\n\
+             end\n\
+             main:\n\
+             \x20   c = counter()\n\
+             \x20   c()\n\
+             \x20   c()\n\
+             \x20   print(c(), counter()())\n\
+             \x20   adders = []\n\
+             \x20   for i in 0 until 3: adders.append(fn(x) => x + i)\n\
+             \x20   print([f(10) for f in adders])\n\
+             \x20   fn fact(n):\n\
+             \x20       if n <= 1: return 1\n\
+             \x20       return n * fact(n - 1)\n\
+             \x20   end\n\
+             \x20   print(fact(10))\n\
+             \x20   seen = []\n\
+             \x20   log = fn(m) => seen.append(m)\n\
+             \x20   log(\"a\")\n\
+             \x20   seen = seen + [\"b\"]\n\
+             \x20   log(\"c\")\n\
+             \x20   print(seen)\n\
+             \x20   ys = [0]\n\
+             \x20   print(outer(mut ys), ys)\n\
+             end\n"),
+        "3 1\n[10, 11, 12]\n3628800\n[\"a\", \"b\", \"c\"]\n3 [0, 1, 99]\n"
+    );
+}
+
+#[test]
+fn with_closes_resources_in_reverse_order() {
+    assert_eq!(
+        run(
+            "class Resource:\n    name: str\n    log: [str]\n    fn close(self): self.log.append(\"closed \" + self.name)\nend\n\
+             fn use_two(log):\n\
+             \x20   with Resource(\"a\", log) as a, Resource(\"b\", log) as b:\n\
+             \x20       log.append(\"using {a.name} and {b.name}\")\n\
+             \x20       return \"done\"\n\
+             \x20   end\n\
+             end\n\
+             main:\n\
+             \x20   log = []\n\
+             \x20   print(use_two(log))\n\
+             \x20   try:\n\
+             \x20       with Resource(\"c\", log): fail \"boom\"\n\
+             \x20   catch: log.append(\"caught\")\n\
+             \x20   end\n\
+             \x20   print(log)\n\
+             end\n"
+        ),
+        "done\n[\"using a and b\", \"closed b\", \"closed a\", \"closed c\", \"caught\"]\n"
     );
 }
