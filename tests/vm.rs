@@ -927,3 +927,47 @@ fn files_and_json() {
         "IoError"
     );
 }
+
+// ---- device memory ----------------------------------------------------------
+
+#[test]
+fn device_memory_is_accounted_and_limited() {
+    assert_eq!(
+        run("struct Layer:\n    w: tensor[f32; D, D]\nend\n\
+             main:\n\
+             \x20   layers = [Layer(rand(256, 256)) for _ in 0 until 8]\n\
+             \x20   small = [Layer(l.w.to(q4)) for l in layers]\n\
+             \x20   print(format_bytes(memory(layers)), format_bytes(memory(small)))\n\
+             \x20   set_memory_limit(gpu[0], 1 * MB)\n\
+             \x20   try:\n\
+             \x20       big = layers on gpu[0]\n\
+             \x20   catch OutOfMemory as e: print(\"refused\")\n\
+             \x20   end\n\
+             \x20   print(memory_used(gpu[0]))\n\
+             \x20   placed = fit(layers, gpu[0])\n\
+             \x20   print([l.w.device for l in placed], format_bytes(memory_used(gpu[0])))\n\
+             \x20   placed = none\n\
+             \x20   print(memory_used(gpu[0]))\n\
+             \x20   resident = small on gpu[0]\n\
+             \x20   print(format_bytes(memory_used(gpu[0])))\n\
+             \x20   halves = fit(layers, gpu[1], 3 * 256 * KB)\n\
+             \x20   print(len([l for l in halves if l.w.device == gpu[1]]))\n\
+             end\n"),
+        "2.0 MB 288.0 KB\n\
+         refused\n\
+         0\n\
+         [gpu:0, gpu:0, gpu:0, gpu:0, cpu, cpu, cpu, cpu] 1.0 MB\n\
+         0\n\
+         288.0 KB\n\
+         3\n"
+    );
+}
+
+#[test]
+fn fit_needs_a_budget_or_a_limit() {
+    assert!(
+        runtime_error("main:\n    x = fit([ones(2)], gpu[3])\nend\n")
+            .message
+            .contains("set_memory_limit")
+    );
+}

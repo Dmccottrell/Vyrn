@@ -13,7 +13,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use super::program::Proto;
-use super::tensor::{Device, Tensor};
+use super::tensor::{Device, DeviceTensor, Tensor};
 use super::tokenizer::Tokenizer;
 
 /// An interned name: a field, method or type name.
@@ -68,7 +68,7 @@ pub enum Value {
     Type(u16),
     Function(Rc<Closure>),
     Native(u16),
-    Tensor(Rc<Tensor>),
+    Tensor(Rc<DeviceTensor>),
     Device(Device),
     /// The builtin `gpu`, indexed to pick devices: `gpu[0]`, `gpu[0 to 3]`.
     Gpus,
@@ -100,7 +100,7 @@ impl Value {
     }
 
     pub fn tensor(tensor: Tensor) -> Value {
-        Value::Tensor(Rc::new(tensor))
+        Value::Tensor(Rc::new(DeviceTensor::new(tensor)))
     }
 
     /// The type name used in error messages and by `catch` and `is`.

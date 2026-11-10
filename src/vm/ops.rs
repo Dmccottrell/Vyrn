@@ -13,8 +13,8 @@ use std::rc::Rc;
 use super::dtype::{DType, Storage};
 use super::program::{Program, TypeKind};
 use super::tensor::{
-    normalize_index, slice_indices, widen, Device, ElemOp, MapOp, Sub, Tensor, TensorBackend,
-    TensorError,
+    normalize_index, reserve, slice_indices, widen, Device, ElemOp, MapOp, Sub, Tensor,
+    TensorBackend, TensorError,
 };
 use super::value::{ErrorValue, Instance, Iter, Key, Map, RangeValue, SliceValue, Value};
 
@@ -278,8 +278,8 @@ fn tensor_arith(ctx: &mut Ctx, op: Arith, a: &Tensor, b: &Tensor) -> VmResult<Va
     };
     ctx.backend(device)
         .elementwise(elem, a, b)
-        .map(Value::tensor)
         .map_err(tensor_error)
+        .and_then(alloc)
 }
 
 pub fn matmul(ctx: &mut Ctx, a: &Value, b: &Value) -> VmResult<Value> {
@@ -288,8 +288,8 @@ pub fn matmul(ctx: &mut Ctx, a: &Value, b: &Value) -> VmResult<Value> {
             let device = same_device(x, y)?;
             ctx.backend(device)
                 .matmul(x, y)
-                .map(Value::tensor)
                 .map_err(tensor_error)
+                .and_then(alloc)
         }
         _ => Err(type_error(format!(
             "`@` multiplies tensors, not {} and {}; create one with `tensor(...)`",
@@ -306,13 +306,27 @@ pub fn negate(ctx: &mut Ctx, value: &Value) -> VmResult<Value> {
             .map(Value::Int)
             .ok_or_else(|| err("Overflow", "integer overflow in negation")),
         Value::Float(f) => Ok(Value::Float(-f)),
-        Value::Tensor(t) => Ok(Value::tensor(ctx.backend(t.device).map(MapOp::Neg, t))),
+        Value::Tensor(t) => alloc(ctx.backend(t.device).map(MapOp::Neg, t)),
         _ => Err(type_error(format!("cannot negate {}", value.type_name()))),
     }
 }
 
-pub fn map_tensor(ctx: &mut Ctx, op: MapOp, t: &Tensor) -> Value {
-    Value::tensor(ctx.backend(t.device).map(op, t))
+pub fn map_tensor(ctx: &mut Ctx, op: MapOp, t: &Tensor) -> VmResult<Value> {
+    alloc(ctx.backend(t.device).map(op, t))
+}
+
+/// Wraps a new tensor as a value, failing with `OutOfMemory` if its device
+/// has a memory limit it would exceed.
+pub fn alloc(tensor: Tensor) -> VmResult<Value> {
+    reserve(tensor.device, tensor.nbytes()).map_err(|m| {
+        err(
+            "OutOfMemory",
+            format!(
+                "{m}; store weights at lower precision (`.to(q4)`) or split the model with `fit`"
+            ),
+        )
+    })?;
+    Ok(Value::tensor(tensor))
 }
 
 // ---- comparison ------------------------------------------------------------
@@ -411,12 +425,12 @@ pub fn compare(ctx: &mut Ctx, op: Cmp, a: &Value, b: &Value) -> VmResult<Value> 
         Cmp::GtEq => ElemOp::GtEq,
     };
     let tensors = match (a, b) {
-        (Value::Tensor(x), Value::Tensor(y)) => Some(((**x).clone(), (**y).clone())),
+        (Value::Tensor(x), Value::Tensor(y)) => Some(((***x).clone(), (***y).clone())),
         (Value::Tensor(x), other) => {
-            as_float(other).map(|s| ((**x).clone(), Tensor::scalar(s as f32, x.device)))
+            as_float(other).map(|s| ((***x).clone(), Tensor::scalar(s as f32, x.device)))
         }
         (other, Value::Tensor(y)) => {
-            as_float(other).map(|s| (Tensor::scalar(s as f32, y.device), (**y).clone()))
+            as_float(other).map(|s| (Tensor::scalar(s as f32, y.device), (***y).clone()))
         }
         _ => None,
     };
@@ -425,8 +439,8 @@ pub fn compare(ctx: &mut Ctx, op: Cmp, a: &Value, b: &Value) -> VmResult<Value> 
         return ctx
             .backend(device)
             .elementwise(elem, &x, &y)
-            .map(Value::tensor)
-            .map_err(tensor_error);
+            .map_err(tensor_error)
+            .and_then(alloc);
     }
     if let (Some(x), Some(y)) = (as_number(a), as_number(b)) {
         if x.is_nan() || y.is_nan() {
@@ -652,7 +666,7 @@ pub fn get_index(ctx: &mut Ctx, obj: &Value, index: &Value) -> VmResult<Value> {
             Ok(if selected.shape.is_empty() {
                 Value::Float(widen(selected.value(0)))
             } else {
-                Value::tensor(selected)
+                alloc(selected)?
             })
         }
         Value::Gpus => match index {
@@ -745,7 +759,7 @@ pub fn get_attr(value: &Value, name: &str) -> VmResult<Value> {
             }
         };
         return match name {
-            "T" | "mT" => Ok(Value::tensor(t.transpose())),
+            "T" | "mT" => alloc(t.transpose()),
             "shape" => Ok(Value::tuple(
                 t.shape.iter().map(|&d| Value::Int(d as i64)).collect(),
             )),
@@ -968,11 +982,11 @@ fn place_on(ctx: &mut Ctx, value: &Value, devices: &[Device]) -> VmResult<Value>
             if t.device == devices[0] {
                 value.clone()
             } else {
-                Value::tensor(
+                alloc(
                     ctx.backend(devices[0])
                         .transfer(t, devices[0])
                         .map_err(tensor_error)?,
-                )
+                )?
             }
         }
         Value::List(items) => {

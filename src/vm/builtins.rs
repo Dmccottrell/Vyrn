@@ -70,6 +70,15 @@ pub static NATIVES: &[Native] = &[
     fixed("argmax", &["x", "axis"], 1, argmax),
     fixed("tensor", &["data", "dtype"], 1, tensor),
     fixed("memory", &["x"], 1, memory),
+    fixed("memory_used", &["device"], 1, memory_used),
+    fixed(
+        "set_memory_limit",
+        &["device", "bytes"],
+        2,
+        set_memory_limit,
+    ),
+    fixed("fit", &["items", "device", "budget", "rest"], 2, fit),
+    fixed("format_bytes", &["bytes"], 1, format_bytes),
     fixed("load_weights", &["path", "dtype"], 1, load_weights),
     fixed("save_weights", &["path", "tensors"], 2, save_weights),
     fixed("load_tokenizer", &["path"], 1, load_tokenizer),
@@ -104,6 +113,10 @@ pub fn constant(name: &str) -> Option<Value> {
         // Element types are values, so they can be passed around:
         // `w.to(q4)`, `tensor(data, f16)`.
         "f32" | "f16" | "bf16" | "q8" | "q4" => Some(Value::str(name)),
+        // Byte sizes, for memory budgets: `10 * GB`.
+        "KB" => Some(Value::Int(1 << 10)),
+        "MB" => Some(Value::Int(1 << 20)),
+        "GB" => Some(Value::Int(1 << 30)),
         _ => None,
     }
 }
@@ -235,7 +248,7 @@ fn abs(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
             .map(Value::Int)
             .ok_or_else(|| err("Overflow", "integer overflow in `abs`")),
         Value::Float(f) => Ok(Value::Float(f.abs())),
-        Value::Tensor(t) => Ok(ops::map_tensor(ctx, MapOp::Abs, t)),
+        Value::Tensor(t) => ops::map_tensor(ctx, MapOp::Abs, t),
         other => Err(type_error(format!(
             "cannot take abs of {}",
             other.type_name()
@@ -378,7 +391,7 @@ fn unary(
     name: &str,
 ) -> VmResult<Value> {
     match value {
-        Value::Tensor(t) => Ok(ops::map_tensor(ctx, op, t)),
+        Value::Tensor(t) => ops::map_tensor(ctx, op, t),
         other => Ok(Value::Float(scalar(number(
             other,
             &format!("the argument of `{name}`"),
@@ -430,8 +443,8 @@ fn softmax(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let axis = axis(args, 1)?.unwrap_or(-1);
     ctx.backend(t.device)
         .softmax(t, axis)
-        .map(Value::tensor)
         .map_err(ops::tensor_error)
+        .and_then(ops::alloc)
 }
 
 fn argmax(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
@@ -497,10 +510,10 @@ fn tensor(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     flatten_into(&args[0], 0, &mut shape, &mut data)?;
     let device = ctx.current_device();
     let t = Tensor::new(shape, data, device).map_err(ops::tensor_error)?;
-    Ok(Value::tensor(match opt(args, 1) {
+    ops::alloc(match opt(args, 1) {
         Some(dtype) => t.to_dtype(dtype_arg(dtype)?),
         None => t,
-    }))
+    })
 }
 
 /// An element type given as `f16`, `q4` and so on.
@@ -547,7 +560,7 @@ fn load_weights(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     for (name, tensor) in tensors {
         let key = Value::str(name);
         if let Some(hashed) = Key::from_value(&key) {
-            map.insert(hashed, key, Value::tensor(tensor));
+            map.insert(hashed, key, ops::alloc(tensor)?);
         }
     }
     Ok(Value::Map(Rc::new(RefCell::new(map))))
@@ -563,7 +576,7 @@ fn save_weights(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let mut tensors = Vec::with_capacity(map.len());
     for (k, v) in map.entries() {
         match (k, v) {
-            (Value::Str(name), Value::Tensor(t)) => tensors.push(((**name).clone(), &**t)),
+            (Value::Str(name), Value::Tensor(t)) => tensors.push(((**name).clone(), &***t)),
             _ => return Err(type_error("`save_weights` takes a map from name to tensor")),
         }
     }
@@ -601,25 +614,99 @@ fn to_json(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     Ok(Value::str(ops::to_json(&ctx.program, &args[0])))
 }
 
+fn device_arg(value: &Value) -> VmResult<Device> {
+    match value {
+        Value::Device(d) => Ok(*d),
+        Value::Gpus => Err(type_error("pick one device, such as `gpu[0]`")),
+        other => Err(type_error(format!(
+            "expected a device such as `cpu` or `gpu[0]`, not {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn byte_count(value: &Value) -> VmResult<usize> {
+    let n = integer(value, "a size in bytes")?;
+    usize::try_from(n).map_err(|_| err("ValueError", "a size in bytes cannot be negative"))
+}
+
+fn memory_used(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let device = device_arg(&args[0])?;
+    Ok(Value::Int(super::tensor::memory_used(device) as i64))
+}
+
+/// `set_memory_limit(gpu[0], 12 * GB)` makes the device behave as if it had
+/// that much memory: going over is an `OutOfMemory` error. `none` removes
+/// the limit.
+fn set_memory_limit(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let device = device_arg(&args[0])?;
+    let limit = match &args[1] {
+        Value::None => None,
+        other => Some(byte_count(other)?),
+    };
+    super::tensor::set_memory_limit(device, limit);
+    Ok(Value::None)
+}
+
+/// `fit(layers, gpu[0], 10 * GB)`: places items on `device`, in order, for
+/// as long as their tensors fit in the budget, and the rest on `rest`
+/// (the CPU unless given). Without a budget, the device's free memory under
+/// its limit is used. Returns the placed items as a new list.
+fn fit(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let items = ops::collect(&args[0])?;
+    let device = device_arg(&args[1])?;
+    let budget =
+        match opt(args, 2) {
+            Some(Value::None) | None => match super::tensor::memory_limit(device) {
+                Some(limit) => limit.saturating_sub(super::tensor::memory_used(device)),
+                None => return Err(err(
+                    "ValueError",
+                    format!(
+                        "give `fit` a budget, or set a limit for {device} with `set_memory_limit`"
+                    ),
+                )),
+            },
+            Some(budget) => byte_count(budget)?,
+        };
+    let rest = match opt(args, 3) {
+        Some(v) => v.clone(),
+        None => Value::Device(Device::Cpu),
+    };
+    let target = Value::Device(device);
+    let mut used = 0usize;
+    let mut spilled = false;
+    let mut placed = Vec::with_capacity(items.len());
+    for item in &items {
+        let size = ops::tensor_bytes(item);
+        // Layers stay in order: once one spills, the rest follow it.
+        if !spilled && used + size <= budget {
+            used += size;
+            placed.push(ops::place(ctx, item, &target)?);
+        } else {
+            spilled = true;
+            placed.push(ops::place(ctx, item, &rest)?);
+        }
+    }
+    Ok(Value::list(placed))
+}
+
+fn format_bytes(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    Ok(Value::str(super::tensor::format_bytes(byte_count(
+        &args[0],
+    )?)))
+}
+
 /// Bytes of tensor memory inside a value.
 fn memory(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     Ok(Value::Int(ops::tensor_bytes(&args[0]) as i64))
 }
 
 fn zeros(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
-    Ok(Value::tensor(Tensor::filled(
-        dims(args)?,
-        0.0,
-        ctx.current_device(),
-    )))
+    ops::alloc(Tensor::filled(dims(args)?, 0.0, ctx.current_device()))
 }
 
 fn ones(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
-    Ok(Value::tensor(Tensor::filled(
-        dims(args)?,
-        1.0,
-        ctx.current_device(),
-    )))
+    ops::alloc(Tensor::filled(dims(args)?, 1.0, ctx.current_device()))
 }
 
 fn rand(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
@@ -628,8 +715,8 @@ fn rand(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let data = (0..n).map(|_| ctx.random()).collect();
     let device = ctx.current_device();
     Tensor::new(shape, data, device)
-        .map(Value::tensor)
         .map_err(ops::tensor_error)
+        .and_then(ops::alloc)
 }
 
 fn arange(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
@@ -637,8 +724,8 @@ fn arange(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         .map_err(|_| err("ValueError", "`arange` needs a non-negative length"))?;
     let device = ctx.current_device();
     Tensor::new(vec![n], (0..n).map(|i| i as f32).collect(), device)
-        .map(Value::tensor)
         .map_err(ops::tensor_error)
+        .and_then(ops::alloc)
 }
 
 fn eye(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
@@ -649,8 +736,8 @@ fn eye(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         data[i * n + i] = 1.0;
     }
     Tensor::new(vec![n, n], data, ctx.current_device())
-        .map(Value::tensor)
         .map_err(ops::tensor_error)
+        .and_then(ops::alloc)
 }
 
 fn vector(ctx: &mut Ctx, args: &[Value], n: usize) -> VmResult<Value> {
@@ -665,8 +752,8 @@ fn vector(ctx: &mut Ctx, args: &[Value], n: usize) -> VmResult<Value> {
         .map(|v| number(v, "a vector component").map(|x| x as f32))
         .collect::<VmResult<_>>()?;
     Tensor::new(vec![n], data, ctx.current_device())
-        .map(Value::tensor)
         .map_err(ops::tensor_error)
+        .and_then(ops::alloc)
 }
 
 fn vec2(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
@@ -939,8 +1026,8 @@ pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value>
                 }
                 "reshape" => t
                     .reshape(dims(rest)?)
-                    .map(Value::tensor)
-                    .map_err(ops::tensor_error),
+                    .map_err(ops::tensor_error)
+                    .and_then(ops::alloc),
                 "to" => {
                     arity(1)?;
                     let dtype = dtype_arg(&rest[0])?;

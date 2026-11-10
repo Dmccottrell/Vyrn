@@ -9,7 +9,10 @@
 //! [`crate::vm::Vm::set_gpu_backend`].
 
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt;
+use std::ops::{Deref, DerefMut};
 
 use super::dtype::{DType, Storage};
 
@@ -308,6 +311,125 @@ pub fn widen(x: f32) -> f64 {
         return f64::from(x);
     }
     x.to_string().parse().unwrap_or(f64::from(x))
+}
+
+// ---- device memory -----------------------------------------------------------
+
+thread_local! {
+    /// Bytes held by live tensors, per device.
+    static USAGE: RefCell<HashMap<Device, usize>> = RefCell::new(HashMap::new());
+    /// Capacity per device, where one is set.
+    static LIMITS: RefCell<HashMap<Device, usize>> = RefCell::new(HashMap::new());
+}
+
+/// Bytes currently held by tensors on `device`.
+pub fn memory_used(device: Device) -> usize {
+    USAGE.with(|u| u.borrow().get(&device).copied().unwrap_or(0))
+}
+
+/// The capacity set for `device`, if any.
+pub fn memory_limit(device: Device) -> Option<usize> {
+    LIMITS.with(|l| l.borrow().get(&device).copied())
+}
+
+/// Sets the capacity of `device`; `None` removes the limit.
+pub fn set_memory_limit(device: Device, limit: Option<usize>) {
+    LIMITS.with(|l| match limit {
+        Some(bytes) => {
+            l.borrow_mut().insert(device, bytes);
+        }
+        None => {
+            l.borrow_mut().remove(&device);
+        }
+    });
+}
+
+/// Fails if `bytes` more would not fit on `device`.
+pub fn reserve(device: Device, bytes: usize) -> Result<(), String> {
+    let Some(limit) = memory_limit(device) else {
+        return Ok(());
+    };
+    let used = memory_used(device);
+    if used + bytes > limit {
+        return Err(format!(
+            "{device} needs {} for this tensor but only {} of {} is free",
+            format_bytes(bytes),
+            format_bytes(limit.saturating_sub(used)),
+            format_bytes(limit)
+        ));
+    }
+    Ok(())
+}
+
+fn track(device: Device, bytes: usize, add: bool) {
+    USAGE.with(|u| {
+        let mut usage = u.borrow_mut();
+        let entry = usage.entry(device).or_insert(0);
+        *entry = if add {
+            *entry + bytes
+        } else {
+            entry.saturating_sub(bytes)
+        };
+    });
+}
+
+/// Bytes in a readable unit: `512 B`, `3.5 MB`, `12.0 GB`.
+pub fn format_bytes(bytes: usize) -> String {
+    const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+/// A tensor held by a program. Its bytes count against its device for as
+/// long as it lives, which is what `memory_used` reports and device limits
+/// are checked against.
+pub struct DeviceTensor(Tensor);
+
+impl DeviceTensor {
+    pub fn new(tensor: Tensor) -> DeviceTensor {
+        track(tensor.device, tensor.nbytes(), true);
+        DeviceTensor(tensor)
+    }
+}
+
+impl Clone for DeviceTensor {
+    fn clone(&self) -> DeviceTensor {
+        DeviceTensor::new(self.0.clone())
+    }
+}
+
+impl Drop for DeviceTensor {
+    fn drop(&mut self) {
+        track(self.0.device, self.0.nbytes(), false);
+    }
+}
+
+impl Deref for DeviceTensor {
+    type Target = Tensor;
+    fn deref(&self) -> &Tensor {
+        &self.0
+    }
+}
+
+/// Changes in place keep the size and the device, so the count stays right.
+impl DerefMut for DeviceTensor {
+    fn deref_mut(&mut self) -> &mut Tensor {
+        &mut self.0
+    }
+}
+
+impl fmt::Debug for DeviceTensor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 /// One subscript in a tensor index.
