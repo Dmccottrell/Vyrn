@@ -11,6 +11,7 @@ The type checker, borrow checker and native backends do not exist yet.
 - [`docs/syntax.md`](docs/syntax.md): the syntax at a glance, and how it maps from Python
 - [`docs/grammar.ebnf`](docs/grammar.ebnf): the complete EBNF grammar (v0.4)
 - [`docs/architecture.md`](docs/architecture.md): compiler tiers, memory model, GPU bridge and concurrency design
+- [`docs/stdlib.md`](docs/stdlib.md): the standard library: the Prelude, `std.http`, `std.fs`, `std.task` and `std.nn`
 
 ## Examples
 

@@ -117,6 +117,37 @@ fn routes_answer_http_requests() {
 }
 
 #[test]
+fn json_bodies_become_the_declared_struct() {
+    let port = free_port();
+    let src = format!(
+        "use std.http\n\
+         struct Item:\n    id: int\n    name: str\nend\n\
+         route POST \"/items\" (body: Item) -> (int, Item):\n    return 201, body\nend\n\
+         route POST \"/names\" (body: Item): return body.name\n\
+         main: http.serve(port = {port}, requests = 3)\n"
+    );
+    let program = compile_source(&src).unwrap_or_else(|e| panic!("{e:?}"));
+    let mut machine = Vm::with_output(program, Box::new(Captured::default()));
+    let client = thread::spawn(move || {
+        vec![
+            request(port, "POST", "/items", r#"{"name": "desk", "id": 2}"#),
+            request(port, "POST", "/names", r#"{"id": 3, "name": "lamp"}"#),
+            request(port, "POST", "/items", r#"{"id": 3}"#),
+        ]
+    });
+    machine.run_main(&[]).unwrap();
+    let responses = client.join().unwrap();
+    assert_eq!(responses[0], (201, r#"{"id":2,"name":"desk"}"#.to_string()));
+    assert_eq!(responses[1], (200, "lamp".to_string()));
+    assert_eq!(responses[2].0, 400);
+    assert!(
+        responses[2].1.contains("missing field `name`"),
+        "{:?}",
+        responses[2]
+    );
+}
+
+#[test]
 fn waiting_handlers_do_not_block_other_requests() {
     let (port, mut machine, _) = serve(3);
     let clients: Vec<_> = (0..3)

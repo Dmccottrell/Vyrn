@@ -389,7 +389,7 @@ impl Vm {
                         if let Some(text) = query.get(&param.name) {
                             convert(text, param, "query parameter")?
                         } else if let (Some(body), "body") = (body, param.name.as_str()) {
-                            body.clone()
+                            self.body_as(body, param.ty.as_deref())?
                         } else {
                             providers.get(&param.name).cloned().ok_or_else(|| {
                                 RuntimeError::new(
@@ -408,6 +408,48 @@ impl Vm {
             return Ok(Some((self.functions[route.proto].clone(), args)));
         }
         Ok(None)
+    }
+
+    /// A request body as the route declared it: a JSON object becomes the
+    /// struct or class named by the parameter's type, field by field.
+    fn body_as(&self, body: &Value, ty: Option<&str>) -> Result<Value, RuntimeError> {
+        let Some(name) = ty else {
+            return Ok(body.clone());
+        };
+        let found = self.program.types.iter().position(|t| {
+            matches!(t.kind, TypeKind::Struct | TypeKind::Class)
+                && self.program.symbols.name(t.name) == name
+        });
+        let (Some(index), Value::Map(map)) = (found, body) else {
+            return Ok(body.clone());
+        };
+        let def = &self.program.types[index];
+        let map = map.borrow();
+        let mut fields = Vec::with_capacity(def.fields.len());
+        for &field in &def.fields {
+            let key = super::value::Key::Str(Rc::new(self.program.symbols.name(field).to_string()));
+            match map.get(&key) {
+                Some(v) => fields.push(v.clone()),
+                None => {
+                    return Err(RuntimeError::new(
+                        "BadRequest",
+                        format!(
+                            "the body is missing field `{}` of `{name}`",
+                            self.program.symbols.name(field)
+                        ),
+                    ))
+                }
+            }
+        }
+        let instance = Instance {
+            ty: index as u16,
+            fields,
+        };
+        Ok(if def.kind == TypeKind::Class {
+            Value::Object(Rc::new(RefCell::new(instance)))
+        } else {
+            Value::Struct(Rc::new(instance))
+        })
     }
 
     /// The text `print` would show for a value.
