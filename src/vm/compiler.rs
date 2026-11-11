@@ -1688,6 +1688,9 @@ impl Compiler {
             .map(|c| (edit_distance(name, c), c))
             .filter(|(d, _)| *d <= 2 && *d < name.len())
             .min();
+        if let Some(hint) = other_language_name(name) {
+            return self.error_hint(format!("`{name}` is not defined"), span, hint);
+        }
         match best {
             Some((_, suggestion)) => {
                 let hint = format!("did you mean `{suggestion}`?");
@@ -3388,6 +3391,22 @@ impl Compiler {
                     self.emit(Op::GetField { dst, obj, name: n });
                 }
             }
+            // `x is Dog`, made by the parser.
+            ExprKind::Call { callee, args }
+                if matches!(&callee.kind, ExprKind::Name(n) if n.name == "__is")
+                    && args.len() == 2 =>
+            {
+                let ExprKind::Str(parts) = &args[1].value.kind else {
+                    return Err(self.error("`is` needs a type name", args[1].value.span));
+                };
+                let name = match parts.as_slice() {
+                    [StrSegment::Text(t)] => t.clone(),
+                    _ => String::new(),
+                };
+                let src = self.expr_any(&args[0].value)?;
+                let n = self.name_index(&name)?;
+                self.emit(Op::IsType { dst, src, name: n });
+            }
             ExprKind::Call { callee, args } if args.iter().any(|a| a.spread) => {
                 self.spread_call(callee, args, dst)?;
             }
@@ -4306,4 +4325,26 @@ fn path_expr(path: &Path) -> Expr {
         );
     }
     e
+}
+
+/// What to write in Vyrn for a name other languages have built in.
+fn other_language_name(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "True" => "Vyrn writes `true` in lowercase",
+        "False" => "Vyrn writes `false` in lowercase",
+        "None" | "null" | "nil" | "nullptr" => "Vyrn writes `none`",
+        "isinstance" => "write `value is TypeName`, as in `if pet is Dog:`",
+        "type" => "write `typeof(value)` for its type's name, or `value is TypeName` to test it",
+        "this" => "methods name their object `self`, as the first parameter",
+        "println" | "printf" | "puts" | "console" | "cout" | "echo" => "write `print(...)`",
+        "length" | "size" => "write `len(x)`",
+        "range" => "write `0 until n` (or `1 to n` to include n)",
+        "lambda" => "write `x => x * 2`, or `(a, b) => a + b`",
+        "elif" => "write `else if`",
+        "self" => "`self` exists only inside a method of a struct or object",
+        "new" => "make a value by calling its type: `Dog(\"Rex\")`",
+        "throw" | "raise" => "write `fail ValueError(\"...\")`",
+        "scanner" | "Scanner" | "cin" | "readline" => "write `input(\"Your name: \")`",
+        _ => return None,
+    })
 }

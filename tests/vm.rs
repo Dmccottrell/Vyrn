@@ -1324,3 +1324,12 @@ fn builtin_error_kinds_can_be_raised_and_caught() {
         "age cannot be negative\n"
     );
 }
+
+#[test]
+fn is_tests_a_values_type() {
+    assert_eq!(
+        run("object Animal:\n    name: str\nend\nobject Dog(Animal):\nend\n\
+             main:\n    d = Dog(\"Rex\")\n    print(d is Dog, d is Animal, Animal(\"x\") is Dog, d is not Dog)\n    print(5 is int, \"s\" is str, none is none, d is none, d is not none)\nend\n"),
+        "true true false false\ntrue true true false true\n"
+    );
+}

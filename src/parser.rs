@@ -2211,10 +2211,92 @@ impl Parser {
             ops.push(op);
             operands.push(self.range_expr()?);
         }
-        if ops.is_empty() {
-            return Ok(operands.remove(0));
+        let value = if ops.is_empty() {
+            operands.remove(0)
+        } else {
+            self.mk(ExprKind::Compare { operands, ops }, start)
+        };
+        if self.at_kw(K::Is) {
+            return self.type_test(value, start);
         }
-        Ok(self.mk(ExprKind::Compare { operands, ops }, start))
+        Ok(value)
+    }
+
+    /// `x is Dog`, `x is not Dog`, `x is int`, `x is none`: whether a value
+    /// has a type (or one built on it).
+    fn type_test(&mut self, value: Expr, start: Pos) -> PResult<Expr> {
+        self.bump();
+        let negated = self.eat_kw(K::Not);
+        let test = if self.at_kw(K::None) {
+            let none_start = self.start();
+            self.bump();
+            let none = self.mk(ExprKind::None, none_start);
+            self.mk(
+                ExprKind::Compare {
+                    operands: vec![value, none],
+                    ops: vec![CompareOp::Eq],
+                },
+                start,
+            )
+        } else {
+            let mut name = self.expect_ident_or_type("a type name after `is`, as in `x is Dog`")?;
+            while self.eat_p(P::Dot) {
+                let part = self.expect_ident("a type name after `.`")?;
+                name.push('.');
+                name.push_str(&part.name);
+            }
+            let span = self.span_from(start);
+            let callee = Expr::new(
+                self.id(),
+                ExprKind::Name(Ident {
+                    name: "__is".into(),
+                    span,
+                }),
+                span,
+            );
+            let type_name = Expr::new(self.id(), ExprKind::Str(vec![StrSegment::Text(name)]), span);
+            let arg = |value: Expr| Arg {
+                span: value.span,
+                name: None,
+                is_mut: false,
+                value,
+                spread: false,
+            };
+            self.mk(
+                ExprKind::Call {
+                    callee: Box::new(callee),
+                    args: vec![arg(value), arg(type_name)],
+                },
+                start,
+            )
+        };
+        if negated {
+            return Ok(self.mk(
+                ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    operand: Box::new(test),
+                },
+                start,
+            ));
+        }
+        Ok(test)
+    }
+
+    /// A name, or a word that names a built-in type (`int`, `str`, ...).
+    fn expect_ident_or_type(&mut self, what: &str) -> PResult<String> {
+        match self.kind() {
+            Tk::Ident(n) => {
+                let n = n.clone();
+                self.bump();
+                Ok(n)
+            }
+            Tk::Keyword(k) => {
+                let n = k.as_str().to_string();
+                self.bump();
+                Ok(n)
+            }
+            _ => Err(self.expected(what)),
+        }
     }
 
     fn range_expr(&mut self) -> PResult<Expr> {
