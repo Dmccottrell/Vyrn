@@ -1621,7 +1621,8 @@ impl Foreign for Turtle {
         Ok(Value::Float(match name {
             "x" => s.x,
             "y" => s.y,
-            "heading" => s.heading.rem_euclid(360.0),
+            // `+ 0.0` turns -0.0 into 0.0.
+            "heading" => s.heading.rem_euclid(360.0) + 0.0,
             _ => return Err(err("FieldError", format!("a Turtle has no field `{name}`"))),
         }))
     }

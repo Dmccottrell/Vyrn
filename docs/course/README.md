@@ -65,9 +65,9 @@ plan below.
 | 15 ✅ | Projects and modules: `vyrn new`, `use`, your own modules, `vyrn add` packages | Smoothie bar |
 | 16 ✅ | Objects: fields, methods, `self`, constructors, `to_text` | Bank account |
 | 17 ✅ | Structs vs objects (values vs shared), `private` fields | Quiz app |
-| 18 | Graphics: canvases, colours, turtles | Spot painting |
-| 19 | Windows, keyboard, game state | Turtle race |
-| 20 | Game design with data | Snake, part 1 |
+| 18 ✅ | Graphics: canvases, colours, turtles | Spot painting |
+| 19 ✅ | Windows, keyboard, game state | Turtle race |
+| 20 ✅ | Game design with data | Snake, part 1 |
 
 ### Unit 3: Intermediate (days 21–30)
 
