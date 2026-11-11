@@ -378,11 +378,15 @@ fn check(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut diagnostics = vyrn::check::check(&loaded.module);
-    if diagnostics.is_empty() {
-        println!("{}: ok", entry.display());
-        return ExitCode::SUCCESS;
-    }
+    // Everything `vyrn run` would refuse: the checker's findings, then the
+    // compiler's (names out of scope, assigning to constants, ...).
+    let mut diagnostics = match vm::compile_checked(&loaded.module) {
+        Ok(_) => {
+            println!("{}: ok", entry.display());
+            return ExitCode::SUCCESS;
+        }
+        Err(d) => d,
+    };
     loader::attach_files(&mut diagnostics, &loaded.files);
     report(&diagnostics, &loaded.files);
     ExitCode::FAILURE
