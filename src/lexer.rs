@@ -350,12 +350,58 @@ impl<'src> Lexer<'src> {
             // `create` is a keyword only where it declares a function
             // (`create greet(name):`), so `create(x)` stays an ordinary call.
             TokenKind::Ident(text.to_string())
-        } else if let Some(keyword) = Keyword::lookup(text) {
+        } else if let Some(keyword) =
+            Keyword::lookup(text).filter(|_| !self.soft_word_is_name(text))
+        {
             TokenKind::Keyword(keyword)
         } else {
             TokenKind::Ident(text.to_string())
         };
         self.push(kind, start);
+    }
+
+    /// Whether a *soft* keyword is used as an ordinary name here. Words
+    /// such as `to`, `by`, `move` and `type` are keywords only where they
+    /// work as keywords, so they stay free for names: `create move(self)`,
+    /// `bx, by = ...`, `pet.type`, `type = "cat"`.
+    fn soft_word_is_name(&self, text: &str) -> bool {
+        let rest = self.src[self.index..].trim_start_matches([' ', '\t']);
+        let next_is_word = rest.chars().next().is_some_and(is_ident_start)
+            && !rest.starts_with("and ")
+            && !rest.starts_with("or ");
+        let prev = self.tokens.last().map(|t| &t.kind);
+        // After a value: `1 to 10`, `xs until n`, `x on gpu`.
+        let after_value = matches!(
+            prev,
+            Some(
+                TokenKind::Ident(_)
+                    | TokenKind::Int { .. }
+                    | TokenKind::Float { .. }
+                    | TokenKind::Str(_)
+                    | TokenKind::Keyword(Keyword::True | Keyword::False | Keyword::None)
+                    | TokenKind::Punct(Punct::RParen | Punct::RBracket | Punct::RBrace)
+            )
+        );
+        let line_start = matches!(
+            prev,
+            None | Some(
+                TokenKind::Newline | TokenKind::DocComment(_) | TokenKind::Keyword(Keyword::Pub)
+            )
+        );
+        match text {
+            // `1 to 10 by 2`, `0 until n`
+            "to" | "until" | "by" => !after_value,
+            // `move x`, `own x`, `ref mut x`, `shared tensor[...]`,
+            // `on gpu[0]:`, `region frame:`, `defer f.close()`, `par each`,
+            // `route GET "/path"`
+            "move" | "own" | "ref" | "shared" | "weak" | "ptr" | "on" | "region" | "defer"
+            | "par" | "route" => !next_is_word,
+            // `type Name = ...` at the start of a line
+            "type" => !(line_start && next_is_word),
+            // `routes "/api":`
+            "routes" => !rest.starts_with('"'),
+            _ => false,
+        }
     }
 
     /// After the word `create`: whether a function name and its `(` or
@@ -896,15 +942,40 @@ mod tests {
     #[test]
     fn every_keyword_round_trips() {
         for &keyword in K::ALL {
-            // `create` is a keyword only before a function's name.
-            let src = if keyword == K::Fn {
-                "create f()"
-            } else {
-                keyword.as_str()
+            // `create` is a keyword only before a function's name, and the
+            // soft keywords only where they work as keywords.
+            let src = match keyword {
+                K::Fn => "create f()".to_string(),
+                K::To | K::Until | K::By => format!("x {}", keyword.as_str()),
+                K::Route => "route GET".to_string(),
+                K::Routes => "routes \"/x\"".to_string(),
+                K::Move
+                | K::Own
+                | K::Ref
+                | K::Shared
+                | K::Weak
+                | K::Ptr
+                | K::On
+                | K::Region
+                | K::Defer
+                | K::Par
+                | K::Type => format!("{} x", keyword.as_str()),
+                _ => keyword.as_str().to_string(),
             };
-            assert_eq!(kinds(src)[0], T::Keyword(keyword));
+            assert!(
+                kinds(&src).contains(&T::Keyword(keyword)),
+                "{src:?} should hold the keyword {keyword:?}"
+            );
         }
         assert_eq!(kinds("create(x)")[0], ident("create"));
+        // Soft keywords used as names.
+        assert_eq!(kinds("by = 2")[0], ident("by"));
+        assert_eq!(kinds("f(to, by)")[2], ident("to"));
+        assert_eq!(kinds("create move(self)")[1], ident("move"));
+        assert_eq!(kinds("type = 1")[0], ident("type"));
+        assert_eq!(kinds("route = []")[0], ident("route"));
+        assert_eq!(kinds("1 to 9 by 2")[1], T::Keyword(K::To));
+        assert_eq!(kinds("1 to 9 by 2")[3], T::Keyword(K::By));
         assert_eq!(kinds("create = 1")[0], ident("create"));
     }
 
