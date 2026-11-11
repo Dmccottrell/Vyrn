@@ -233,6 +233,75 @@ extern "C" fn rt_list_push_f(list: ListPtr, v: f64) -> i64 {
     0
 }
 
+fn arena<'e>(err: *mut ErrState) -> &'e mut crate::vm::native_abi::Arena {
+    // SAFETY: the VM sets `arena` to an arena that outlives the call.
+    unsafe { &mut *(*err).arena }
+}
+
+fn new_list(items: Vec<crate::vm::value::Value>, err: *mut ErrState) -> ListPtr {
+    let list = Rc::new(std::cell::RefCell::new(items));
+    let ptr = Rc::as_ptr(&list);
+    arena(err).lists.push(list);
+    ptr
+}
+
+extern "C" fn rt_list_new(cap: i64, err: *mut ErrState) -> ListPtr {
+    new_list(Vec::with_capacity(cap.clamp(0, 1 << 20) as usize), err)
+}
+
+extern "C" fn rt_list_repeat(list: ListPtr, n: i64, err: *mut ErrState) -> ListPtr {
+    // SAFETY: a live list.
+    let items = unsafe { (*list).borrow() };
+    let times = n.max(0) as usize;
+    if items.len().saturating_mul(times) > (1 << 32) {
+        // SAFETY: the VM's state.
+        unsafe { (*err).code = crate::vm::native_abi::ERR_MEMORY };
+        return list;
+    }
+    let mut out = Vec::with_capacity(items.len() * times);
+    for _ in 0..times {
+        out.extend(items.iter().cloned());
+    }
+    drop(items);
+    new_list(out, err)
+}
+
+extern "C" fn rt_list_concat(a: ListPtr, b: ListPtr, err: *mut ErrState) -> ListPtr {
+    // SAFETY: live lists.
+    let mut out = unsafe { (*a).borrow().clone() };
+    // SAFETY: as above.
+    out.extend(unsafe { (*b).borrow().iter().cloned() });
+    new_list(out, err)
+}
+
+extern "C" fn rt_list_copy(list: ListPtr, err: *mut ErrState) -> ListPtr {
+    // SAFETY: a live list.
+    let items = unsafe { (*list).borrow().clone() };
+    new_list(items, err)
+}
+
+extern "C" fn rt_list_sum_i(list: ListPtr, err: *mut ErrState) -> i64 {
+    // SAFETY: a live list of ints.
+    let items = unsafe { (*list).borrow() };
+    let mut total: i64 = 0;
+    for v in items.iter() {
+        if let crate::vm::value::Value::Int(x) = v {
+            match total.checked_add(*x) {
+                Some(t) => total = t,
+                None => {
+                    // SAFETY: the VM's state.
+                    unsafe {
+                        (*err).code = ERR_OVERFLOW;
+                        (*err).detail = OP_ADD;
+                    }
+                    return 0;
+                }
+            }
+        }
+    }
+    total
+}
+
 /// Where a list's item pointer and length are inside the `RefCell<Vec<Value>>`
 /// the VM passes, and where an `int`'s or `float`'s payload is inside a
 /// `Value`. Rust does not promise these layouts, so they are measured once
@@ -327,6 +396,11 @@ fn helper_symbols() -> Vec<(&'static str, *const u8)> {
     vec![
         ("vyrn_ipow", rt_ipow as *const u8),
         ("vyrn_list_len", rt_list_len as *const u8),
+        ("vyrn_list_new", rt_list_new as *const u8),
+        ("vyrn_list_repeat", rt_list_repeat as *const u8),
+        ("vyrn_list_concat", rt_list_concat as *const u8),
+        ("vyrn_list_copy", rt_list_copy as *const u8),
+        ("vyrn_list_sum_i", rt_list_sum_i as *const u8),
         ("vyrn_list_get_i", rt_list_get_i as *const u8),
         ("vyrn_list_get_f", rt_list_get_f as *const u8),
         ("vyrn_list_set_i", rt_list_set_i as *const u8),
@@ -413,7 +487,7 @@ fn signature(f: &FnDecl) -> Res<(Vec<NTy>, NTy)> {
     }
     let ret = match &f.result.returns {
         None => NTy::Unit,
-        Some(t) => scalar_type(t).ok_or("the result is not int, float or bool")?,
+        Some(t) => param_type(t).ok_or("the result is not int, float, bool, [int] or [float]")?,
     };
     Ok((params, ret))
 }
@@ -636,6 +710,11 @@ impl Jit {
         };
         declare("vyrn_ipow", &[types::I64, types::I64, ptr], types::I64)?;
         declare("vyrn_list_len", &[ptr], types::I64)?;
+        declare("vyrn_list_new", &[types::I64, ptr], ptr)?;
+        declare("vyrn_list_repeat", &[ptr, types::I64, ptr], ptr)?;
+        declare("vyrn_list_concat", &[ptr, ptr, ptr], ptr)?;
+        declare("vyrn_list_copy", &[ptr, ptr], ptr)?;
+        declare("vyrn_list_sum_i", &[ptr, ptr], types::I64)?;
         declare("vyrn_list_get_i", &[ptr, types::I64, ptr], types::I64)?;
         declare("vyrn_list_get_f", &[ptr, types::I64, ptr], types::F64)?;
         declare(
@@ -989,7 +1068,8 @@ impl Lower<'_, '_> {
                     return Err("only plain names can be bound".into());
                 };
                 let value = binding.value.as_ref().ok_or("a binding without a value")?;
-                let (v, t) = self.expr(value)?;
+                let want = binding.declared_ty.as_ref().and_then(param_type);
+                let (v, t) = self.expr_as(value, want)?;
                 if let Some(declared) = &binding.declared_ty {
                     if param_type(declared) != Some(t) {
                         return Err(format!(
@@ -1011,7 +1091,10 @@ impl Lower<'_, '_> {
                     return Err("only variables and list items can be assigned".into());
                 };
                 let (v, t) = match op {
-                    AssignOp::Assign => self.expr(value)?,
+                    AssignOp::Assign => {
+                        let want = self.lookup(&name.name).map(|(_, t)| t);
+                        self.expr_as(value, want)?
+                    }
                     op => {
                         let (var, old) = self
                             .lookup(&name.name)
@@ -1045,7 +1128,7 @@ impl Lower<'_, '_> {
                     self.ret(z);
                 }
                 (Some(e), want) if want != NTy::Unit => {
-                    let (v, t) = self.expr(e)?;
+                    let (v, t) = self.expr_as(e, Some(want))?;
                     if t != want {
                         return Err(format!(
                             "returns {} where {} is declared",
@@ -1125,7 +1208,7 @@ impl Lower<'_, '_> {
         Ok(())
     }
 
-    /// `each i in a until b by step`, `a to b`, or `range(...)`.
+    /// `each i in a until b by step`, `a to b`, `range(...)`, or a list.
     fn each(&mut self, f: &crate::ast::ForStmt) -> Res<()> {
         if f.mode != ForMode::Sequential || f.pass != PassMode::Borrow {
             return Err("`par each`, `async each` and `each mut` loops".into());
@@ -1133,73 +1216,77 @@ impl Lower<'_, '_> {
         let BindTarget::Name(var_name) = &f.target else {
             return Err("loops that unpack items".into());
         };
-        let (start, end, inclusive, step) = match &f.iter.kind {
+        let body = &f.body;
+        self.loop_over(&var_name.name, &f.iter, &mut |s: &mut Self| {
+            for stmt in &body.stmts {
+                s.stmt(stmt)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Runs `body` once per item of `iter` (a range or a list of numbers),
+    /// with `name` bound to the item in a scope of its own.
+    fn loop_over(
+        &mut self,
+        name: &str,
+        iter: &Expr,
+        body: &mut dyn FnMut(&mut Self) -> Res<()>,
+    ) -> Res<()> {
+        let range_call = matches!(&iter.kind, ExprKind::Call { callee, args }
+            if matches!(&callee.kind, ExprKind::Name(n) if n.name == "range"
+                && self.lookup("range").is_none()
+                && !self.env.globals.iter().any(|g| g == "range"))
+                && (1..=3).contains(&args.len())
+                && args.iter().all(|a| a.name.is_none()));
+        let (s, e, inclusive, step) = match &iter.kind {
             ExprKind::Range {
                 start,
                 end,
                 inclusive,
                 step,
-            } => (
-                &**start,
-                &**end,
-                *inclusive,
-                step.as_deref().map(literal_int).transpose()?,
-            ),
-            ExprKind::Call { callee, args }
-                if matches!(&callee.kind, ExprKind::Name(n) if n.name == "range" && self.lookup("range").is_none() && !self.env.globals.iter().any(|g| g == "range"))
-                    && (1..=3).contains(&args.len())
-                    && args.iter().all(|a| a.name.is_none()) =>
-            {
-                return self.each_range_call(var_name, args, &f.body);
+            } => {
+                let step = step.as_deref().map(literal_int).transpose()?.unwrap_or(1);
+                let (s, st) = self.expr(start)?;
+                let (e, et) = self.expr(end)?;
+                if st != NTy::Int || et != NTy::Int {
+                    return Err("ranges of floats".into());
+                }
+                (s, e, *inclusive, step)
+            }
+            ExprKind::Call { args, .. } if range_call => {
+                let step = match args.get(2) {
+                    Some(a) => literal_int(&a.value)?,
+                    None => 1,
+                };
+                let (s, e) = if args.len() == 1 {
+                    let (e, et) = self.expr(&args[0].value)?;
+                    if et != NTy::Int {
+                        return Err("ranges of floats".into());
+                    }
+                    (self.b.ins().iconst(types::I64, 0), e)
+                } else {
+                    let (s, st) = self.expr(&args[0].value)?;
+                    let (e, et) = self.expr(&args[1].value)?;
+                    if st != NTy::Int || et != NTy::Int {
+                        return Err("ranges of floats".into());
+                    }
+                    (s, e)
+                };
+                (s, e, false, step)
             }
             _ => {
-                let (list, lt) = self.expr(&f.iter)?;
+                let (list, lt) = self.expr(iter)?;
                 if !lt.is_list() {
                     return Err("loops over anything but a range or a list of numbers".into());
                 }
-                return self.each_item(&var_name.name, list, lt, &f.body);
+                return self.each_item(name, list, lt, body);
             }
-        };
-        let step = step.unwrap_or(1);
-        if step == 0 {
-            return Err("a range with step 0".into());
-        }
-        let (s, st) = self.expr(start)?;
-        let (e, et) = self.expr(end)?;
-        if st != NTy::Int || et != NTy::Int {
-            return Err("ranges of floats".into());
-        }
-        self.counted_loop(&var_name.name, s, e, inclusive, step, &f.body)
-    }
-
-    fn each_range_call(
-        &mut self,
-        var_name: &crate::ast::Ident,
-        args: &[crate::ast::Arg],
-        body: &AstBlock,
-    ) -> Res<()> {
-        let step = match args.get(2) {
-            Some(a) => literal_int(&a.value)?,
-            None => 1,
         };
         if step == 0 {
             return Err("a range with step 0".into());
         }
-        let (s, e) = if args.len() == 1 {
-            let (e, et) = self.expr(&args[0].value)?;
-            if et != NTy::Int {
-                return Err("ranges of floats".into());
-            }
-            (self.b.ins().iconst(types::I64, 0), e)
-        } else {
-            let (s, st) = self.expr(&args[0].value)?;
-            let (e, et) = self.expr(&args[1].value)?;
-            if st != NTy::Int || et != NTy::Int {
-                return Err("ranges of floats".into());
-            }
-            (s, e)
-        };
-        self.counted_loop(&var_name.name, s, e, false, step, body)
+        self.counted_loop(name, s, e, inclusive, step, body)
     }
 
     fn counted_loop(
@@ -1209,7 +1296,7 @@ impl Lower<'_, '_> {
         end: Value,
         inclusive: bool,
         step: i64,
-        body: &AstBlock,
+        body: &mut dyn FnMut(&mut Self) -> Res<()>,
     ) -> Res<()> {
         let counter = self.b.declare_var(types::I64);
         self.b.def_var(counter, start);
@@ -1233,9 +1320,7 @@ impl Lower<'_, '_> {
         let i = self.b.use_var(counter);
         self.declare(name, i, NTy::Int);
         self.loops.push((next, exit));
-        for stmt in &body.stmts {
-            self.stmt(stmt)?;
-        }
+        body(self)?;
         self.loops.pop();
         self.scopes.pop();
         self.b.ins().jump(next, &[]);
@@ -1426,13 +1511,37 @@ impl Lower<'_, '_> {
                 self.b.ins().call(f, &[list, a[0].0]);
                 Ok((self.b.ins().iconst(types::I64, 0), NTy::Unit))
             }
+            "copy" => {
+                self.args(args, 0)?;
+                let f = self.func_ref(self.helpers["vyrn_list_copy"]);
+                let call = self.b.ins().call(f, &[list, self.err]);
+                Ok((self.b.inst_results(call)[0], lt))
+            }
+            "sum" if lt == NTy::ListInt => {
+                self.args(args, 0)?;
+                self.list_sum(list)
+            }
             _ => Err(format!("the list method `{name}`")),
         }
     }
 
+    fn list_sum(&mut self, list: Value) -> Res<(Value, NTy)> {
+        let f = self.func_ref(self.helpers["vyrn_list_sum_i"]);
+        let call = self.b.ins().call(f, &[list, self.err]);
+        let v = self.b.inst_results(call)[0];
+        self.check_err_with_line();
+        Ok((v, NTy::Int))
+    }
+
     /// `each x in xs`: by position, reading the length each time round, as
     /// the interpreter does, so items appended in the loop are visited.
-    fn each_item(&mut self, name: &str, list: Value, lt: NTy, body: &AstBlock) -> Res<()> {
+    fn each_item(
+        &mut self,
+        name: &str,
+        list: Value,
+        lt: NTy,
+        body: &mut dyn FnMut(&mut Self) -> Res<()>,
+    ) -> Res<()> {
         let elem = if lt == NTy::ListInt {
             NTy::Int
         } else {
@@ -1456,9 +1565,7 @@ impl Lower<'_, '_> {
         self.scopes.push(Vec::new());
         self.declare(name, item, elem);
         self.loops.push((next, exit));
-        for stmt in &body.stmts {
-            self.stmt(stmt)?;
-        }
+        body(self)?;
         self.loops.pop();
         self.scopes.pop();
         self.b.ins().jump(next, &[]);
@@ -1472,6 +1579,116 @@ impl Lower<'_, '_> {
     }
 
     // ---- expressions ----
+
+    /// An expression where the type wanted is known, which is what gives
+    /// an empty `[]` its type.
+    fn expr_as(&mut self, e: &Expr, want: Option<NTy>) -> Res<(Value, NTy)> {
+        if let (ExprKind::List(items), Some(t)) = (&e.kind, want) {
+            if items.is_empty() && t.is_list() {
+                let zero = self.b.ins().iconst(types::I64, 0);
+                return Ok((self.new_list(zero), t));
+            }
+        }
+        self.expr(e)
+    }
+
+    fn new_list(&mut self, capacity: Value) -> Value {
+        let f = self.func_ref(self.helpers["vyrn_list_new"]);
+        let call = self.b.ins().call(f, &[capacity, self.err]);
+        self.b.inst_results(call)[0]
+    }
+
+    fn list_push(&mut self, list: Value, v: Value, elem: NTy) {
+        let push = if elem == NTy::Int {
+            "vyrn_list_push_i"
+        } else {
+            "vyrn_list_push_f"
+        };
+        let f = self.func_ref(self.helpers[push]);
+        self.b.ins().call(f, &[list, v]);
+    }
+
+    /// `[a, b, c]`: every item an `int`, or every item a `float`.
+    fn list_literal(&mut self, items: &[Expr]) -> Res<(Value, NTy)> {
+        if items.is_empty() {
+            return Err("an empty list whose item type is not known here".into());
+        }
+        let mut values = Vec::new();
+        for item in items {
+            values.push(self.expr(item)?);
+        }
+        let elem = values[0].1;
+        if !matches!(elem, NTy::Int | NTy::Float) || values.iter().any(|(_, t)| *t != elem) {
+            return Err("a list whose items are not all ints or all floats".into());
+        }
+        let cap = self.b.ins().iconst(types::I64, items.len() as i64);
+        let list = self.new_list(cap);
+        for (v, _) in values {
+            self.list_push(list, v, elem);
+        }
+        Ok((
+            list,
+            if elem == NTy::Int {
+                NTy::ListInt
+            } else {
+                NTy::ListFloat
+            },
+        ))
+    }
+
+    /// `[element each x in iter if cond]`.
+    fn comprehension(
+        &mut self,
+        element: &Expr,
+        clauses: &[crate::ast::CompClause],
+    ) -> Res<(Value, NTy)> {
+        use crate::ast::CompClause;
+        let Some((CompClause::For { target, iter }, rest)) = clauses.split_first() else {
+            return Err("a comprehension that does not start with `each`".into());
+        };
+        let BindTarget::Name(name) = target else {
+            return Err("a comprehension that unpacks items".into());
+        };
+        let mut conditions = Vec::new();
+        for c in rest {
+            match c {
+                CompClause::If(e) => conditions.push(e),
+                CompClause::For { .. } => return Err("a comprehension with two `each`s".into()),
+            }
+        }
+        let zero = self.b.ins().iconst(types::I64, 0);
+        let list = self.new_list(zero);
+        let mut elem: Option<NTy> = None;
+        self.loop_over(&name.name, iter, &mut |s: &mut Self| {
+            for c in &conditions {
+                let (v, t) = s.expr(c)?;
+                let truth = s.truthy(v, t)?;
+                let keep = s.b.create_block();
+                let (next, _) = *s.loops.last().expect("inside the loop");
+                s.b.ins().brif(truth, keep, &[], next, &[]);
+                s.b.switch_to_block(keep);
+            }
+            let (v, t) = s.expr(element)?;
+            if !matches!(t, NTy::Int | NTy::Float) {
+                return Err("a comprehension whose items are not numbers".into());
+            }
+            if elem.is_some_and(|e| e != t) {
+                return Err("a comprehension whose items change type".into());
+            }
+            elem = Some(t);
+            s.list_push(list, v, t);
+            Ok(())
+        })?;
+        let elem = elem.ok_or("an empty comprehension")?;
+        Ok((
+            list,
+            if elem == NTy::Int {
+                NTy::ListInt
+            } else {
+                NTy::ListFloat
+            },
+        ))
+    }
 
     fn expr(&mut self, e: &Expr) -> Res<(Value, NTy)> {
         let saved = self.line;
@@ -1588,6 +1805,8 @@ impl Lower<'_, '_> {
                 (self.b.block_params(done)[0], at)
             }
             ExprKind::Call { callee, args } => self.call(callee, args)?,
+            ExprKind::List(items) => self.list_literal(items)?,
+            ExprKind::ListComp { element, clauses } => self.comprehension(element, clauses)?,
             ExprKind::Index { base, subscripts } => {
                 let (list, lt, i) = self.list_and_index(base, subscripts)?;
                 let t = if lt == NTy::ListInt {
@@ -1603,6 +1822,22 @@ impl Lower<'_, '_> {
 
     fn binary(&mut self, op: BinaryOp, l: Value, lt: NTy, r: Value, rt: NTy) -> Res<(Value, NTy)> {
         use BinaryOp as B;
+        match (op, lt, rt) {
+            (B::Mul, list, NTy::Int) | (B::Mul, NTy::Int, list) if list.is_list() => {
+                let (list_v, n) = if lt.is_list() { (l, r) } else { (r, l) };
+                let f = self.func_ref(self.helpers["vyrn_list_repeat"]);
+                let call = self.b.ins().call(f, &[list_v, n, self.err]);
+                let v = self.b.inst_results(call)[0];
+                self.check_err_with_line();
+                return Ok((v, list));
+            }
+            (B::Add, a, b) if a.is_list() && a == b => {
+                let f = self.func_ref(self.helpers["vyrn_list_concat"]);
+                let call = self.b.ins().call(f, &[l, r, self.err]);
+                return Ok((self.b.inst_results(call)[0], a));
+            }
+            _ => {}
+        }
         match (lt, rt) {
             (NTy::Int, NTy::Int) => self.int_binary(op, l, r),
             (NTy::Int | NTy::Float, NTy::Int | NTy::Float) => {
@@ -1853,7 +2088,7 @@ impl Lower<'_, '_> {
             }
             let mut values = Vec::new();
             for (a, want) in args.iter().zip(&params) {
-                let (v, t) = self.expr(&a.value)?;
+                let (v, t) = self.expr_as(&a.value, Some(*want))?;
                 if t != *want {
                     return Err(format!(
                         "`{name}` receives {} where it declares {}",
@@ -1885,6 +2120,24 @@ impl Lower<'_, '_> {
 
     fn builtin(&mut self, name: &str, args: &[crate::ast::Arg]) -> Res<(Value, NTy)> {
         Ok(match name {
+            // A float list's sum is an int when the list is empty, so only
+            // int lists are summed here.
+            "sum" => {
+                let a = self.args(args, 1)?;
+                if a[0].1 != NTy::ListInt {
+                    return Err("`sum` of something that is not a list of ints".into());
+                }
+                return self.list_sum(a[0].0);
+            }
+            "list" => {
+                let a = self.args(args, 1)?;
+                if !a[0].1.is_list() {
+                    return Err("`list` of something that is not a list of numbers".into());
+                }
+                let f = self.func_ref(self.helpers["vyrn_list_copy"]);
+                let call = self.b.ins().call(f, &[a[0].0, self.err]);
+                (self.b.inst_results(call)[0], a[0].1)
+            }
             "len" => {
                 let a = self.args(args, 1)?;
                 if !a[0].1.is_list() {

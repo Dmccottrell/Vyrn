@@ -602,8 +602,11 @@ impl Vm {
                 }
             }
         }
+        let mut arena = super::native_abi::Arena::default();
         let mut err = ErrState {
             depth: self.frames.len() as u32,
+            arena: &mut arena,
+            ctx: &mut self.ctx as *mut super::ops::Ctx as *mut std::ffi::c_void,
             ..ErrState::default()
         };
         // SAFETY: the entry was compiled for exactly these parameter types,
@@ -617,7 +620,17 @@ impl Vm {
             NTy::Int => Value::Int(word as i64),
             NTy::Float => Value::Float(f64::from_bits(word)),
             NTy::Bool => Value::Bool(word != 0),
-            NTy::Unit | NTy::ListInt | NTy::ListFloat => Value::None,
+            NTy::Unit => Value::None,
+            NTy::ListInt | NTy::ListFloat => {
+                let list = word as *const RefCell<Vec<Value>>;
+                // SAFETY: native code returns lists that live in an `Rc`:
+                // its arena, or an argument the VM still holds. Taking a
+                // reference of our own keeps it once the arena is dropped.
+                unsafe {
+                    Rc::increment_strong_count(list);
+                    Value::List(Rc::from_raw(list))
+                }
+            }
         }))
     }
 

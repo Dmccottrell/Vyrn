@@ -390,3 +390,39 @@ fn list_items_are_accessed_directly() {
     // code reads items itself; the tests above then exercise that path.
     assert!(vyrn::native::direct_list_access());
 }
+
+#[test]
+fn making_and_returning_lists() {
+    let out = both(
+        "create squares(n: int) -> [int]: return [i * i each i in 0 until n]\n\
+         create evens(xs: [int]) -> [int]: return [x each x in xs if x % 2 == 0]\n\
+         create scaled(xs: [float], k: float) -> [float]:\n    let out: [float] = []\n    each x in xs: out.append(x * k)\n    return out\nend\n\
+         create zeros(n: int) -> [float]: return [0.0] * n\n\
+         create joined(a: [int], b: [int]) -> [int]: return a + b + [99]\n\
+         create grid(n: int) -> int:\n    var cells = [0] * (n * n)\n    each i in 0 until n: cells[i * n + i] = 1\n    return sum(cells) + len(cells)\nend\n\
+         create pairs(n: int) -> [int]:\n    var out = [1, 2]\n    out = out + [3]\n    let copy = out.copy()\n    copy.append(4)\n    return list(copy) + out\nend\n\
+         create same(xs: [int]) -> [int]: return xs\n\
+         create fresh() -> [int]:\n    return []\nend\n\
+         main:\n\
+         \x20   print(squares(5), evens([1, 2, 3, 4, 6]), scaled([1.0, 2.5], 2.0), zeros(3), zeros(-1))\n\
+         \x20   print(joined([1], [2, 3]), grid(4), pairs(0), fresh())\n\
+         \x20   let a = [7, 8]\n    let b = same(a)\n    b.append(9)\n    print(a, squares(0))\n\
+         end\n",
+        &["squares", "evens", "scaled", "zeros", "joined", "grid", "pairs", "same", "fresh"],
+    );
+    assert_eq!(
+        out,
+        "[0, 1, 4, 9, 16] [2, 4, 6] [2.0, 5.0] [0.0, 0.0, 0.0] []\n[1, 2, 3, 99] 20 [1, 2, 3, 4, 1, 2, 3] []\n[7, 8, 9] []\n"
+    );
+}
+
+#[test]
+fn list_making_failures_are_the_same() {
+    for (src, kind) in [
+        ("create f(n: int) -> [int]: return [1] * n\nmain: print(len(f(9223372036854775807)))\n", "MemoryError"),
+        ("create f(xs: [int]) -> int: return sum(xs)\nmain: print(f([9223372036854775807, 1]))\n", "Overflow"),
+    ] {
+        let out = both(src, &["f"]);
+        assert!(out.contains(&format!("<error {kind}")), "{src}\n{out}");
+    }
+}

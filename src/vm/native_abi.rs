@@ -25,9 +25,18 @@ impl NTy {
     }
 }
 
-/// Filled in by native code when it fails, and read by the VM.
+/// What lists and strings made by native code live in until the VM's call
+/// returns. A returned one is handed to the VM with its own reference.
+#[derive(Default)]
+pub struct Arena {
+    pub lists: Vec<Rc<std::cell::RefCell<Vec<super::value::Value>>>>,
+    pub strings: Vec<Rc<String>>,
+}
+
+/// Filled in by native code when it fails, and read by the VM. Also
+/// carries what native code needs from the VM for one call.
 #[repr(C)]
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct ErrState {
     /// 0 when nothing failed; otherwise one of the `ERR_` codes.
     pub code: u32,
@@ -41,6 +50,28 @@ pub struct ErrState {
     pub value: i64,
     /// A second one: the length of the list an index was out of range for.
     pub extra: i64,
+    /// Where new lists and strings go (offset 32).
+    pub arena: *mut Arena,
+    /// The VM's context, for `print` (offset 40).
+    pub ctx: *mut std::ffi::c_void,
+    /// The fields of a returned struct (offset 48).
+    pub ret: [u64; 16],
+}
+
+impl Default for ErrState {
+    fn default() -> Self {
+        ErrState {
+            code: 0,
+            detail: 0,
+            line: 0,
+            depth: 0,
+            value: 0,
+            extra: 0,
+            arena: std::ptr::null_mut(),
+            ctx: std::ptr::null_mut(),
+            ret: [0; 16],
+        }
+    }
 }
 
 pub const ERR_OVERFLOW: u32 = 1;
@@ -50,6 +81,7 @@ pub const ERR_FLOAT_TO_INT: u32 = 4;
 pub const ERR_SHIFT: u32 = 5;
 pub const ERR_NO_RETURN: u32 = 6;
 pub const ERR_INDEX: u32 = 7;
+pub const ERR_MEMORY: u32 = 8;
 
 /// Operators named in overflow messages, by `ErrState::detail`.
 pub const OPERATORS: &[&str] = &["+", "-", "*", "**", "//", "%", "<<", "abs", "neg"];
@@ -107,6 +139,7 @@ impl ErrState {
                     self.value, self.extra
                 ),
             ),
+            ERR_MEMORY => ("MemoryError", format!("the list would be too large{place}")),
             ERR_NO_RETURN => ("TypeError", format!("the function ended without returning a value{place}")),
             _ => ("InternalError", format!("native code failed with code {}{place}", self.code)),
         }

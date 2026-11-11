@@ -252,6 +252,19 @@ pub fn arith(ctx: &mut Ctx, op: Arith, a: &Value, b: &Value) -> VmResult<Value> 
         (Value::Str(s), Value::Int(n)) | (Value::Int(n), Value::Str(s)) if op == Arith::Mul => {
             Ok(Value::str(s.repeat((*n).max(0) as usize)))
         }
+        // `[0] * n`, as in Python: a negative count gives an empty list.
+        (Value::List(x), Value::Int(n)) | (Value::Int(n), Value::List(x)) if op == Arith::Mul => {
+            let x = x.borrow();
+            let times = (*n).max(0) as usize;
+            if x.len().saturating_mul(times) > (1 << 32) {
+                return Err(err("MemoryError", "the list would be too large"));
+            }
+            let mut items = Vec::with_capacity(x.len() * times);
+            for _ in 0..times {
+                items.extend(x.iter().cloned());
+            }
+            Ok(Value::list(items))
+        }
         (Value::List(x), Value::List(y)) if op == Arith::Add => {
             let mut items = x.borrow().clone();
             items.extend(y.borrow().iter().cloned());
