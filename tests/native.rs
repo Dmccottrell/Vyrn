@@ -180,7 +180,7 @@ fn calls_recursion_and_builtins() {
 fn unsupported_functions_stay_interpreted() {
     // Prints, changes a variable's type, and is called with an int where a
     // float is declared: all still run, on the interpreter.
-    let src = "create noisy(n: int) -> int:\n    print(\"n is\", n)\n    return n\nend\n\
+    let src = "create noisy(n: int) -> int:\n    let m = {\"n\": n}\n    print(\"n is\", m[\"n\"])\n    return n\nend\n\
                create widen(n: int) -> float:\n    var x = n\n    x = x / 2\n    return x\nend\n\
                create half(x: float) -> float: return x / 2.0\n\
                main:\n    print(noisy(3), widen(3), half(3), half(3.0))\nend\n";
@@ -480,4 +480,76 @@ fn mut_self_methods_stay_interpreted() {
         &["Counter.peek"],
     );
     assert_eq!(out, "2 2\n");
+}
+
+#[test]
+fn strings_and_print() {
+    let out = both(
+        "create greet(name: str, n: int) -> str: return \"Hello, {name}! You are {n} ({n / 2}) {n > 3}.\"\n\
+         create shout(s: str) -> str: return s.upper() + \"!\" * 3\n\
+         create report(xs: [float]):\n    var total = 0.0\n    each x in xs:\n        total += x\n        print(\"item\", x, \"running\", total)\n    end\n    print(\"done: {total:.2f}\", len(xs))\nend\n\
+         create classify(word: str) -> str:\n    if word == \"\": return \"empty\"\n    if word < \"m\": return \"early\"\n    if \"z\" in word: return \"has z\"\n    return word[0] + word[-1]\nend\n\
+         create parse(text: str) -> int: return int(text.strip()) * 2 + len(str(3.5))\n\
+         create counts(s: str) -> int: return s.count(\"a\") * 100 + s.find(\"b\") + int(s.startswith(\"a\") and s.isalpha())\n\
+         main:\n\
+         \x20   print(greet(\"Ada\", 5), shout(\"hey\"))\n\
+         \x20   report([1.5, 2.25])\n\
+         \x20   print(classify(\"\"), classify(\"apple\"), classify(\"pizza\"), classify(\"river\"))\n\
+         \x20   print(parse(\" 21 \"), counts(\"banana\"))\n\
+         end\n",
+        &["greet", "shout", "report", "classify", "parse"],
+    );
+    assert_eq!(
+        out,
+        "Hello, Ada! You are 5 (2.5) true. HEY!!!\nitem 1.5 running 1.5\nitem 2.25 running 3.75\ndone: 3.75 2\nempty early has z rr\n45 300\n"
+    );
+}
+
+#[test]
+fn string_failures_are_the_same() {
+    for (src, kind) in [
+        (
+            "create f(s: str) -> str: return s[5]\nmain: print(f(\"abc\"))\n",
+            "IndexError",
+        ),
+        (
+            "create f(s: str) -> int: return int(s)\nmain: print(f(\"12x\"))\n",
+            "ValueError",
+        ),
+        (
+            "create f(s: str, n: int) -> str: return \"{n:q}\" + s\nmain: print(f(\"a\", 1))\n",
+            "ValueError",
+        ),
+    ] {
+        let out = both(src, &["f"]);
+        assert!(out.contains(&format!("<error {kind}")), "{src}\n{out}");
+    }
+}
+
+#[test]
+fn values_made_in_loops_survive_when_kept() {
+    // Each round frees what no outer variable holds; what is kept must
+    // stay intact, across nested loops, `skip` and `stop`.
+    let out = both(
+        "create build(n: int) -> str:\n\
+         \x20   var longest = \"\"\n    var all = \"\"\n\
+         \x20   each i in 0 until n:\n\
+         \x20       let word = \"w\" * (i % 4) + str(i)\n\
+         \x20       if i % 5 == 0: skip\n\
+         \x20       each j in 0 until 2:\n            let tmp = word + \"-\" + str(j)\n            if len(tmp) > len(longest): longest = tmp\n        end\n\
+         \x20       all = all + word[0]\n\
+         \x20       if i > 40: stop\n\
+         \x20   end\n\
+         \x20   return longest + \"|\" + all\nend\n\
+         create lists(n: int) -> [int]:\n\
+         \x20   var keep = [0]\n    var k = 0\n\
+         \x20   loop k < n:\n        let fresh = [k, k * k]\n        if k % 2 == 0: keep = keep + fresh\n        let junk = [9] * 50\n        k += 1\n    end\n\
+         \x20   return keep\nend\n\
+         main:\n    print(build(60))\n    print(lists(7))\nend\n",
+        &["build", "lists"],
+    );
+    assert_eq!(
+        out,
+        "www11-0|www4ww8ww1ww1wwwwww2ww2ww3ww3wwww\n[0, 0, 0, 2, 4, 4, 16, 6, 36]\n"
+    );
 }

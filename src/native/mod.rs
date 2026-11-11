@@ -303,6 +303,309 @@ extern "C" fn rt_list_sum_i(list: ListPtr, err: *mut ErrState) -> i64 {
     total
 }
 
+// ---- strings ----
+//
+// A string in native code is a pointer to the `String` inside one of the
+// VM's `Rc<String>`s: an argument, a literal the machine code keeps, or one
+// made during the call and kept in the arena. Operations whose exact
+// behaviour the VM defines (methods, conversions, indexing, `print`) are
+// done by the VM's own code, through its context, so they cannot differ.
+
+use crate::vm::value::Value as VmValue;
+
+type StrPtr = *const String;
+
+/// Kinds of the words passed to the generic helpers.
+const KIND_INT: i64 = 0;
+const KIND_FLOAT: i64 = 1;
+const KIND_BOOL: i64 = 2;
+const KIND_STR: i64 = 3;
+
+fn ctx_of<'c>(err: *mut ErrState) -> &'c mut crate::vm::ops::Ctx {
+    // SAFETY: the VM sets `ctx` to its context for the call, and does not
+    // touch it until the call returns.
+    unsafe { &mut *((*err).ctx as *mut crate::vm::ops::Ctx) }
+}
+
+fn str_value(p: StrPtr) -> VmValue {
+    // SAFETY: `p` points into a live `Rc<String>`; this takes a reference.
+    unsafe {
+        Rc::increment_strong_count(p);
+        VmValue::Str(Rc::from_raw(p))
+    }
+}
+
+fn keep_rc(err: *mut ErrState, text: Rc<String>) -> StrPtr {
+    let p = Rc::as_ptr(&text);
+    arena(err).strings.push(text);
+    p
+}
+
+fn keep_str(err: *mut ErrState, text: String) -> StrPtr {
+    keep_rc(err, Rc::new(text))
+}
+
+fn throw(err: *mut ErrState, e: VmValue) {
+    // SAFETY: the VM's state.
+    unsafe {
+        (*err).code = crate::vm::native_abi::ERR_THROWN;
+        (*err).thrown = Some(e);
+    }
+}
+
+fn word_to_value(kind: i64, w: u64) -> VmValue {
+    match kind {
+        KIND_INT => VmValue::Int(w as i64),
+        KIND_FLOAT => VmValue::Float(f64::from_bits(w)),
+        KIND_BOOL => VmValue::Bool(w & 0xff != 0),
+        _ => str_value(w as StrPtr),
+    }
+}
+
+/// The word for a result of the expected kind; a result of another kind
+/// (which the tables below rule out) fails rather than lie.
+fn value_to_word(err: *mut ErrState, want: i64, v: VmValue) -> u64 {
+    match (want, v) {
+        (KIND_INT, VmValue::Int(x)) => x as u64,
+        (KIND_FLOAT, VmValue::Float(x)) => x.to_bits(),
+        (KIND_BOOL, VmValue::Bool(x)) => u64::from(x),
+        (KIND_STR, VmValue::Str(t)) => keep_rc(err, t) as u64,
+        (_, other) => {
+            throw(
+                err,
+                crate::vm::ops::err(
+                    "InternalError",
+                    format!(
+                        "native code expected another type than {}",
+                        other.type_name()
+                    ),
+                ),
+            );
+            0
+        }
+    }
+}
+
+extern "C" fn rt_sb_new(err: *mut ErrState) -> *mut String {
+    let mut b = Box::new(String::new());
+    let p: *mut String = &mut *b;
+    arena(err).builders.push(b);
+    p
+}
+
+extern "C" fn rt_sb_str(sb: *mut String, s: StrPtr) -> i64 {
+    // SAFETY: a builder from `rt_sb_new` and a live string.
+    unsafe { (*sb).push_str(&*s) };
+    0
+}
+
+extern "C" fn rt_sb_int(sb: *mut String, v: i64) -> i64 {
+    // SAFETY: a builder from `rt_sb_new`.
+    unsafe { (*sb).push_str(&v.to_string()) };
+    0
+}
+
+extern "C" fn rt_sb_float(sb: *mut String, v: f64) -> i64 {
+    // SAFETY: as above.
+    unsafe { (*sb).push_str(&crate::vm::ops::fmt_float(v)) };
+    0
+}
+
+extern "C" fn rt_sb_bool(sb: *mut String, v: i8) -> i64 {
+    // SAFETY: as above.
+    unsafe { (*sb).push_str(if v != 0 { "true" } else { "false" }) };
+    0
+}
+
+extern "C" fn rt_sb_finish(sb: *mut String, err: *mut ErrState) -> StrPtr {
+    // SAFETY: as above.
+    let text = unsafe { std::mem::take(&mut *sb) };
+    // Builders finish in reverse order of starting; drop this one.
+    let builders = &mut arena(err).builders;
+    if builders.last_mut().is_some_and(|b| std::ptr::eq(&**b, sb)) {
+        builders.pop();
+    }
+    keep_str(err, text)
+}
+
+/// How many strings and lists the arena holds, as a mark to collect back
+/// to.
+extern "C" fn rt_arena_mark(err: *mut ErrState) -> i64 {
+    let a = arena(err);
+    (a.strings.len() as i64) | ((a.lists.len() as i64) << 32)
+}
+
+/// At the end of a loop's round: of the strings and lists made since
+/// `mark`, keeps the ones `live` (the variables still in scope) point at,
+/// and frees the rest, as the interpreter would have.
+extern "C" fn rt_arena_collect(err: *mut ErrState, mark: i64, live: *const u64, n: i64) -> i64 {
+    let a = arena(err);
+    let (ms, ml) = ((mark & 0xffff_ffff) as usize, (mark >> 32) as usize);
+    if a.strings.len() <= ms && a.lists.len() <= ml {
+        return 0;
+    }
+    // SAFETY: `n` words written by the caller.
+    let live = unsafe { std::slice::from_raw_parts(live, n as usize) };
+    if a.strings.len() > ms {
+        let tail = a.strings.split_off(ms);
+        a.strings.extend(
+            tail.into_iter()
+                .filter(|t| live.contains(&(Rc::as_ptr(t) as u64))),
+        );
+    }
+    if a.lists.len() > ml {
+        let tail = a.lists.split_off(ml);
+        a.lists.extend(
+            tail.into_iter()
+                .filter(|l| live.contains(&(Rc::as_ptr(l) as u64))),
+        );
+    }
+    0
+}
+
+extern "C" fn rt_print(err: *mut ErrState, s: StrPtr) -> i64 {
+    use std::io::Write as _;
+    let ctx = ctx_of(err);
+    // SAFETY: a live string.
+    let _ = writeln!(ctx.out, "{}", unsafe { &*s });
+    0
+}
+
+extern "C" fn rt_str_len(s: StrPtr) -> i64 {
+    // SAFETY: a live string.
+    unsafe { (*s).chars().count() as i64 }
+}
+
+extern "C" fn rt_str_cmp(a: StrPtr, b: StrPtr) -> i64 {
+    // SAFETY: live strings.
+    match unsafe { (*a).cmp(&*b) } {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
+extern "C" fn rt_str_contains(hay: StrPtr, needle: StrPtr) -> i8 {
+    // SAFETY: live strings.
+    i8::from(unsafe { (*hay).contains((*needle).as_str()) })
+}
+
+extern "C" fn rt_str_concat(a: StrPtr, b: StrPtr, err: *mut ErrState) -> StrPtr {
+    // SAFETY: live strings.
+    let text = unsafe { format!("{}{}", *a, *b) };
+    keep_str(err, text)
+}
+
+extern "C" fn rt_str_repeat(a: StrPtr, n: i64, err: *mut ErrState) -> StrPtr {
+    // SAFETY: a live string.
+    let text = unsafe { (*a).repeat(n.max(0) as usize) };
+    keep_str(err, text)
+}
+
+/// `s[i]`, by the VM's own indexing.
+extern "C" fn rt_str_index(err: *mut ErrState, s: StrPtr, i: i64) -> StrPtr {
+    let ctx = ctx_of(err);
+    match crate::vm::ops::get_index(ctx, &str_value(s), &VmValue::Int(i)) {
+        Ok(VmValue::Str(t)) => keep_rc(err, t),
+        Ok(other) => value_to_word(err, KIND_STR, other) as StrPtr,
+        Err(e) => {
+            throw(err, e);
+            s
+        }
+    }
+}
+
+/// A builtin (`str`, `int`, `float`, `ord`, `format`, ...) on up to three
+/// words, by the VM's own code.
+#[allow(clippy::too_many_arguments)]
+extern "C" fn rt_builtin(
+    err: *mut ErrState,
+    name: StrPtr,
+    n: i64,
+    kinds: i64,
+    a0: u64,
+    a1: u64,
+    a2: u64,
+    want: i64,
+) -> u64 {
+    let words = [a0, a1, a2];
+    let args: Vec<VmValue> = (0..n as usize)
+        .map(|i| word_to_value((kinds >> (4 * i)) & 0xf, words[i]))
+        .collect();
+    // SAFETY: a literal kept with the code.
+    let name = unsafe { (*name).as_str() };
+    let Some(id) = crate::vm::builtins::lookup(name) else {
+        throw(
+            err,
+            crate::vm::ops::err("InternalError", format!("no builtin `{name}`")),
+        );
+        return 0;
+    };
+    match crate::vm::builtins::call(id, ctx_of(err), &args) {
+        Ok(v) => value_to_word(err, want, v),
+        Err(e) => {
+            throw(err, e);
+            0
+        }
+    }
+}
+
+/// A method of a string, by the VM's own code.
+#[allow(clippy::too_many_arguments)]
+extern "C" fn rt_str_method(
+    err: *mut ErrState,
+    name: StrPtr,
+    recv: StrPtr,
+    n: i64,
+    kinds: i64,
+    a0: u64,
+    a1: u64,
+    want: i64,
+) -> u64 {
+    let words = [a0, a1];
+    let mut args = vec![str_value(recv)];
+    args.extend((0..n as usize).map(|i| word_to_value((kinds >> (4 * i)) & 0xf, words[i])));
+    // SAFETY: a literal kept with the code.
+    let name = unsafe { (*name).as_str() };
+    match crate::vm::builtins::call_method(ctx_of(err), name, &args) {
+        Ok(v) => value_to_word(err, want, v),
+        Err(e) => {
+            throw(err, e);
+            0
+        }
+    }
+}
+
+/// String methods the native tier calls, and the type each gives.
+fn str_method_result(name: &str) -> Option<NTy> {
+    Some(match name {
+        "upper" | "lower" | "title" | "capitalize" | "swapcase" | "strip" | "lstrip" | "rstrip"
+        | "replace" | "removeprefix" | "removesuffix" | "zfill" | "center" | "ljust" | "rjust"
+        | "repeat" | "format" => NTy::Str,
+        "startswith" | "endswith" | "contains" | "isdigit" | "isnumeric" | "isdecimal"
+        | "isalpha" | "isalnum" | "isspace" | "isupper" | "islower" | "is_empty" => NTy::Bool,
+        "find" | "rfind" | "index" | "count" => NTy::Int,
+        _ => return None,
+    })
+}
+
+/// Builtins the native tier calls through the VM, and the type each gives
+/// for these argument types.
+fn builtin_result(name: &str, args: &[NTy]) -> Option<NTy> {
+    use NTy::*;
+    Some(match (name, args) {
+        ("str", [Int | Float | Bool | Str]) => Str,
+        ("int", [Str]) => Int,
+        ("float", [Str]) => Float,
+        ("ord", [Str]) => Int,
+        ("chr" | "hex" | "oct" | "bin", [Int]) => Str,
+        ("repr", [Str]) => Str,
+        ("format" | "__format", [Int | Float | Bool | Str, Str]) => Str,
+        ("format", [Int | Float | Bool | Str]) => Str,
+        _ => return None,
+    })
+}
+
 /// Where a list's item pointer and length are inside the `RefCell<Vec<Value>>`
 /// the VM passes, and where an `int`'s or `float`'s payload is inside a
 /// `Value`. Rust does not promise these layouts, so they are measured once
@@ -396,6 +699,23 @@ const FLOAT1: &[(&str, &str)] = &[
 fn helper_symbols() -> Vec<(&'static str, *const u8)> {
     vec![
         ("vyrn_ipow", rt_ipow as *const u8),
+        ("vyrn_sb_new", rt_sb_new as *const u8),
+        ("vyrn_arena_mark", rt_arena_mark as *const u8),
+        ("vyrn_arena_collect", rt_arena_collect as *const u8),
+        ("vyrn_sb_str", rt_sb_str as *const u8),
+        ("vyrn_sb_int", rt_sb_int as *const u8),
+        ("vyrn_sb_float", rt_sb_float as *const u8),
+        ("vyrn_sb_bool", rt_sb_bool as *const u8),
+        ("vyrn_sb_finish", rt_sb_finish as *const u8),
+        ("vyrn_print", rt_print as *const u8),
+        ("vyrn_str_len", rt_str_len as *const u8),
+        ("vyrn_str_cmp", rt_str_cmp as *const u8),
+        ("vyrn_str_contains", rt_str_contains as *const u8),
+        ("vyrn_str_concat", rt_str_concat as *const u8),
+        ("vyrn_str_repeat", rt_str_repeat as *const u8),
+        ("vyrn_str_index", rt_str_index as *const u8),
+        ("vyrn_builtin", rt_builtin as *const u8),
+        ("vyrn_str_method", rt_str_method as *const u8),
         ("vyrn_list_len", rt_list_len as *const u8),
         ("vyrn_list_new", rt_list_new as *const u8),
         ("vyrn_list_repeat", rt_list_repeat as *const u8),
@@ -533,6 +853,9 @@ fn param_type(t: &TypeExpr, structs: &Structs) -> Option<NTy> {
         if args.is_empty() && path.segments.len() == 1 {
             if let Some(id) = structs.by_name.get(&path.segments[0].name) {
                 return Some(NTy::Struct(*id));
+            }
+            if path.segments[0].name == "str" {
+                return Some(NTy::Str);
             }
         }
     }
@@ -761,7 +1084,7 @@ pub fn attach(module: &Module, program: &Program) {
             .iter()
             .map(|id| jit.module.get_finalized_function(*id))
             .collect();
-        let keep: Rc<dyn std::any::Any> = Rc::new(KeepAlive(Some(jit.module)));
+        let keep: Rc<dyn std::any::Any> = Rc::new(KeepAlive(Some(jit.module), jit.literals));
         for (c, ptr) in candidates.iter().zip(pointers) {
             // SAFETY: the entry was built with exactly the `Entry` signature.
             let entry: crate::vm::native_abi::Entry = unsafe { std::mem::transmute(ptr) };
@@ -783,7 +1106,7 @@ pub fn attach(module: &Module, program: &Program) {
 /// Owns the machine code. It is never freed while a program can call it;
 /// programs are dropped at exit, or when the REPL compiles the next entry.
 #[allow(dead_code)] // held only so the code is not freed
-struct KeepAlive(Option<JITModule>);
+struct KeepAlive(Option<JITModule>, Vec<Rc<String>>);
 
 /// What names mean to the lowering, besides locals and the candidates.
 struct Env {
@@ -803,11 +1126,15 @@ struct Jit {
     fctx: FunctionBuilderContext,
     helpers: HashMap<&'static str, FuncId>,
     ptr: Type,
+    /// String literals the machine code points at.
+    literals: Vec<Rc<String>>,
 }
 
 fn cl_type(t: NTy) -> Type {
     match t {
-        NTy::Int | NTy::Unit | NTy::ListInt | NTy::ListFloat | NTy::Struct(_) => types::I64,
+        NTy::Int | NTy::Unit | NTy::ListInt | NTy::ListFloat | NTy::Struct(_) | NTy::Str => {
+            types::I64
+        }
         NTy::Float => types::F64,
         NTy::Bool => types::I8,
     }
@@ -845,6 +1172,53 @@ impl Jit {
             Ok(())
         };
         declare("vyrn_ipow", &[types::I64, types::I64, ptr], types::I64)?;
+        declare("vyrn_sb_new", &[ptr], ptr)?;
+        declare("vyrn_arena_mark", &[ptr], types::I64)?;
+        declare(
+            "vyrn_arena_collect",
+            &[ptr, types::I64, ptr, types::I64],
+            types::I64,
+        )?;
+        declare("vyrn_sb_str", &[ptr, ptr], types::I64)?;
+        declare("vyrn_sb_int", &[ptr, types::I64], types::I64)?;
+        declare("vyrn_sb_float", &[ptr, types::F64], types::I64)?;
+        declare("vyrn_sb_bool", &[ptr, types::I8], types::I64)?;
+        declare("vyrn_sb_finish", &[ptr, ptr], ptr)?;
+        declare("vyrn_print", &[ptr, ptr], types::I64)?;
+        declare("vyrn_str_len", &[ptr], types::I64)?;
+        declare("vyrn_str_cmp", &[ptr, ptr], types::I64)?;
+        declare("vyrn_str_contains", &[ptr, ptr], types::I8)?;
+        declare("vyrn_str_concat", &[ptr, ptr, ptr], ptr)?;
+        declare("vyrn_str_repeat", &[ptr, types::I64, ptr], ptr)?;
+        declare("vyrn_str_index", &[ptr, ptr, types::I64], ptr)?;
+        declare(
+            "vyrn_builtin",
+            &[
+                ptr,
+                ptr,
+                types::I64,
+                types::I64,
+                types::I64,
+                types::I64,
+                types::I64,
+                types::I64,
+            ],
+            types::I64,
+        )?;
+        declare(
+            "vyrn_str_method",
+            &[
+                ptr,
+                ptr,
+                ptr,
+                types::I64,
+                types::I64,
+                types::I64,
+                types::I64,
+                types::I64,
+            ],
+            types::I64,
+        )?;
         declare("vyrn_list_len", &[ptr], types::I64)?;
         declare("vyrn_list_new", &[types::I64, ptr], ptr)?;
         declare("vyrn_list_repeat", &[ptr, types::I64, ptr], ptr)?;
@@ -879,6 +1253,7 @@ impl Jit {
             fctx: FunctionBuilderContext::new(),
             helpers,
             ptr,
+            literals: Vec::new(),
         })
     }
 
@@ -938,6 +1313,7 @@ impl Jit {
                 b,
                 module: &mut self.module,
                 helpers: &self.helpers,
+                literals: &mut self.literals,
                 sigs,
                 ids,
                 env,
@@ -949,6 +1325,7 @@ impl Jit {
                 line: c.decl.name.span.start.line,
                 layout: list_layout(),
                 sret: None,
+                allocs: 0,
             };
             lower.sret = sret;
             // Each parameter is the function's own; a struct is copied in.
@@ -1066,6 +1443,7 @@ struct Lower<'a, 'f> {
     b: FunctionBuilder<'f>,
     module: &'a mut JITModule,
     helpers: &'a HashMap<&'static str, FuncId>,
+    literals: &'a mut Vec<Rc<String>>,
     sigs: &'a HashMap<String, (Vec<NTy>, NTy)>,
     ids: &'a HashMap<String, FuncId>,
     env: &'a Env,
@@ -1079,10 +1457,31 @@ struct Lower<'a, 'f> {
     layout: Option<ListLayout>,
     /// Where a struct result goes.
     sret: Option<Value>,
+    /// Calls so far that may put a string or list in the arena.
+    allocs: u32,
 }
 
 impl Lower<'_, '_> {
     fn func_ref(&mut self, id: FuncId) -> FuncRef {
+        const ALLOCATING: &[&str] = &[
+            "vyrn_list_new",
+            "vyrn_list_repeat",
+            "vyrn_list_concat",
+            "vyrn_list_copy",
+            "vyrn_sb_finish",
+            "vyrn_str_concat",
+            "vyrn_str_repeat",
+            "vyrn_str_index",
+            "vyrn_builtin",
+            "vyrn_str_method",
+        ];
+        if ALLOCATING.iter().any(|n| self.helpers.get(n) == Some(&id))
+            || self.ids.values().any(|v| *v == id)
+        {
+            // Helpers that make strings or lists, and compiled functions,
+            // which may return one.
+            self.allocs += 1;
+        }
         if let Some(r) = self.refs.get(&id) {
             return *r;
         }
@@ -1182,6 +1581,10 @@ impl Lower<'_, '_> {
             NTy::Float => {
                 let z = self.b.ins().f64const(0.0);
                 self.b.ins().fcmp(FloatCC::NotEqual, v, z)
+            }
+            NTy::Str => {
+                let len = self.helper("vyrn_str_len", &[v]);
+                self.b.ins().icmp_imm_s(IntCC::NotEqual, len, 0)
             }
             _ => return Err("this value used as a condition".into()),
         })
@@ -1362,8 +1765,10 @@ impl Lower<'_, '_> {
                 let Condition::Expr(c) = condition else {
                     return Err("`loop let`".into());
                 };
+                let mark = self.arena_mark();
                 let header = self.b.create_block();
                 let inside = self.b.create_block();
+                let next = self.b.create_block();
                 let exit = self.b.create_block();
                 self.b.ins().jump(header, &[]);
                 self.b.switch_to_block(header);
@@ -1371,20 +1776,36 @@ impl Lower<'_, '_> {
                 let c = self.truthy(v, t)?;
                 self.b.ins().brif(c, inside, &[], exit, &[]);
                 self.b.switch_to_block(inside);
-                self.loops.push((header, exit));
+                self.loops.push((next, exit));
+                let before = self.allocs;
                 self.block(body)?;
+                let allocates = self.allocs != before;
                 self.loops.pop();
+                self.b.ins().jump(next, &[]);
+                self.b.switch_to_block(next);
+                if allocates {
+                    self.arena_collect(mark);
+                }
                 self.b.ins().jump(header, &[]);
                 self.b.switch_to_block(exit);
             }
             StmtKind::Loop(body) => {
+                let mark = self.arena_mark();
                 let header = self.b.create_block();
+                let next = self.b.create_block();
                 let exit = self.b.create_block();
                 self.b.ins().jump(header, &[]);
                 self.b.switch_to_block(header);
-                self.loops.push((header, exit));
+                self.loops.push((next, exit));
+                let before = self.allocs;
                 self.block(body)?;
+                let allocates = self.allocs != before;
                 self.loops.pop();
+                self.b.ins().jump(next, &[]);
+                self.b.switch_to_block(next);
+                if allocates {
+                    self.arena_collect(mark);
+                }
                 self.b.ins().jump(header, &[]);
                 self.b.switch_to_block(exit);
             }
@@ -1496,6 +1917,7 @@ impl Lower<'_, '_> {
     ) -> Res<()> {
         let counter = self.b.declare_var(types::I64);
         self.b.def_var(counter, start);
+        let mark = self.arena_mark();
         let header = self.b.create_block();
         let inside = self.b.create_block();
         let next = self.b.create_block();
@@ -1516,11 +1938,16 @@ impl Lower<'_, '_> {
         let i = self.b.use_var(counter);
         self.declare(name, i, NTy::Int);
         self.loops.push((next, exit));
+        let before = self.allocs;
         body(self)?;
+        let allocates = self.allocs != before;
         self.loops.pop();
         self.scopes.pop();
         self.b.ins().jump(next, &[]);
         self.b.switch_to_block(next);
+        if allocates {
+            self.arena_collect(mark);
+        }
         let i = self.b.use_var(counter);
         let step_v = self.b.ins().iconst(types::I64, step);
         let (n, overflow) = self.b.ins().sadd_overflow(i, step_v);
@@ -1529,6 +1956,140 @@ impl Lower<'_, '_> {
         self.b.ins().brif(overflow, exit, &[], header, &[]);
         self.b.switch_to_block(exit);
         Ok(())
+    }
+
+    // ---- freeing what loops make ----
+
+    fn arena_mark(&mut self) -> Value {
+        self.helper("vyrn_arena_mark", &[self.err])
+    }
+
+    /// Frees the strings and lists made since `mark` that no variable in
+    /// scope holds. Every string and list a function can reach is in a
+    /// variable (lists hold only numbers, structs only numbers), so the
+    /// variables are all that can keep one alive.
+    fn arena_collect(&mut self, mark: Value) {
+        let live: Vec<Variable> = self
+            .scopes
+            .iter()
+            .flatten()
+            .filter(|(_, _, t)| matches!(t, NTy::Str | NTy::ListInt | NTy::ListFloat))
+            .map(|(_, v, _)| *v)
+            .collect();
+        let size = (live.len().max(1) * 8) as u32;
+        let slot = self.b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            size,
+            3,
+        ));
+        let base = self.b.ins().stack_addr(types::I64, slot, 0);
+        for (i, v) in live.iter().enumerate() {
+            let p = self.b.use_var(*v);
+            self.b
+                .ins()
+                .store(MemFlagsData::trusted(), p, base, (i * 8) as i32);
+        }
+        let n = self.b.ins().iconst(types::I64, live.len() as i64);
+        self.helper("vyrn_arena_collect", &[self.err, mark, base, n]);
+    }
+
+    // ---- strings ----
+
+    /// Calls a runtime helper and gives its result.
+    fn helper(&mut self, name: &str, args: &[Value]) -> Value {
+        let f = self.func_ref(self.helpers[name]);
+        let call = self.b.ins().call(f, args);
+        self.b.inst_results(call)[0]
+    }
+
+    /// A string literal: kept with the machine code, so it costs nothing
+    /// to use.
+    fn literal(&mut self, text: &str) -> Value {
+        let rc = Rc::new(text.to_string());
+        let p = Rc::as_ptr(&rc) as i64;
+        self.literals.push(rc);
+        self.b.ins().iconst(types::I64, p)
+    }
+
+    /// `"text"` and `"text {value} more"`.
+    fn string(&mut self, segments: &[crate::ast::StrSegment]) -> Res<(Value, NTy)> {
+        use crate::ast::StrSegment;
+        if let [StrSegment::Text(t)] = segments {
+            return Ok((self.literal(t), NTy::Str));
+        }
+        if segments.is_empty() {
+            return Ok((self.literal(""), NTy::Str));
+        }
+        let sb = self.helper("vyrn_sb_new", &[self.err]);
+        for seg in segments {
+            match seg {
+                StrSegment::Text(t) => {
+                    let lit = self.literal(t);
+                    self.helper("vyrn_sb_str", &[sb, lit]);
+                }
+                StrSegment::Interp(e) => {
+                    let (v, t) = self.expr(e)?;
+                    self.append(sb, v, t)?;
+                }
+            }
+        }
+        Ok((self.helper("vyrn_sb_finish", &[sb, self.err]), NTy::Str))
+    }
+
+    /// Adds a value to text being built, as `print` and `"{x}"` show it.
+    fn append(&mut self, sb: Value, v: Value, t: NTy) -> Res<()> {
+        let helper = match t {
+            NTy::Int => "vyrn_sb_int",
+            NTy::Float => "vyrn_sb_float",
+            NTy::Bool => "vyrn_sb_bool",
+            NTy::Str => "vyrn_sb_str",
+            _ => return Err(format!("showing {} as text", ty_name(t))),
+        };
+        self.helper(helper, &[sb, v]);
+        Ok(())
+    }
+
+    fn as_word(&mut self, v: Value, t: NTy) -> Value {
+        match t {
+            NTy::Float => self.b.ins().bitcast(types::I64, MemFlagsData::new(), v),
+            NTy::Bool => self.b.ins().uextend(types::I64, v),
+            _ => v,
+        }
+    }
+
+    fn word_to(&mut self, w: Value, t: NTy) -> Value {
+        match t {
+            NTy::Float => self.b.ins().bitcast(types::F64, MemFlagsData::new(), w),
+            NTy::Bool => self.b.ins().ireduce(types::I8, w),
+            _ => w,
+        }
+    }
+
+    /// A builtin the VM runs for us (`str(x)`, `int(text)`, `format`, ...).
+    fn generic_builtin(&mut self, name: &str, args: &[(Value, NTy)]) -> Res<(Value, NTy)> {
+        let types: Vec<NTy> = args.iter().map(|(_, t)| *t).collect();
+        let want = builtin_result(name, &types).ok_or_else(|| format!("calls `{name}`"))?;
+        let mut kinds = 0i64;
+        let mut words = Vec::new();
+        for (i, (v, t)) in args.iter().enumerate() {
+            kinds |= kind_of(*t)? << (4 * i);
+            words.push(self.as_word(*v, *t));
+        }
+        while words.len() < 3 {
+            words.push(self.b.ins().iconst(types::I64, 0));
+        }
+        let name_v = self.literal(name);
+        let n = self.b.ins().iconst(types::I64, args.len() as i64);
+        let kinds = self.b.ins().iconst(types::I64, kinds);
+        let want_k = self.b.ins().iconst(types::I64, kind_of(want)?);
+        let w = self.helper(
+            "vyrn_builtin",
+            &[
+                self.err, name_v, n, kinds, words[0], words[1], words[2], want_k,
+            ],
+        );
+        self.check_err_with_line();
+        Ok((self.word_to(w, want), want))
     }
 
     // ---- structs ----
@@ -1678,8 +2239,8 @@ impl Lower<'_, '_> {
             return Err("slices and multi-dimensional indexing".into());
         };
         let (list, lt) = self.expr(base)?;
-        if !lt.is_list() {
-            return Err("indexing something that is not a list of numbers".into());
+        if !lt.is_list() && lt != NTy::Str {
+            return Err("indexing something that is not a list of numbers or a string".into());
         }
         let (i, it) = self.expr(index)?;
         if it != NTy::Int {
@@ -1782,6 +2343,9 @@ impl Lower<'_, '_> {
         value: &Expr,
     ) -> Res<()> {
         let (list, lt, i) = self.list_and_index(base, subscripts)?;
+        if lt == NTy::Str {
+            return Err("assigning into a string".into());
+        }
         let elem = if lt == NTy::ListInt {
             NTy::Int
         } else {
@@ -1816,6 +2380,33 @@ impl Lower<'_, '_> {
     /// `xs.append(x)`, and `len` as a method.
     fn method(&mut self, base: &Expr, name: &str, args: &[crate::ast::Arg]) -> Res<(Value, NTy)> {
         let (list, lt) = self.expr(base)?;
+        if lt == NTy::Str {
+            let want =
+                str_method_result(name).ok_or_else(|| format!("the string method `{name}`"))?;
+            if args.len() > 2 || args.iter().any(|a| a.name.is_some()) {
+                return Err(format!("`.{name}()` with these arguments"));
+            }
+            let mut words = Vec::new();
+            let mut kinds = 0i64;
+            for (i, a) in args.iter().enumerate() {
+                let (v, t) = self.expr(&a.value)?;
+                kinds |= kind_of(t)? << (4 * i);
+                words.push(self.as_word(v, t));
+            }
+            while words.len() < 2 {
+                words.push(self.b.ins().iconst(types::I64, 0));
+            }
+            let name_v = self.literal(name);
+            let n = self.b.ins().iconst(types::I64, args.len() as i64);
+            let kinds = self.b.ins().iconst(types::I64, kinds);
+            let want_k = self.b.ins().iconst(types::I64, kind_of(want)?);
+            let w = self.helper(
+                "vyrn_str_method",
+                &[self.err, name_v, list, n, kinds, words[0], words[1], want_k],
+            );
+            self.check_err_with_line();
+            return Ok((self.word_to(w, want), want));
+        }
         if let NTy::Struct(id) = lt {
             let key = format!("{}.{name}", self.env.structs.name(id));
             let (params, ret) = self
@@ -1906,6 +2497,7 @@ impl Lower<'_, '_> {
         let counter = self.b.declare_var(types::I64);
         let zero = self.b.ins().iconst(types::I64, 0);
         self.b.def_var(counter, zero);
+        let mark = self.arena_mark();
         let header = self.b.create_block();
         let inside = self.b.create_block();
         let next = self.b.create_block();
@@ -1921,11 +2513,16 @@ impl Lower<'_, '_> {
         self.scopes.push(Vec::new());
         self.declare(name, item, elem);
         self.loops.push((next, exit));
+        let before = self.allocs;
         body(self)?;
+        let allocates = self.allocs != before;
         self.loops.pop();
         self.scopes.pop();
         self.b.ins().jump(next, &[]);
         self.b.switch_to_block(next);
+        if allocates {
+            self.arena_collect(mark);
+        }
         let i = self.b.use_var(counter);
         let n = self.b.ins().iadd_imm_s(i, 1);
         self.b.def_var(counter, n);
@@ -2162,6 +2759,7 @@ impl Lower<'_, '_> {
             }
             ExprKind::Call { callee, args } => self.call(callee, args)?,
             ExprKind::List(items) => self.list_literal(items)?,
+            ExprKind::Str(segments) => self.string(segments)?,
             ExprKind::Field {
                 base,
                 name,
@@ -2188,6 +2786,11 @@ impl Lower<'_, '_> {
             ExprKind::ListComp { element, clauses } => self.comprehension(element, clauses)?,
             ExprKind::Index { base, subscripts } => {
                 let (list, lt, i) = self.list_and_index(base, subscripts)?;
+                if lt == NTy::Str {
+                    let v = self.helper("vyrn_str_index", &[self.err, list, i]);
+                    self.check_err_with_line();
+                    return Ok((v, NTy::Str));
+                }
                 let t = if lt == NTy::ListInt {
                     NTy::Int
                 } else {
@@ -2209,6 +2812,15 @@ impl Lower<'_, '_> {
                 let v = self.b.inst_results(call)[0];
                 self.check_err_with_line();
                 return Ok((v, list));
+            }
+            (B::Add, NTy::Str, NTy::Str) => {
+                let v = self.helper("vyrn_str_concat", &[l, r, self.err]);
+                return Ok((v, NTy::Str));
+            }
+            (B::Mul, NTy::Str, NTy::Int) | (B::Mul, NTy::Int, NTy::Str) => {
+                let (text, n) = if lt == NTy::Str { (l, r) } else { (r, l) };
+                let v = self.helper("vyrn_str_repeat", &[text, n, self.err]);
+                return Ok((v, NTy::Str));
             }
             (B::Add, a, b) if a.is_list() && a == b => {
                 let f = self.func_ref(self.helpers["vyrn_list_concat"]);
@@ -2401,6 +3013,31 @@ impl Lower<'_, '_> {
 
     fn compare_pair(&mut self, op: CompareOp, l: Value, lt: NTy, r: Value, rt: NTy) -> Res<Value> {
         use CompareOp as C;
+        if (lt, rt) == (NTy::Str, NTy::Str) {
+            return Ok(match op {
+                C::In | C::NotIn => {
+                    let found = self.helper("vyrn_str_contains", &[r, l]);
+                    let cc = if op == C::In {
+                        IntCC::NotEqual
+                    } else {
+                        IntCC::Equal
+                    };
+                    self.b.ins().icmp_imm_s(cc, found, 0)
+                }
+                _ => {
+                    let order = self.helper("vyrn_str_cmp", &[l, r]);
+                    let cc = match op {
+                        C::Eq => IntCC::Equal,
+                        C::NotEq => IntCC::NotEqual,
+                        C::Lt => IntCC::SignedLessThan,
+                        C::LtEq => IntCC::SignedLessThanOrEqual,
+                        C::Gt => IntCC::SignedGreaterThan,
+                        _ => IntCC::SignedGreaterThanOrEqual,
+                    };
+                    self.b.ins().icmp_imm_s(cc, order, 0)
+                }
+            });
+        }
         match (lt, rt) {
             (NTy::Int, NTy::Int) | (NTy::Bool, NTy::Bool) => {
                 if lt == NTy::Bool && !matches!(op, C::Eq | C::NotEq) {
@@ -2526,6 +3163,36 @@ impl Lower<'_, '_> {
                 let call = self.b.ins().call(f, &[a[0].0, self.err]);
                 (self.b.inst_results(call)[0], a[0].1)
             }
+            "print" => {
+                let mut values = Vec::new();
+                for a in args {
+                    if a.name.is_some() {
+                        return Err("`print` with keyword arguments".into());
+                    }
+                    values.push(self.expr(&a.value)?);
+                }
+                let sb = self.helper("vyrn_sb_new", &[self.err]);
+                for (i, (v, t)) in values.into_iter().enumerate() {
+                    if i > 0 {
+                        let space = self.literal(" ");
+                        self.helper("vyrn_sb_str", &[sb, space]);
+                    }
+                    self.append(sb, v, t)?;
+                }
+                let line = self.helper("vyrn_sb_finish", &[sb, self.err]);
+                self.helper("vyrn_print", &[self.err, line]);
+                (self.b.ins().iconst(types::I64, 0), NTy::Unit)
+            }
+            "len" if args.len() == 1 => {
+                let (v, t) = self.expr(&args[0].value)?;
+                if t == NTy::Str {
+                    return Ok((self.helper("vyrn_str_len", &[v]), NTy::Int));
+                }
+                if !t.is_list() {
+                    return Err("`len` of something that is not a list or a string".into());
+                }
+                (self.list_len(v), NTy::Int)
+            }
             "len" => {
                 let a = self.args(args, 1)?;
                 if !a[0].1.is_list() {
@@ -2551,6 +3218,7 @@ impl Lower<'_, '_> {
             "float" => {
                 let a = self.args(args, 1)?;
                 match a[0].1 {
+                    NTy::Str => return self.generic_builtin(name, &a),
                     NTy::Int | NTy::Float => (self.as_float(a[0].0, a[0].1), NTy::Float),
                     _ => return Err("float of a boolean".into()),
                 }
@@ -2559,6 +3227,7 @@ impl Lower<'_, '_> {
                 let a = self.args(args, 1)?;
                 match a[0].1 {
                     NTy::Int => a[0],
+                    NTy::Str => return self.generic_builtin(name, &a),
                     NTy::Float => {
                         let v = a[0].0;
                         // Not finite: the interpreter refuses it.
@@ -2609,7 +3278,16 @@ impl Lower<'_, '_> {
                 };
                 (self.b.ins().select(pick_second, y, x), xt)
             }
-            _ => return Err(format!("calls `{name}`")),
+            _ => {
+                if args.iter().any(|a| a.name.is_some()) {
+                    return Err(format!("calls `{name}` with keyword arguments"));
+                }
+                let values: Vec<(Value, NTy)> = args
+                    .iter()
+                    .map(|a| self.expr(&a.value))
+                    .collect::<Res<_>>()?;
+                return self.generic_builtin(name, &values);
+            }
         })
     }
 
@@ -2653,6 +3331,16 @@ impl Lower<'_, '_> {
     }
 }
 
+fn kind_of(t: NTy) -> Res<i64> {
+    Ok(match t {
+        NTy::Int => KIND_INT,
+        NTy::Float => KIND_FLOAT,
+        NTy::Bool => KIND_BOOL,
+        NTy::Str => KIND_STR,
+        _ => return Err(format!("passing {} to the runtime", ty_name(t))),
+    })
+}
+
 fn literal_int(e: &Expr) -> Res<i64> {
     match &e.kind {
         ExprKind::Int {
@@ -2694,5 +3382,6 @@ fn ty_name(t: NTy) -> &'static str {
         NTy::ListInt => "[int]",
         NTy::ListFloat => "[float]",
         NTy::Struct(_) => "a struct",
+        NTy::Str => "str",
     }
 }

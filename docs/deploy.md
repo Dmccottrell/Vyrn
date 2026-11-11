@@ -139,24 +139,44 @@ create fib(n: int) -> int:
 end
 ```
 
-**What compiles.** A top-level function whose parameters are all `int`,
-`float`, `bool`, `[int]` or `[float]` (and whose result is a number, a
-`bool`, or nothing), when its body stays within: those types for every
-variable; for lists, `len(xs)`, `xs[i]` (negative too), `xs[i] = v`,
-`xs[i] += v`, `xs.append(v)` and `each x in xs`; arithmetic,
-comparisons (chained too), `and`/`or`/`not` and `a if c else b`; `if`,
-`else if`, `else`, `loop`, `loop cond`, `each i in a until b` / `a to b` /
-`range(...)` with a literal `by`, `stop`, `skip`, `return`; calls to other
-compiled functions, recursion included; and `abs`, `min`, `max`, `sqrt`,
-`floor`, `ceil`, `int`, `float`, `exp`, `tanh` and the `std.math`
-functions. Anything else (strings, lists, `print`, a variable that
-changes from `int` to `float`, `int ** n` with a non-literal `n`, whose
-type depends on `n`'s sign, making or returning a list) leaves the
-function to the interpreter. A list argument is checked item by item when
-the call starts: a list of `int` given where `[float]` is declared runs on
-the interpreter, as does the same empty list given as both an `[int]` and
-a `[float]`. A
-call to a function that stays interpreted keeps its caller interpreted too.
+**What compiles.** A top-level function or a struct method whose
+parameters and result are `int`, `float`, `bool`, `str`, `[int]`,
+`[float]`, or a struct whose fields are all `int`, `float` or `bool`, when
+its body stays within those types:
+
+- arithmetic, comparisons (chained too), `and`/`or`/`not`, `a if c else b`;
+- `if`, `else if`, `else`, `loop`, `loop cond`, `each` over ranges,
+  `range(...)` and lists, `stop`, `skip`, `return`;
+- calls to other compiled functions and methods, recursion included, and
+  `abs`, `min`, `max`, `sqrt`, `floor`, `ceil`, `int`, `float`, `exp`,
+  `tanh` and the `std.math` functions;
+- **lists**: literals, `[]` typed by its context, `[x] * n`, `+`,
+  comprehensions, `len`, indexing (negative too), item assignment,
+  `append`, `copy`, `list(xs)`, `sum` of `[int]`, and lists as results;
+- **structs**: constructors (by position or name), fields, field
+  assignment, methods (not `mut self`, which writes back to the caller);
+- **strings**: literals, interpolation with format specs (`"{x:.2f}"`),
+  `+`, `*`, comparisons, `in`, `len`, indexing, `str()`, `int(text)`,
+  `float(text)`, the common methods (`upper`, `strip`, `replace`,
+  `startswith`, `find`, `count`, ...), and `print`.
+
+Anything else (maps, sets, lists of strings or structs, objects, a
+variable that changes type, `int ** n` with a non-literal `n`, whose type
+depends on `n`'s sign) leaves the function to the interpreter, and a call
+to an interpreted function keeps its caller interpreted too. A list or
+struct argument is checked item by item when the call starts: a list of
+`int` given where `[float]` is declared runs on the interpreter.
+
+**How values are kept.** List items are read and written in place (the
+layout of the VM's lists and values is measured at startup and checked;
+if the check fails, items go through runtime calls). A struct is a stack
+slot of one word per field, and every variable owns its own, which is
+the interpreter's value semantics. Strings point at the VM's own
+reference-counted text. Strings and lists made during a call live in an
+arena the VM owns; at the end of each loop round the ones no variable
+still holds are freed, so a loop that builds a million temporary strings
+does not keep them. String methods, conversions, `print` and string
+indexing run the VM's own code, so they cannot behave differently.
 
 **Nothing changes but speed.** The interpreter calls the machine code
 only when the arguments have exactly the declared types, and runs the
@@ -175,13 +195,14 @@ the largest and smallest integers.
 | 5M-step integer loop | 0.206 s | 0.008 s | 0.203 s | 0.005 s |
 | Mandelbrot 300×200, floats | 0.374 s | 0.010 s | 0.224 s | 0.008 s |
 | Collatz up to 300,000 | 2.380 s | 0.134 s | 2.144 s | 0.039 s |
-| Bubble sort, 3,000 `[int]` | 0.453 s | 0.041 s | 0.239 s | |
-| Sieve of primes to 2M, `[int]` | 0.413 s | 0.059 s | 0.103 s | |
+| Bubble sort, 3,000 `[int]` | 0.453 s | 0.014 s | 0.239 s | |
+| Sieve of primes to 2M, `[int]` | 0.413 s | 0.042 s | 0.103 s | |
+| Orbit, 1M steps of `Vec2` struct methods | 0.955 s | 0.048 s | 0.675 s | |
+| FizzBuzz to 1M, strings | 0.181 s | 0.055 s | | |
 
-The gap to C is mostly the overflow checks, which C does not make. List
-items are read and written through small runtime calls, so list code gains
-less than arithmetic; Python's sieve also uses whole-list operations
-(`[1] * n`, slices) that run in C.
+The gap to C is mostly the overflow checks, which C does not make.
+String-heavy code gains least, because each string operation still
+allocates as the interpreter's does.
 
 **Seeing it.** `VYRN_NATIVE=verbose vyrn run file.vyrn` lists each
 function and why it was or was not compiled; `vyrn bytecode` marks
@@ -308,10 +329,9 @@ checked). The trade-off is visible in the source, as rule 4 asks.
 
 ### 4.3 Order of work
 
-1. Done for numbers and lists of numbers: Cranelift code from the checked
-   tree (section 3), validated against the bytecode VM. Next: making and
-   returning lists, reading items without a runtime call, then structs,
-   then strings.
+1. Done: numbers, lists of numbers, structs of numbers and strings
+   (section 3), validated against the bytecode VM. Next: maps, lists of
+   strings and structs, and `object`s.
 2. VIR, so the Cranelift and LLVM tiers share one lowering.
 3. LLVM codegen from the same VIR (through `inkwell`), for release builds:
    `vyrn build --target=linux-musl --release` links statically against

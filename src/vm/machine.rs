@@ -631,6 +631,7 @@ impl Vm {
                 {
                     Rc::as_ptr(items) as u64
                 }
+                (NTy::Str, Value::Str(text)) => Rc::as_ptr(text) as u64,
                 _ => scalar_word(*want, arg)?,
             };
             if want.is_list() {
@@ -662,6 +663,11 @@ impl Vm {
         // SAFETY: the entry was compiled for exactly these parameter types,
         // and `words` holds at least as many words as it reads.
         let word = unsafe { (native.entry)(words.as_ptr(), &mut err) };
+        if err.code == super::native_abi::ERR_THROWN {
+            if let Some(thrown) = err.thrown.take() {
+                return Some(Err(thrown));
+            }
+        }
         if err.code != 0 {
             let (kind, message) = err.describe(&native.name);
             return Some(Err(err_value(kind, message)));
@@ -671,6 +677,15 @@ impl Vm {
             NTy::Float => Value::Float(f64::from_bits(word)),
             NTy::Bool => Value::Bool(word != 0),
             NTy::Unit => Value::None,
+            NTy::Str => {
+                let text = word as *const String;
+                // SAFETY: native code returns strings that live in an
+                // `Rc`: its arena, a literal it keeps, or an argument.
+                unsafe {
+                    Rc::increment_strong_count(text);
+                    Value::Str(Rc::from_raw(text))
+                }
+            }
             NTy::Struct(ty) => {
                 // Always known: the tier only returns structs it describes.
                 let fields = native.structs.get(&ty).cloned().unwrap_or_default();

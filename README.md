@@ -7,9 +7,9 @@ Status: v0.4. A complete toolchain in Rust: parser, gradual type and borrow
 checker, bytecode interpreter, a native tier that compiles typed functions
 to machine code (10-25 times faster than CPython on numeric code, within
 1.3-3.5 times of C), formatter, interactive prompt, language server,
-package resolver and single-file builds. Native code covers numbers and
-lists of numbers so far; structs and strings still run on the interpreter
-(`docs/deploy.md` section 3).
+package resolver and single-file builds. Native code covers numbers,
+strings, lists of numbers and structs of numbers; maps and objects still
+run on the interpreter (`docs/deploy.md` section 3).
 
 ## Documents
 

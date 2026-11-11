@@ -20,6 +20,9 @@ pub enum NTy {
     /// A struct whose fields are all `int`, `float` or `bool`, by type
     /// index. Passed as its fields, one word each.
     Struct(u16),
+    /// `str`: a pointer to the text inside the VM's reference-counted
+    /// string.
+    Str,
 }
 
 impl NTy {
@@ -34,6 +37,9 @@ impl NTy {
 pub struct Arena {
     pub lists: Vec<Rc<std::cell::RefCell<Vec<super::value::Value>>>>,
     pub strings: Vec<Rc<String>>,
+    /// Text being built (interpolation, `print`), before it becomes a
+    /// string.
+    pub builders: Vec<Box<String>>,
 }
 
 /// Filled in by native code when it fails, and read by the VM. Also
@@ -59,6 +65,8 @@ pub struct ErrState {
     pub ctx: *mut std::ffi::c_void,
     /// The fields of a returned struct (offset 48).
     pub ret: [u64; 16],
+    /// For `ERR_THROWN`: the error a VM operation raised, as is.
+    pub thrown: Option<super::value::Value>,
 }
 
 impl Default for ErrState {
@@ -73,6 +81,7 @@ impl Default for ErrState {
             arena: std::ptr::null_mut(),
             ctx: std::ptr::null_mut(),
             ret: [0; 16],
+            thrown: None,
         }
     }
 }
@@ -85,6 +94,9 @@ pub const ERR_SHIFT: u32 = 5;
 pub const ERR_NO_RETURN: u32 = 6;
 pub const ERR_INDEX: u32 = 7;
 pub const ERR_MEMORY: u32 = 8;
+/// A VM operation called from native code (a string method, `print`,
+/// indexing a string) failed; the error is in `thrown`.
+pub const ERR_THROWN: u32 = 9;
 
 /// Operators named in overflow messages, by `ErrState::detail`.
 pub const OPERATORS: &[&str] = &["+", "-", "*", "**", "//", "%", "<<", "abs", "neg"];
