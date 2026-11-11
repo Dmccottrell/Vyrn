@@ -546,6 +546,23 @@ impl Parser {
         }
     }
 
+    /// The operator after `create operator`: `+`, `==`, `[]`, ...
+    fn operator_symbol(&mut self) -> PResult<String> {
+        let symbol = match self.kind() {
+            Tk::Punct(P::LBracket) if self.kind_at(1).is_punct(P::RBracket) => {
+                self.bump();
+                "[]".to_string()
+            }
+            Tk::Punct(p) => p.as_str().to_string(),
+            _ => String::new(),
+        };
+        if !crate::lexer::OPERATORS.contains(&symbol.as_str()) {
+            return Err(self.expected("an operator such as `+`, `==` or `<` after `operator`"));
+        }
+        self.bump();
+        Ok(symbol)
+    }
+
     fn at_fn_decl(&self) -> bool {
         self.fn_decl_starts_at(self.pos)
     }
@@ -868,7 +885,10 @@ impl Parser {
                 Some("the program starts at a `main:` block: `main:` ... `end`"),
             ));
         }
-        let name = self.expect_ident("a function name")?;
+        let mut name = self.expect_ident("a function name")?;
+        if name.name == "operator" && !self.at_p(P::LParen) {
+            name.name = format!("operator {}", self.operator_symbol()?);
+        }
         let generics = self.opt_generics()?;
         self.expect_p(P::LParen, "`(` to start the parameter list")?;
         let params = self.params()?;

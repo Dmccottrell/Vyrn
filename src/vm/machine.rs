@@ -1660,6 +1660,181 @@ impl Vm {
             .position(|f| *f == name)
     }
 
+    /// The type of a struct or object value.
+    fn instance_type(value: &Value) -> Option<u16> {
+        match value {
+            Value::Struct(inst) => Some(inst.ty),
+            Value::Object(o) => Some(o.borrow().ty),
+            _ => None,
+        }
+    }
+
+    /// A method of `value`'s type by name, if it has one.
+    fn method_named(&self, value: &Value, name: &str) -> Option<Rc<Closure>> {
+        let ty = Self::instance_type(value)?;
+        let symbol = self.program.symbols.get(name)?;
+        self.methods.get(&(ty, symbol)).cloned()
+    }
+
+    /// `a + b` where `a`'s type has `create operator +(self, other)`, or
+    /// `2 * v` where `v`'s has `operator *` (for `+` and `*`, which read the
+    /// same either way round). `None` when neither defines it.
+    fn try_operator(&mut self, symbol: &str, a: &Value, b: &Value) -> Option<VmResult<Value>> {
+        let name = format!("operator {symbol}");
+        let (method, args) = if let Some(m) = self.method_named(a, &name) {
+            (m, vec![a.clone(), b.clone()])
+        } else if matches!(symbol, "+" | "*") {
+            (self.method_named(b, &name)?, vec![b.clone(), a.clone()])
+        } else {
+            return None;
+        };
+        Some(self.call_method_value(method, args))
+    }
+
+    /// Runs a method to completion from inside an instruction.
+    fn call_method_value(&mut self, method: Rc<Closure>, args: Vec<Value>) -> VmResult<Value> {
+        self.call_value(Value::Function(method), args)
+            .map_err(|e| e.value)
+    }
+
+    /// `sorted(xs)`, `__sorted(xs, reverse)`, `min(xs)` and `max(xs)` on
+    /// values whose type defines `operator <`. `None` for anything else.
+    fn ordered_by_operator(
+        &mut self,
+        id: u16,
+        from: usize,
+        argc: usize,
+    ) -> Option<VmResult<Value>> {
+        let name = builtins::NATIVES[id as usize].name;
+        if !matches!(name, "sorted" | "__sorted" | "min" | "max") || argc == 0 {
+            return None;
+        }
+        let items: Vec<Value> = if matches!(name, "min" | "max") && argc > 1 {
+            self.stack[from..from + argc].to_vec()
+        } else {
+            match &self.stack[from] {
+                Value::List(xs) => xs.borrow().clone(),
+                _ => return None,
+            }
+        };
+        let first = items.first()?;
+        self.method_named(first, "operator <")?;
+        let reverse = name == "__sorted" && argc > 1 && self.stack[from + 1].truthy();
+        Some((|| {
+            let mut sorted = self.merge_sort(items)?;
+            match name {
+                "min" => Ok(sorted.into_iter().next().unwrap_or(Value::None)),
+                "max" => Ok(sorted.pop().unwrap_or(Value::None)),
+                _ => {
+                    if reverse {
+                        sorted.reverse();
+                    }
+                    Ok(Value::list(sorted))
+                }
+            }
+        })())
+    }
+
+    fn less(&mut self, a: &Value, b: &Value) -> VmResult<bool> {
+        match self.try_operator("<", a, b) {
+            Some(r) => Ok(r?.truthy()),
+            None => Ok(ops::compare(&mut self.ctx, ops::Cmp::Lt, a, b)?.truthy()),
+        }
+    }
+
+    /// A stable sort that asks the values' own `<`.
+    fn merge_sort(&mut self, items: Vec<Value>) -> VmResult<Vec<Value>> {
+        if items.len() <= 1 {
+            return Ok(items);
+        }
+        let mut items = items;
+        let right = items.split_off(items.len() / 2);
+        let left = self.merge_sort(items)?;
+        let right = self.merge_sort(right)?;
+        let mut out = Vec::with_capacity(left.len() + right.len());
+        let (mut l, mut r) = (left.into_iter().peekable(), right.into_iter().peekable());
+        while let (Some(a), Some(b)) = (l.peek(), r.peek()) {
+            if self.less(b, a)? {
+                out.push(r.next().expect("peeked"));
+            } else {
+                out.push(l.next().expect("peeked"));
+            }
+        }
+        out.extend(l);
+        out.extend(r);
+        Ok(out)
+    }
+
+    /// Replaces the values in `stack[from..from + count]` whose type has
+    /// `to_text` with the text it gives.
+    fn apply_to_text(&mut self, from: usize, count: usize) -> VmResult<()> {
+        for i in from..from + count {
+            if matches!(
+                self.stack[i],
+                Value::Struct(_) | Value::Object(_) | Value::List(_) | Value::Tuple(_)
+            ) {
+                let value = self.stack[i].clone();
+                if let Some(shown) = self.shown(&value, true)? {
+                    self.stack[i] = shown;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `value` with every struct or object that has `to_text` replaced by
+    /// its text, inside lists and tuples too; `None` when nothing changes.
+    /// At the top the text is a plain string; inside a list it prints
+    /// without quotes, as the value itself would.
+    fn shown(&mut self, value: &Value, top: bool) -> VmResult<Option<Value>> {
+        match value {
+            Value::Struct(_) | Value::Object(_) => match self.custom_text(value) {
+                Some(text) => {
+                    let text = text?;
+                    if top {
+                        return Ok(Some(text));
+                    }
+                    let text = match &text {
+                        Value::Str(s) => s.to_string(),
+                        other => self.display(other),
+                    };
+                    Ok(Some(Value::Foreign(Rc::new(Box::new(Shown(text))))))
+                }
+                None => Ok(None),
+            },
+            Value::List(_) | Value::Tuple(_) => self.shown_items(value),
+            _ => Ok(None),
+        }
+    }
+
+    fn shown_items(&mut self, value: &Value) -> VmResult<Option<Value>> {
+        let items = items_of(value);
+        let mut changed = false;
+        let mut out = Vec::with_capacity(items.len());
+        for item in &items {
+            match self.shown(item, false)? {
+                Some(v) => {
+                    changed = true;
+                    out.push(v);
+                }
+                None => out.push(item.clone()),
+            }
+        }
+        if !changed {
+            return Ok(None);
+        }
+        Ok(Some(match value {
+            Value::Tuple(_) => Value::Tuple(Rc::new(out)),
+            _ => Value::list(out),
+        }))
+    }
+
+    /// `print(x)` and `"{x}"` for a type with `create to_text(self) -> str`.
+    fn custom_text(&mut self, value: &Value) -> Option<VmResult<Value>> {
+        let method = self.method_named(value, "to_text")?;
+        Some(self.call_method_value(method, vec![value.clone()]))
+    }
+
     /// `obj.method` without a call: a function that remembers `obj`.
     fn bound_method(&self, receiver: &Value, ty: u16, name: Symbol) -> VmResult<Value> {
         match self.methods.get(&(ty, name)) {
@@ -1831,6 +2006,16 @@ impl Vm {
                             }
                             Value::Native(id) => {
                                 let id = *id;
+                                if matches!(builtins::NATIVES[id as usize].name, "print" | "str") {
+                                    save_ip!();
+                                    check!(self.apply_to_text(at + 1, argc));
+                                }
+                                if let Some(r) = self.ordered_by_operator(id, at + 1, argc) {
+                                    save_ip!();
+                                    let v = check!(r);
+                                    self.stack[at] = v;
+                                    continue;
+                                }
                                 let result = check!(builtins::call(
                                     id,
                                     &mut self.ctx,
@@ -1879,24 +2064,34 @@ impl Vm {
                     };
                     let value = match fast {
                         Some(v) => v,
-                        None => check!(ops::arith(
-                            &mut self.ctx,
-                            $kind,
-                            &self.stack[base + $a as usize],
-                            &self.stack[base + $b as usize]
-                        )),
+                        None => operand_arith!($a, $b, $kind),
                     };
                     put!($dst, value);
                 }};
             }
+            // Arithmetic on anything but two plain numbers: a type's own
+            // `operator +` first, then the built-in rules.
+            macro_rules! operand_arith {
+                ($a:expr, $b:expr, $kind:expr) => {{
+                    let x = &self.stack[base + $a as usize];
+                    let y = &self.stack[base + $b as usize];
+                    if matches!(x, Value::Struct(_) | Value::Object(_))
+                        || matches!(y, Value::Struct(_) | Value::Object(_))
+                    {
+                        let (x, y) = (x.clone(), y.clone());
+                        save_ip!();
+                        match self.try_operator(ops::arith_symbol($kind), &x, &y) {
+                            Some(r) => check!(r),
+                            None => check!(ops::arith(&mut self.ctx, $kind, &x, &y)),
+                        }
+                    } else {
+                        check!(ops::arith(&mut self.ctx, $kind, x, y))
+                    }
+                }};
+            }
             macro_rules! slow_arith {
                 ($dst:expr, $a:expr, $b:expr, $kind:expr) => {{
-                    let value = check!(ops::arith(
-                        &mut self.ctx,
-                        $kind,
-                        &self.stack[base + $a as usize],
-                        &self.stack[base + $b as usize]
-                    ));
+                    let value = operand_arith!($a, $b, $kind);
                     put!($dst, value);
                 }};
             }
@@ -1909,12 +2104,15 @@ impl Vm {
                     };
                     let value = match fast {
                         Some(b) => Value::Bool(b),
-                        None => check!(ops::compare(
-                            &mut self.ctx,
-                            $kind,
-                            &self.stack[base + $a as usize],
-                            &self.stack[base + $b as usize]
-                        )),
+                        None => {
+                            let x = self.stack[base + $a as usize].clone();
+                            let y = self.stack[base + $b as usize].clone();
+                            save_ip!();
+                            match self.try_operator(stringify!($op), &x, &y) {
+                                Some(r) => check!(r),
+                                None => check!(ops::compare(&mut self.ctx, $kind, &x, &y)),
+                            }
+                        }
                     };
                     put!($dst, value);
                 }};
@@ -2129,6 +2327,16 @@ impl Vm {
                     Op::Neg { dst, src } => {
                         let value = match &reg!(src) {
                             Value::Float(x) => Value::Float(-x),
+                            v @ (Value::Struct(_) | Value::Object(_)) => {
+                                let v = v.clone();
+                                match self.method_named(&v, "operator -") {
+                                    Some(m) if m.proto.params.len() == 1 => {
+                                        save_ip!();
+                                        check!(self.call_method_value(m, vec![v]))
+                                    }
+                                    _ => check!(ops::negate(&mut self.ctx, &v)),
+                                }
+                            }
                             other => check!(ops::negate(&mut self.ctx, &other.clone())),
                         };
                         put!(dst, value);
@@ -2162,6 +2370,14 @@ impl Vm {
                     Op::Eq { dst, a, b } => {
                         let equal = match (&reg!(a), &reg!(b)) {
                             (Value::Int(x), Value::Int(y)) => x == y,
+                            (x @ (Value::Struct(_) | Value::Object(_)), y) => {
+                                let (x, y) = (x.clone(), y.clone());
+                                save_ip!();
+                                match self.try_operator("==", &x, &y) {
+                                    Some(r) => check!(r).truthy(),
+                                    None => ops::equals(&x, &y),
+                                }
+                            }
                             (x, y) => ops::equals(x, y),
                         };
                         put!(dst, Value::Bool(equal));
@@ -2169,6 +2385,14 @@ impl Vm {
                     Op::NotEq { dst, a, b } => {
                         let equal = match (&reg!(a), &reg!(b)) {
                             (Value::Int(x), Value::Int(y)) => x == y,
+                            (x @ (Value::Struct(_) | Value::Object(_)), y) => {
+                                let (x, y) = (x.clone(), y.clone());
+                                save_ip!();
+                                match self.try_operator("==", &x, &y) {
+                                    Some(r) => check!(r).truthy(),
+                                    None => ops::equals(&x, &y),
+                                }
+                            }
                             (x, y) => ops::equals(x, y),
                         };
                         put!(dst, Value::Bool(!equal));
@@ -2619,6 +2843,20 @@ impl Vm {
                             }
                             _ => None,
                         };
+                        let fast = match (fast, &reg!(obj)) {
+                            (None, v @ (Value::Struct(_) | Value::Object(_))) => {
+                                let v = v.clone();
+                                match self.method_named(&v, "operator []") {
+                                    Some(m) => {
+                                        let key = reg!(index).clone();
+                                        save_ip!();
+                                        Some(check!(self.call_method_value(m, vec![v, key])))
+                                    }
+                                    None => None,
+                                }
+                            }
+                            (fast, _) => fast,
+                        };
                         let value = match fast {
                             Some(v) => v,
                             None => check!(ops::get_index(
@@ -2736,6 +2974,8 @@ impl Vm {
                     }
                     Op::Concat { dst, start, count } => {
                         let from = base + start as usize;
+                        save_ip!();
+                        check!(self.apply_to_text(from, count as usize));
                         let mut text = String::new();
                         for value in &self.stack[from..from + count as usize] {
                             match value {
@@ -2983,5 +3223,31 @@ fn same_failure(a: &Value, b: &Value) -> bool {
         (Value::Struct(x), Value::Struct(y)) => Rc::ptr_eq(x, y),
         (Value::Object(x), Value::Object(y)) => Rc::ptr_eq(x, y),
         _ => false,
+    }
+}
+
+/// The items of a list or tuple.
+fn items_of(value: &Value) -> Vec<Value> {
+    match value {
+        Value::List(items) => items.borrow().clone(),
+        Value::Tuple(items) => items.to_vec(),
+        _ => Vec::new(),
+    }
+}
+
+/// A value's own text (`to_text`) inside a printed list: shown as is.
+struct Shown(String);
+
+impl super::foreign::Foreign for Shown {
+    fn type_name(&self) -> &'static str {
+        "str"
+    }
+
+    fn display(&self) -> String {
+        self.0.clone()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

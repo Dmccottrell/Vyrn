@@ -1288,3 +1288,19 @@ fn methods_taken_as_values_remember_their_object() {
         "9\n"
     );
 }
+
+#[test]
+fn types_define_their_own_operators_and_text() {
+    assert_eq!(
+        run("struct V:\n    x: int\n    y: int\n\
+             \x20   create operator +(self, o: V) -> V: return V(self.x + o.x, self.y + o.y)\n\
+             \x20   create operator *(self, k: int) -> V: return V(self.x * k, self.y * k)\n\
+             \x20   create operator -(self) -> V: return V(-self.x, -self.y)\n\
+             \x20   create operator <(self, o: V) -> bool: return self.x < o.x\n\
+             \x20   create operator [](self, i: int) -> int: return self.x if i == 0 else self.y\n\
+             \x20   create to_text(self) -> str: return \"<{self.x},{self.y}>\"\n\
+             end\n\
+             main:\n    a = V(1, 2)\n    print(a + V(3, 4), a * 3, 2 * a, -a, a[1])\n    print(\"{a}\", [V(5, 0), a], sorted([V(5, 0), a]), max([V(5, 0), a]), V(0, 9) < a)\nend\n"),
+        "<4,6> <3,6> <2,4> <-1,-2> 2\n<1,2> [<5,0>, <1,2>] [<1,2>, <5,0>] <5,0> true\n"
+    );
+}

@@ -377,6 +377,24 @@ pub fn alloc(tensor: Tensor) -> VmResult<Value> {
 
 // ---- comparison ------------------------------------------------------------
 
+/// How an operator is written, as in `create operator +(self, other)`.
+pub fn arith_symbol(kind: Arith) -> &'static str {
+    match kind {
+        Arith::Add => "+",
+        Arith::Sub => "-",
+        Arith::Mul => "*",
+        Arith::Div => "/",
+        Arith::FloorDiv => "//",
+        Arith::Rem => "%",
+        Arith::Pow => "**",
+        Arith::BitAnd => "&",
+        Arith::BitOr => "|",
+        Arith::BitXor => "^",
+        Arith::Shl => "<<",
+        Arith::Shr => ">>",
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cmp {
     Lt,

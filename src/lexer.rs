@@ -373,6 +373,14 @@ impl<'src> Lexer<'src> {
             .find(|&(_, c)| !is_ident_continue(c))
             .map_or(rest.len(), |(i, _)| i);
         let after = rest[name_len..].trim_start_matches([' ', '\t']);
+        // `create operator +(self, other):`
+        if &rest[..name_len] == "operator" {
+            return OPERATORS.iter().any(|op| {
+                after
+                    .strip_prefix(op)
+                    .is_some_and(|r| r.trim_start_matches([' ', '\t']).starts_with('('))
+            });
+        }
         after.starts_with('(') || after.starts_with('[')
     }
 
@@ -819,6 +827,12 @@ fn is_ident_start(c: char) -> bool {
 fn is_ident_continue(c: char) -> bool {
     c == '_' || c.is_alphanumeric()
 }
+
+/// The operators a type can define with `create operator +(self, other)`,
+/// longest first.
+pub const OPERATORS: &[&str] = &[
+    "//", "**", "==", "!=", "<=", ">=", "[]", "+", "-", "*", "/", "%", "<", ">",
+];
 
 #[cfg(test)]
 mod tests {
