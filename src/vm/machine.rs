@@ -173,6 +173,10 @@ pub struct Vm {
     suspended: HashMap<TaskId, Suspended>,
     /// Tasks ready to resume, in order.
     ready: VecDeque<TaskId>,
+    /// The last failure a handler caught, with where it was first raised:
+    /// if a `catch` passes it on and nothing else catches it, the error
+    /// names that place rather than the `catch`.
+    caught: Option<(Value, Vec<TraceLine>)>,
 }
 
 /// The state of a task that is not running.
@@ -282,6 +286,7 @@ impl Vm {
             stack: Vec::with_capacity(1024),
             frames: Vec::new(),
             handlers: Vec::new(),
+            caught: None,
             methods,
             builtin_methods,
             functions,
@@ -1514,7 +1519,9 @@ impl Vm {
             .last()
             .is_some_and(|h| h.frame_depth >= entry_depth)
         {
+            let trace = self.trace();
             if let Some(handler) = self.handlers.pop() {
+                self.caught = Some((thrown.clone(), trace));
                 let unwound_end = self.frames[handler.frame_depth..]
                     .iter()
                     .map(|f| f.base + f.closure.proto.num_regs)
@@ -1555,29 +1562,16 @@ impl Vm {
     }
 
     fn runtime_error(&self, thrown: Value) -> RuntimeError {
-        let entry_depth = self.entry_depth;
         let (kind, message) = match &thrown {
             Value::Error(e) => (e.kind.to_string(), e.message.clone()),
             Value::Struct(inst) => (self.type_name(inst.ty), self.display(&thrown)),
             Value::Object(obj) => (self.type_name(obj.borrow().ty), self.display(&thrown)),
             other => ("Failure".to_string(), self.display(other)),
         };
-        let first = entry_depth.saturating_sub(1).min(self.frames.len());
-        let trace = self.frames[first..]
-            .iter()
-            .rev()
-            .map(|frame| TraceLine {
-                function: frame.closure.proto.name.clone(),
-                line: frame
-                    .closure
-                    .proto
-                    .lines
-                    .get(frame.ip.saturating_sub(1))
-                    .copied()
-                    .unwrap_or(0),
-                file: frame.closure.proto.file,
-            })
-            .collect();
+        let trace = match &self.caught {
+            Some((value, trace)) if same_failure(value, &thrown) => trace.clone(),
+            _ => self.trace(),
+        };
         RuntimeError {
             kind,
             message,
@@ -2876,5 +2870,16 @@ fn convert_path_param(text: &str, ty: Option<&str>) -> Option<Value> {
             _ => None,
         },
         _ => Some(Value::str(text)),
+    }
+}
+
+/// Whether two failures are the same value, passed on rather than raised
+/// again.
+fn same_failure(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Error(x), Value::Error(y)) => Rc::ptr_eq(x, y),
+        (Value::Struct(x), Value::Struct(y)) => Rc::ptr_eq(x, y),
+        (Value::Object(x), Value::Object(y)) => Rc::ptr_eq(x, y),
+        _ => false,
     }
 }

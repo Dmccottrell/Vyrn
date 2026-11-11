@@ -2479,7 +2479,14 @@ impl Compiler {
         };
         for clause in catches {
             self.set_pos(clause.span);
+            // `catch Error` catches every failure, built-in or not.
+            let catch_all = clause
+                .error_ty
+                .as_ref()
+                .and_then(type_name)
+                .is_some_and(|n| n == "Error");
             let next = match &clause.error_ty {
+                Some(_) if catch_all => None,
                 Some(ty) => {
                     let Some(name) = type_name(ty) else {
                         return Err(self.error("`catch` needs a type name", clause.span));

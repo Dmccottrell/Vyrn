@@ -761,6 +761,26 @@ fn runtime_errors_carry_a_trace() {
 }
 
 #[test]
+fn a_failure_passed_on_by_catch_keeps_its_line() {
+    let e = runtime_error(
+        "create pick(xs):\n    return xs[5]\nend\nmain:\n    attempt:\n        pick([1])\n    catch DivisionByZero:\n        print(\"no\")\n    end\nend\n",
+    );
+    assert_eq!(e.kind, "IndexError");
+    let lines: Vec<u32> = e.trace.iter().map(|t| t.line).collect();
+    assert_eq!(lines, [2, 6]);
+}
+
+#[test]
+fn catch_error_catches_every_failure() {
+    assert_eq!(
+        run(
+            "struct Oops:\n    why: str\nend\nmain:\n    attempt:\n        fail Oops(\"x\")\n    catch Error as e:\n        print(\"caught\", e)\n    end\n    attempt:\n        print(1 / 0)\n    catch Error as e:\n        print(\"caught\", e)\n    end\nend\n"
+        ),
+        "caught Oops(why=\"x\")\ncaught DivisionByZero: division by zero\n"
+    );
+}
+
+#[test]
 fn uncaught_user_failures_report_their_type() {
     let e = runtime_error(
         "struct Oops:\n    why: str\nend\nmain:\n    fail Oops(\"bad input\")\nend\n",
