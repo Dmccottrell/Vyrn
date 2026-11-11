@@ -1026,10 +1026,17 @@ impl Compiler {
                 self.types[ty as usize].parent = None;
                 chain.truncate(1);
             }
-            let mut fields = Vec::new();
+            // Base fields first; a field declared again further down (to
+            // give it a new default) keeps its place.
+            let mut fields: Vec<(String, Option<&Expr>)> = Vec::new();
             for t in chain.iter().rev() {
                 if let Some(own) = own_fields.get(t) {
-                    fields.extend(own.iter().cloned());
+                    for (name, default) in own {
+                        match fields.iter_mut().find(|(n, _)| n == name) {
+                            Some(existing) => existing.1 = *default,
+                            None => fields.push((name.clone(), *default)),
+                        }
+                    }
                 }
             }
             resolved.insert(ty, fields);

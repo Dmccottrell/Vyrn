@@ -73,7 +73,7 @@ plan below.
 
 | Day | Topic | Project |
 |---|---|---|
-| 21 | Inheritance, overriding, polymorphism, `is` type tests | Snake, part 2 |
+| 21 ✅ | Inheritance, overriding, polymorphism, `is` type tests | Snake, part 2 |
 | 22 | Collisions and movement | Pong |
 | 23 | Many objects at once | Road crossing game |
 | 24 | Files: read, write, append, binary files, `using` | Mail merge |

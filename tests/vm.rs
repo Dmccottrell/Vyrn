@@ -1381,3 +1381,12 @@ fn objects_run_init_after_their_fields_are_set() {
         "212.0 32.0\ntoo cold\n"
     );
 }
+
+#[test]
+fn a_derived_object_can_change_an_inherited_default() {
+    assert_eq!(
+        run("object Animal:\n    name: str\n    legs: int = 4\nend\nobject Bird(Animal):\n    legs: int = 2\n    wings: int = 2\nend\n\
+             main:\n    print(Bird(\"Tweety\"), Animal(\"Rex\"))\nend\n"),
+        "Bird(name=\"Tweety\", legs=2, wings=2) Animal(name=\"Rex\", legs=4)\n"
+    );
+}
