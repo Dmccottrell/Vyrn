@@ -1333,3 +1333,14 @@ fn is_tests_a_values_type() {
         "true true false false\ntrue true true false true\n"
     );
 }
+
+#[test]
+fn traits_give_default_methods() {
+    assert_eq!(
+        run("trait Shape:\n    create area(self) -> float\n    create describe(self) -> str:\n        return \"area {self.area()}\"\n    end\nend\n\
+             struct Square:\n    side: float\nend\n\
+             impl Shape for Square:\n    create area(self) -> float: return self.side * self.side\nend\n\
+             main:\n    print(Square(3.0).describe())\nend\n"),
+        "area 9.0\n"
+    );
+}

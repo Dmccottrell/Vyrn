@@ -392,6 +392,13 @@ impl Compiler {
             );
         }
         self.resolve_bases(&bases, &mut own_fields);
+        let traits: HashMap<String, &TraitDecl> = items
+            .iter()
+            .filter_map(|(item, _)| match &item.kind {
+                ItemKind::Trait(t) => Some((t.name.name.clone(), t)),
+                _ => None,
+            })
+            .collect();
         for (decl, span) in impls {
             self.set_pos(span);
             let Some(name) = type_name(&decl.target) else {
@@ -413,6 +420,45 @@ impl Compiler {
                     let symbol = self.symbols.intern(&f.name.name);
                     self.types[ty as usize].methods.insert(symbol, slot);
                     plans.push(Plan::Method { slot, ty, decl: f });
+                }
+            }
+            // `impl Shape for Square:` gets the trait's default methods it
+            // does not write itself, and must write the rest.
+            let trait_name = decl.trait_.as_ref().and_then(type_name);
+            if let Some(t) = trait_name.as_ref().and_then(|n| traits.get(n).copied()) {
+                let written: HashSet<&str> = decl
+                    .methods
+                    .iter()
+                    .filter_map(|m| match &m.kind {
+                        ItemKind::Fn(f) => Some(f.name.name.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                for f in &t.methods {
+                    if written.contains(f.name.name.as_str()) {
+                        continue;
+                    }
+                    match &f.body {
+                        FnBody::Block(_) => {
+                            let slot = self.reserve_proto();
+                            let symbol = self.symbols.intern(&f.name.name);
+                            self.types[ty as usize].methods.insert(symbol, slot);
+                            plans.push(Plan::Method { slot, ty, decl: f });
+                        }
+                        FnBody::Signature => {
+                            self.error_hint(
+                                format!(
+                                    "`{name}` must have `{}` to be a `{}`",
+                                    f.name.name, t.name.name
+                                ),
+                                span,
+                                format!(
+                                    "add `create {}(self, ...):` ... `end` to this `impl`",
+                                    f.name.name
+                                ),
+                            );
+                        }
+                    }
                 }
             }
         }

@@ -86,6 +86,8 @@ enum FnMode {
     Body,
     /// A signature only, inside `trait` or `extern`.
     Signature,
+    /// In a `trait`: a signature, or a default body.
+    Optional,
 }
 
 enum Member {
@@ -895,6 +897,11 @@ impl Parser {
         let result = self.result_spec()?;
         let body = match mode {
             FnMode::Body => FnBody::Block(self.suite("create", header)?),
+            FnMode::Optional if self.at_p(P::Colon) => FnBody::Block(self.suite("create", header)?),
+            FnMode::Optional => {
+                self.expect_newline()?;
+                FnBody::Signature
+            }
             FnMode::Signature => {
                 if self.at_p(P::Colon) {
                     let span = self.span();
@@ -1230,7 +1237,7 @@ impl Parser {
         };
         self.header_colon("trait")?;
         self.expect_block_start("trait")?;
-        let methods = self.signatures()?;
+        let methods = self.signatures_in(FnMode::Optional)?;
         self.expect_end("trait", header)?;
         Ok(TraitDecl {
             name,
@@ -1242,6 +1249,12 @@ impl Parser {
 
     /// Function signatures, one per line, up to `end`.
     fn signatures(&mut self) -> PResult<Vec<FnDecl>> {
+        self.signatures_in(FnMode::Signature)
+    }
+
+    /// Functions up to `end`: signatures, or (in a trait) with a default
+    /// body.
+    fn signatures_in(&mut self, mode: FnMode) -> PResult<Vec<FnDecl>> {
         let mut functions = Vec::new();
         loop {
             self.skip_newlines();
@@ -1251,7 +1264,7 @@ impl Parser {
             }
             self.docs();
             let before = self.pos;
-            match self.fn_decl(FnMode::Signature) {
+            match self.fn_decl(mode) {
                 Ok(f) => functions.push(f),
                 Err(Fail) => self.recover_line(),
             }

@@ -371,7 +371,7 @@ pub struct TraitDecl {
     pub name: Ident,
     pub generics: Vec<GenericParam>,
     pub supertraits: Vec<TypeExpr>,
-    /// Signatures only: every body is [`FnBody::Signature`].
+    /// Signatures ([`FnBody::Signature`]), or default methods with a body.
     pub methods: Vec<FnDecl>,
 }
 
