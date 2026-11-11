@@ -58,13 +58,13 @@ plan below.
 
 | Day | Topic | Project |
 |---|---|---|
-| 11 | Capstone with everything so far | Twenty-One card game |
-| 12 | Scope in depth: blocks, `let`, `var`, `const` | Number guessing |
-| 13 | Debugging: reading errors, `vyrn check`, `attempt` / `catch` / `always`, `fail` | Bug hunt |
-| 14 | Working with data records | Bigger or smaller |
-| 15 | Projects and modules: `vyrn new`, `use`, your own modules, `vyrn add` packages | Smoothie bar |
-| 16 | Objects: fields, methods, `self`, constructors, `to_text` | Bank account |
-| 17 | Structs vs objects (values vs shared), `private` fields | Quiz app |
+| 11 ✅ | Capstone with everything so far | Twenty-One card game |
+| 12 ✅ | Scope in depth: blocks, `let`, `var`, `const` | Number guessing |
+| 13 ✅ | Debugging: reading errors, `vyrn check`, `attempt` / `catch` / `always`, `fail` | Bug hunt |
+| 14 ✅ | Working with data records | Bigger or smaller |
+| 15 ✅ | Projects and modules: `vyrn new`, `use`, your own modules, `vyrn add` packages | Smoothie bar |
+| 16 ✅ | Objects: fields, methods, `self`, constructors, `to_text` | Bank account |
+| 17 ✅ | Structs vs objects (values vs shared), `private` fields | Quiz app |
 | 18 | Graphics: canvases, colours, turtles | Spot painting |
 | 19 | Windows, keyboard, game state | Turtle race |
 | 20 | Game design with data | Snake, part 1 |

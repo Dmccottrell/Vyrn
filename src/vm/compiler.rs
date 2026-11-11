@@ -224,6 +224,8 @@ struct Compiler {
     modules: HashMap<String, &'static str>,
     /// Builtins imported by name: `use vyrn.web (serve)`.
     imports: HashMap<String, u16>,
+    /// Constants brought in by name: `use vyrn.math (pi)`.
+    imported_constants: HashMap<String, Value>,
     /// Globals filled by a builtin call before anything else runs: Python
     /// modules and C functions. Global slot, builtin, and its arguments.
     foreign_inits: Vec<(u16, u16, Vec<Value>)>,
@@ -359,6 +361,7 @@ impl Compiler {
             global_index: HashMap::new(),
             modules: HashMap::new(),
             imports: HashMap::new(),
+            imported_constants: HashMap::new(),
             foreign_inits: Vec::new(),
             decorated: Vec::new(),
             owner: None,
@@ -1502,9 +1505,14 @@ impl Compiler {
             }
             UseKind::Names(names) => {
                 for item in names {
-                    match builtins::lookup(&format!("{prefix}.{}", item.name.name)) {
+                    let full = format!("{prefix}.{}", item.name.name);
+                    let local = item.alias.as_ref().unwrap_or(&item.name);
+                    if let Some(value) = builtins::constant(&full) {
+                        self.imported_constants.insert(local.name.clone(), value);
+                        continue;
+                    }
+                    match builtins::lookup(&full) {
                         Some(id) => {
-                            let local = item.alias.as_ref().unwrap_or(&item.name);
                             self.imports.insert(local.name.clone(), id);
                         }
                         None => {
@@ -1671,6 +1679,9 @@ impl Compiler {
         }
         if let Some(&id) = self.imports.get(name) {
             return Some(Resolved::Native(id));
+        }
+        if let Some(value) = self.imported_constants.get(name) {
+            return Some(Resolved::Constant(value.clone()));
         }
         if let Some(value) = builtins::constant(name) {
             return Some(Resolved::Constant(value));
