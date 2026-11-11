@@ -36,6 +36,7 @@ pub mod machine;
 pub mod native_abi;
 pub mod op;
 pub mod ops;
+pub mod parallel;
 pub mod program;
 #[cfg(feature = "python")]
 pub mod python;
@@ -128,15 +129,29 @@ pub fn run_source_with_input(src: &str, input: &str) -> Result<String, RunError>
     let program = compile_source(src).map_err(RunError::Compile)?;
     let out = Captured::default();
     let mut vm = Vm::with_output(program, Box::new(out.clone()));
+    vm.set_rebuild(source_rebuild(src));
     vm.set_input(input);
     vm.run_main(&[]).map_err(RunError::Runtime)?;
     Ok(out.text())
+}
+
+/// Rebuilds a program from its source, for worker threads.
+pub fn source_rebuild(src: &str) -> parallel::Rebuild {
+    let src = src.to_string();
+    std::sync::Arc::new(move || {
+        compile_source(&src).map_err(|d| {
+            d.first()
+                .map(|d| d.message.clone())
+                .unwrap_or_else(|| "the program has errors".into())
+        })
+    })
 }
 
 pub fn run_source(src: &str) -> Result<String, RunError> {
     let program = compile_source(src).map_err(RunError::Compile)?;
     let out = Captured::default();
     let mut vm = Vm::with_output(program, Box::new(out.clone()));
+    vm.set_rebuild(source_rebuild(src));
     vm.run_main(&[]).map_err(RunError::Runtime)?;
     Ok(out.text())
 }

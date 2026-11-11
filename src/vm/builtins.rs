@@ -284,6 +284,12 @@ pub static NATIVES: &[Native] = &[
     ),
     fixed("game.distance", &["a", "b"], 2, super::lib_game::distance),
     fixed("net.udp", &["port"], 0, super::lib_net::udp),
+    fixed(
+        "task.parallel",
+        &["work", "items", "workers"],
+        2,
+        super::parallel::parallel,
+    ),
     fixed("net.listen", &["port"], 0, super::lib_net::listen),
     fixed("net.connect", &["address"], 1, super::lib_net::connect),
     fixed("game.normalize", &["v"], 1, super::lib_game::normalize),

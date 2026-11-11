@@ -46,6 +46,9 @@ pub struct Ctx {
     /// Lines for `input()` to give instead of reading the keyboard (for
     /// tests and course checks).
     pub scripted_input: Option<std::collections::VecDeque<String>>,
+    /// Builds another copy of the program, for `task.parallel`'s worker
+    /// threads.
+    pub rebuild: Option<super::parallel::Rebuild>,
     /// Timers started by `sleep`, each finishing its task when it expires.
     pub timers: Vec<(std::time::Instant, Rc<super::task::TaskHandle>)>,
     /// Tasks made ready by builtins, such as a channel receiving a value.

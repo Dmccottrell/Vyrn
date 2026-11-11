@@ -289,6 +289,7 @@ impl Vm {
             gpu: Box::new(ReferenceBackend),
             rng: 0x9E37_79B9_7F4A_7C15,
             scripted_input: None,
+            rebuild: None,
             timers: Vec::new(),
             wakeups: Vec::new(),
             next_task: super::task::ROOT_TASK,
@@ -350,6 +351,25 @@ impl Vm {
 
     /// Runs the `main:` block. `args` is passed if `main` declares a
     /// parameter.
+    /// How worker threads get their own copy of the program
+    /// (`task.parallel`).
+    pub fn set_rebuild(&mut self, rebuild: super::parallel::Rebuild) {
+        self.ctx.rebuild = Some(rebuild);
+    }
+
+    /// Calls the top-level function `name` with `args`.
+    pub fn call_named(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        self.init()?;
+        let Some(slot) = self.program.global(name) else {
+            return Err(RuntimeError::new(
+                "NameError",
+                format!("there is no function `{name}`"),
+            ));
+        };
+        let f = self.globals[slot].clone();
+        self.call_value(f, args)
+    }
+
     /// Makes `input()` give these lines, one per call, then `none`.
     pub fn set_input(&mut self, text: &str) {
         self.ctx.scripted_input = Some(text.lines().map(str::to_string).collect());
@@ -809,6 +829,20 @@ impl Vm {
         let saved_entry = self.entry_depth;
         self.entry_depth = depth + 1;
         let root = self.current;
+        // A function compiled to machine code runs as machine code here
+        // too (it may decline, and then runs as bytecode).
+        let native = match &callee {
+            Value::Function(c) if c.bound.is_none() => c.proto.native.get().cloned(),
+            _ => None,
+        };
+        if let Some(native) = native {
+            if let Some(result) = self.call_native(&native, slot + 1, argc) {
+                let result = result.map_err(|e| self.runtime_error(e));
+                self.stack.truncate(slot);
+                self.entry_depth = saved_entry;
+                return result;
+            }
+        }
         let result = match callee {
             Value::Function(closure) => match self.push_frame(closure, slot, slot + 1, argc) {
                 Ok(()) => self.execute(root),

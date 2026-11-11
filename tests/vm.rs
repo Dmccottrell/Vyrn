@@ -1425,3 +1425,14 @@ fn a_builtin_task_on_its_own_line_is_waited_for() {
         "true\n"
     );
 }
+
+#[test]
+fn parallel_work_runs_on_other_cores_and_keeps_order() {
+    assert_eq!(
+        run("use vyrn.task\nstruct Out:\n    n: int\n    square: int\nend\n\
+             create work(n: int) -> Out: return Out(n, n * n)\n\
+             main:\n    let results = task.parallel(work, [1, 2, 3, 4, 5], 2)\n    print([r.square each r in results], results[0])\n\
+             \x20   print(task.parallel(work, []))\nend\n"),
+        "[1, 4, 9, 16, 25] Out(n=1, square=1)\n[]\n"
+    );
+}

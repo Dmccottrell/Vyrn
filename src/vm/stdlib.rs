@@ -883,7 +883,7 @@ impl Set {
         })
     }
 
-    fn values(&self) -> Vec<Value> {
+    pub fn values(&self) -> Vec<Value> {
         self.items
             .borrow()
             .entries()
@@ -896,11 +896,11 @@ impl Set {
         Key::from_value(v).is_some_and(|k| self.items.borrow().contains(&k))
     }
 
-    fn value(set: Set) -> Value {
+    pub fn value(set: Set) -> Value {
         Value::Foreign(Rc::new(Box::new(set)))
     }
 
-    fn of(value: &Value) -> Option<&Set> {
+    pub fn of(value: &Value) -> Option<&Set> {
         match value {
             Value::Foreign(f) => f.as_any().downcast_ref::<Set>(),
             _ => None,

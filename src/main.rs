@@ -218,6 +218,8 @@ fn compile_program(entry: &Path) -> Option<(vm::Program, Vec<SourceFile>)> {
 
 thread_local! {
     static PROFILE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// How `task.parallel`'s worker threads rebuild the program.
+    static REBUILD: std::cell::RefCell<Option<vm::parallel::Rebuild>> = const { std::cell::RefCell::new(None) };
 }
 
 fn execute(program: vm::Program, args: &[String], files: &[SourceFile]) -> ExitCode {
@@ -227,6 +229,9 @@ fn execute(program: vm::Program, args: &[String], files: &[SourceFile]) -> ExitC
     let profile = PROFILE.with(|p| p.get());
     if profile {
         machine.enable_profile();
+    }
+    if let Some(rebuild) = REBUILD.with(|r| r.borrow().clone()) {
+        machine.set_rebuild(rebuild);
     }
     #[cfg(feature = "gpu")]
     use_gpu(&mut machine, uses_gpu);
@@ -339,6 +344,16 @@ fn run(args: &[String]) -> ExitCode {
     let Some((program, files)) = compile_program(&entry) else {
         return ExitCode::FAILURE;
     };
+    let rebuild_entry = entry.clone();
+    REBUILD.with(|r| {
+        *r.borrow_mut() = Some(std::sync::Arc::new(move || {
+            let fetcher = project::default_fetcher();
+            let loaded = project::load_program(&rebuild_entry, fetcher.as_ref(), false)
+                .map_err(|_| "the program no longer compiles".to_string())?;
+            vm::compile_checked(&loaded.module)
+                .map_err(|_| "the program no longer compiles".to_string())
+        }));
+    });
     execute(program, program_args, &files)
 }
 

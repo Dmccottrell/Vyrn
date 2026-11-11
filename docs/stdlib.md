@@ -261,6 +261,7 @@ end
 |---|---|
 | `task.group()` | Structured concurrency, as above: `g.spawn(work)`, `await g.wait()` (or `await g`) for every result, `g.cancel()` to stop the unfinished |
 | `task.timeout(seconds, work)` | `await task.timeout(2.0, fetch(url))` gives the result, or fails with `Timeout` and stops the work |
+| `task.parallel(work, items, workers)` | `[work(x) each x in items]` spread over every CPU core: each worker thread runs its own copy of the program, so nothing is shared and nothing needs locking. `work` is a top-level function; items and results are plain data (numbers, text, lists, maps, sets, structs) |
 | `task.select(a, b, ...)` | Waits for the first of several tasks or channels; `await` gives `(index, value)` |
 | `task.cancel(t)`, `task.done(t)` | Stop a task; whether it has finished |
 | `task.yield_now()` | Lets other tasks run inside a long computation |
