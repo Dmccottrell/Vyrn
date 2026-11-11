@@ -1359,3 +1359,25 @@ fn private_members_belong_to_their_type() {
         "`balance` is private to `Account`: only its own methods can use it"
     );
 }
+
+#[test]
+fn super_calls_the_base_class_method() {
+    assert_eq!(
+        run("object Animal:\n    name: str\n    create intro(self) -> str: return \"I am {self.name}\"\nend\n\
+             object Dog(Animal):\n    create intro(self) -> str: return super.intro() + \", a dog\"\nend\n\
+             object Puppy(Dog):\n    create intro(self) -> str: return super.intro() + \" (small)\"\nend\n\
+             main:\n    print(Puppy(\"Rex\").intro())\nend\n"),
+        "I am Rex, a dog (small)\n"
+    );
+}
+
+#[test]
+fn objects_run_init_after_their_fields_are_set() {
+    assert_eq!(
+        run("object Temp:\n    c: float\n    f: float = 0.0\n\
+             \x20   create init(self):\n        if self.c < -273.15: fail ValueError(\"too cold\")\n        self.f = self.c * 9 / 5 + 32\n    end\nend\n\
+             object Warm(Temp):\nend\n\
+             main:\n    print(Temp(100.0).f, Warm(0.0).f)\n    attempt:\n        Temp(-300.0)\n    catch ValueError as e:\n        print(e.message)\n    end\nend\n"),
+        "212.0 32.0\ntoo cold\n"
+    );
+}

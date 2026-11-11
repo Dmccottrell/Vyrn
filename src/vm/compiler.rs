@@ -575,6 +575,76 @@ impl Compiler {
         })
     }
 
+    /// `super.name(args)` in a method of `T`: calls the method `name` of
+    /// `T`'s base class (or the nearest ancestor that has one) on `self`.
+    fn super_call(&mut self, callee: &Expr, args: &[Arg], dst: u8) -> CResult<()> {
+        let ExprKind::Field { name, .. } = &callee.kind else {
+            return Err(self.error("`super` is followed by a method call", callee.span));
+        };
+        let Some(owner) = self.owner else {
+            return Err(self.error_hint(
+                "`super` works only inside a method",
+                callee.span,
+                "inside `object Dog(Animal):`, `super.speak()` calls Animal's `speak`",
+            ));
+        };
+        let symbol = self.symbols.intern(&name.name);
+        let mut parent = self.types[owner as usize].parent;
+        let mut found = None;
+        while let Some(p) = parent {
+            if let Some(&slot) = self.types[p as usize].methods.get(&symbol) {
+                found = Some(slot);
+                break;
+            }
+            parent = self.types[p as usize].parent;
+        }
+        let Some(slot) = found else {
+            let type_name = self
+                .symbols
+                .name(self.types[owner as usize].name)
+                .to_string();
+            return Err(self.error(
+                format!(
+                    "no base class of `{type_name}` has a method `{}`",
+                    name.name
+                ),
+                name.span,
+            ));
+        };
+        if let Some(a) = args.iter().find(|a| a.name.is_some() || a.spread) {
+            return Err(self.error("pass `super` calls their arguments by position", a.span));
+        }
+        let proto = u16::try_from(slot)
+            .map_err(|_| self.error("too many functions for the interpreter", callee.span))?;
+        let mark = self.f().next_reg;
+        let regs = self.alloc_n(args.len() + 2)?;
+        self.emit(Op::MakeClosure {
+            dst: regs[0],
+            proto,
+        });
+        let this = Expr::new(
+            NodeId(0),
+            ExprKind::Name(Ident {
+                name: "self".into(),
+                span: callee.span,
+            }),
+            callee.span,
+        );
+        self.expr_to(&this, regs[1])?;
+        for (a, &r) in args.iter().zip(&regs[2..]) {
+            self.expr_to(&a.value, r)?;
+        }
+        self.emit(Op::Call {
+            func: regs[0],
+            argc: (args.len() + 1) as u8,
+        });
+        if regs[0] != dst {
+            self.emit(Op::Move { dst, src: regs[0] });
+        }
+        self.release(mark);
+        Ok(())
+    }
+
     /// `f(a, xs..., b)`: the arguments are gathered into one list, then
     /// passed one by one.
     fn spread_call(&mut self, callee: &Expr, args: &[Arg], dst: u8) -> CResult<()> {
@@ -1046,11 +1116,38 @@ impl Compiler {
                 let fields = all_fields.get(&ty).cloned().unwrap_or_default();
                 let name = self.symbols.name(self.types[ty as usize].name).to_string();
                 self.begin_fn(name, &fields, HashSet::new());
+                // An object with `create init(self)` (its own or inherited)
+                // runs it once the fields are filled in.
+                let init = self.symbols.intern("init");
+                let mut t = Some(ty);
+                let mut init_slot = None;
+                while let (Some(cur), None) = (t, init_slot) {
+                    init_slot = self.types[cur as usize].methods.get(&init).copied();
+                    t = self.types[cur as usize].parent;
+                }
+                let is_class = self.types[ty as usize].kind == TypeKind::Class;
                 if let Ok(r) = self.alloc() {
                     self.emit(Op::MakeInstance { dst: r, ty });
+                    if let (true, Some(Ok(proto))) = (is_class, init_slot.map(u16::try_from)) {
+                        if let Ok(regs) = self.alloc_n(2) {
+                            self.emit(Op::MakeClosure {
+                                dst: regs[0],
+                                proto,
+                            });
+                            self.emit(Op::Move {
+                                dst: regs[1],
+                                src: r,
+                            });
+                            self.emit(Op::Call {
+                                func: regs[0],
+                                argc: 1,
+                            });
+                        }
+                    }
                     self.emit(Op::Return { src: r });
                 }
-                let proto = self.end_fn();
+                let mut proto = self.end_fn();
+                proto.owner = Some(ty);
                 self.set_proto(slot, proto);
             }
             Plan::Route { slot, decl } => {
@@ -3479,6 +3576,13 @@ impl Compiler {
                 } else {
                     self.emit(Op::GetField { dst, obj, name: n });
                 }
+            }
+            // `super.speak()` inside a method: the parent type's version.
+            ExprKind::Call { callee, args }
+                if matches!(&callee.kind, ExprKind::Field { base, .. }
+                    if matches!(&base.kind, ExprKind::Name(n) if n.name == "super")) =>
+            {
+                self.super_call(callee, args, dst)?;
             }
             // `x is Dog`, made by the parser.
             ExprKind::Call { callee, args }
