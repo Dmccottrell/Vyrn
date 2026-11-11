@@ -100,6 +100,28 @@ fn err_value(kind: &'static str, message: String) -> Value {
     err(kind, message)
 }
 
+/// A number or boolean as the word native code takes, if it has the type.
+fn scalar_word(want: super::native_abi::NTy, v: &Value) -> Option<u64> {
+    use super::native_abi::NTy;
+    Some(match (want, v) {
+        (NTy::Int, Value::Int(x)) => *x as u64,
+        (NTy::Float, Value::Float(x)) => x.to_bits(),
+        (NTy::Bool, Value::Bool(x)) => u64::from(*x),
+        _ => return None,
+    })
+}
+
+/// The value a word from native code stands for.
+fn word_value(t: super::native_abi::NTy, w: u64) -> Value {
+    use super::native_abi::NTy;
+    match t {
+        NTy::Int => Value::Int(w as i64),
+        NTy::Float => Value::Float(f64::from_bits(w)),
+        NTy::Bool => Value::Bool(w != 0),
+        _ => Value::None,
+    }
+}
+
 impl RuntimeError {
     /// What usually fixes an error of this kind, for the report.
     pub fn hint(&self) -> Option<&'static str> {
@@ -570,15 +592,35 @@ impl Vm {
         argc: usize,
     ) -> Option<VmResult<Value>> {
         use super::native_abi::{ErrState, NTy};
-        if argc != native.params.len() || argc > 16 {
+        if argc != native.params.len() {
             return None;
         }
-        let mut words = [0u64; 16];
+        // Each argument as words: one for a number or a list, one per
+        // field for a struct.
+        let mut words = [0u64; 64];
+        let mut n = 0usize;
+        let mut list_words: [(usize, NTy); 16] = [(0, NTy::Unit); 16];
+        let mut lists = 0usize;
         for (i, want) in native.params.iter().enumerate() {
-            words[i] = match (want, &self.stack[args_at + i]) {
-                (NTy::Int, Value::Int(v)) => *v as u64,
-                (NTy::Float, Value::Float(v)) => v.to_bits(),
-                (NTy::Bool, Value::Bool(v)) => u64::from(*v),
+            let arg = &self.stack[args_at + i];
+            if let NTy::Struct(ty) = want {
+                let Value::Struct(inst) = arg else {
+                    return None;
+                };
+                let fields = native.structs.get(ty)?;
+                if inst.ty != *ty || inst.fields.len() != fields.len() || n + fields.len() > 64 {
+                    return None;
+                }
+                for (f, ft) in inst.fields.iter().zip(fields) {
+                    words[n] = scalar_word(*ft, f)?;
+                    n += 1;
+                }
+                continue;
+            }
+            if n >= 64 {
+                return None;
+            }
+            words[n] = match (want, arg) {
                 (NTy::ListInt, Value::List(items))
                     if items.borrow().iter().all(|v| matches!(v, Value::Int(_))) =>
                 {
@@ -589,15 +631,23 @@ impl Vm {
                 {
                     Rc::as_ptr(items) as u64
                 }
-                _ => return None,
+                _ => scalar_word(*want, arg)?,
             };
+            if want.is_list() {
+                if lists == 16 {
+                    return None;
+                }
+                list_words[lists] = (n, *want);
+                lists += 1;
+            }
+            n += 1;
         }
         // One list given as both `[int]` and `[float]` (possible only while
         // it is empty) could end up holding both: leave that to the
         // interpreter.
-        for (i, a) in native.params.iter().enumerate() {
-            for (j, b) in native.params.iter().enumerate().skip(i + 1) {
-                if a.is_list() && b.is_list() && a != b && words[i] == words[j] {
+        for (i, (wi, a)) in list_words[..lists].iter().enumerate() {
+            for (wj, b) in &list_words[i + 1..lists] {
+                if a != b && words[*wi] == words[*wj] {
                     return None;
                 }
             }
@@ -621,6 +671,16 @@ impl Vm {
             NTy::Float => Value::Float(f64::from_bits(word)),
             NTy::Bool => Value::Bool(word != 0),
             NTy::Unit => Value::None,
+            NTy::Struct(ty) => {
+                // Always known: the tier only returns structs it describes.
+                let fields = native.structs.get(&ty).cloned().unwrap_or_default();
+                let values = fields
+                    .iter()
+                    .zip(err.ret.iter())
+                    .map(|(t, w)| word_value(*t, *w))
+                    .collect();
+                Value::Struct(Rc::new(super::value::Instance { ty, fields: values }))
+            }
             NTy::ListInt | NTy::ListFloat => {
                 let list = word as *const RefCell<Vec<Value>>;
                 // SAFETY: native code returns lists that live in an `Rc`:
@@ -2311,6 +2371,27 @@ impl Vm {
                         };
                         if let Some(ty) = ty {
                             match self.methods.get(&(ty, symbol)).cloned() {
+                                Some(method) if method.proto.native.get().is_some() => {
+                                    let native =
+                                        method.proto.native.get().cloned().expect("checked");
+                                    match self.call_native(&native, receiver, argc as usize + 1) {
+                                        Some(result) => {
+                                            let v = check!(result);
+                                            self.stack[result_at] = v;
+                                            continue;
+                                        }
+                                        None => {
+                                            save_ip!();
+                                            check!(self.enter(
+                                                method,
+                                                result_at,
+                                                receiver,
+                                                argc as usize + 1
+                                            ));
+                                            continue 'frames;
+                                        }
+                                    }
+                                }
                                 Some(method) => {
                                     save_ip!();
                                     check!(self.enter(

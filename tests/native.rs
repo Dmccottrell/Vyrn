@@ -24,11 +24,26 @@ fn both(src: &str, compiled: &[&str]) -> String {
     let module = vyrn::parse(src).unwrap_or_else(|e| panic!("{e:?}"));
     let native = compiler::compile(&module).unwrap_or_else(|e| panic!("{e:?}"));
     for name in compiled {
-        let g = native
-            .global(name)
-            .unwrap_or_else(|| panic!("no function {name}"));
-        let vm::program::GlobalInit::Function(p) = native.globals[g].init else {
-            panic!("{name} is not a function")
+        let p = match name.split_once('.') {
+            // `Type.method`
+            Some((ty, method)) => {
+                let t = native
+                    .types
+                    .iter()
+                    .position(|t| native.symbols.name(t.name) == ty)
+                    .unwrap_or_else(|| panic!("no type {ty}"));
+                let sym = native.symbols.get(method).expect("a method name");
+                native.types[t].methods[&sym]
+            }
+            None => {
+                let g = native
+                    .global(name)
+                    .unwrap_or_else(|| panic!("no function {name}"));
+                let vm::program::GlobalInit::Function(p) = native.globals[g].init else {
+                    panic!("{name} is not a function")
+                };
+                p
+            }
         };
         assert!(
             native.protos[p].native.get().is_some(),
@@ -425,4 +440,44 @@ fn list_making_failures_are_the_same() {
         let out = both(src, &["f"]);
         assert!(out.contains(&format!("<error {kind}")), "{src}\n{out}");
     }
+}
+
+#[test]
+fn structs_of_numbers() {
+    let out = both(
+        "struct Vec2:\n    x: float\n    y: float\n\
+         \x20   create length(self) -> float: return sqrt(self.x * self.x + self.y * self.y)\n\
+         \x20   create scaled(self, k: float) -> Vec2: return Vec2(self.x * k, self.y * k)\n\
+         \x20   create plus(self, o: Vec2) -> Vec2: return Vec2(x = self.x + o.x, y = self.y + o.y)\n\
+         end\n\
+         struct Body:\n    pos: Vec2\nend\n\
+         struct Cell:\n    alive: bool\n    age: int\nend\n\
+         create step(c: Cell) -> Cell:\n    var n = c\n    n.age += 1\n    if n.age > 2: n.alive = false\n    return n\nend\n\
+         create walk(steps: int) -> Vec2:\n    var p = Vec2(0.0, 0.0)\n    let v = Vec2(1.0, 0.5)\n    each i in 0 until steps: p = p.plus(v)\n    return p.scaled(2.0)\nend\n\
+         create copies() -> float:\n    var a = Vec2(1.0, 2.0)\n    var b = a\n    b.x = 10.0\n    return a.x + b.x\nend\n\
+         create untouched(p: Vec2) -> float:\n    p.x = 99.0\n    return p.x\nend\n\
+         main:\n\
+         \x20   let p = Vec2(3.0, 4.0)\n\
+         \x20   print(p.length(), p.scaled(2.0), walk(4), copies(), untouched(p), p)\n\
+         \x20   var c = Cell(true, 0)\n    each _ in 0 until 3: c = step(c)\n    print(c, step(Cell(true, 5)))\n\
+         \x20   print(Vec2(1, 2).length(), Body(p).pos)\n\
+         end\n",
+        &["Vec2.length", "Vec2.scaled", "Vec2.plus", "step", "walk", "copies", "untouched"],
+    );
+    assert_eq!(
+        out,
+        "5.0 Vec2(x=6.0, y=8.0) Vec2(x=8.0, y=4.0) 11.0 99.0 Vec2(x=3.0, y=4.0)\nCell(alive=false, age=3) Cell(alive=false, age=6)\n2.23606797749979 Vec2(x=3.0, y=4.0)\n"
+    );
+}
+
+#[test]
+fn mut_self_methods_stay_interpreted() {
+    // `mut self` writes back to the caller's struct; the native tier
+    // passes copies, so such methods must stay on the interpreter.
+    let out = both(
+        "struct Counter:\n    n: int\n    create bump(mut self): self.n += 1\n    create peek(self) -> int: return self.n\nend\n\
+         main:\n    var c = Counter(0)\n    c.bump()\n    c.bump()\n    print(c.n, c.peek())\nend\n",
+        &["Counter.peek"],
+    );
+    assert_eq!(out, "2 2\n");
 }

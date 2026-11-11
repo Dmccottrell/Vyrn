@@ -17,6 +17,9 @@ pub enum NTy {
     /// Every item is checked to have the type when the call starts.
     ListInt,
     ListFloat,
+    /// A struct whose fields are all `int`, `float` or `bool`, by type
+    /// index. Passed as its fields, one word each.
+    Struct(u16),
 }
 
 impl NTy {
@@ -99,6 +102,8 @@ pub struct NativeFn {
     pub entry: Entry,
     pub params: Vec<NTy>,
     pub ret: NTy,
+    /// The field types of every struct the native tier handles.
+    pub structs: Rc<std::collections::HashMap<u16, Vec<NTy>>>,
     /// Keeps the machine code alive.
     pub keep: Rc<dyn std::any::Any>,
 }

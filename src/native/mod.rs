@@ -23,7 +23,8 @@ use std::rc::Rc;
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
-    types, AbiParam, Block, FuncRef, InstBuilder, MemFlagsData, Type, Value,
+    types, AbiParam, Block, FuncRef, InstBuilder, MemFlagsData, StackSlotData, StackSlotKind, Type,
+    Value,
 };
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -448,8 +449,93 @@ fn scalar_type(t: &TypeExpr) -> Option<NTy> {
     }
 }
 
-/// A parameter's type: a scalar, or a list of `int` or `float`.
-fn param_type(t: &TypeExpr) -> Option<NTy> {
+/// The structs the native tier handles: no generics, and every field an
+/// `int`, `float` or `bool`.
+#[derive(Default)]
+struct Structs {
+    by_name: HashMap<String, u16>,
+    fields: HashMap<u16, (String, Vec<(String, NTy)>)>,
+}
+
+impl Structs {
+    fn of(module: &Module, program: &Program) -> Structs {
+        let mut out = Structs::default();
+        for item in &module.items {
+            let ItemKind::Aggregate(a) = &item.kind else {
+                continue;
+            };
+            if !matches!(a.kind, crate::ast::AggregateKind::Struct)
+                || !a.generics.is_empty()
+                || a.base.is_some()
+                || a.fields.is_empty()
+                || a.fields.len() > 16
+            {
+                continue;
+            }
+            let fields: Option<Vec<(String, NTy)>> = a
+                .fields
+                .iter()
+                .map(|f| {
+                    let t = f.declared_ty.as_ref().and_then(scalar_type)?;
+                    Some((f.name.name.clone(), t))
+                })
+                .collect();
+            let Some(fields) = fields else { continue };
+            let Some(id) = program.types.iter().position(|t| {
+                matches!(t.kind, crate::vm::program::TypeKind::Struct)
+                    && program.symbols.name(t.name) == a.name.name
+            }) else {
+                continue;
+            };
+            // The VM's field order must be the declared one.
+            let vm_fields: Vec<&str> = program.types[id]
+                .fields
+                .iter()
+                .map(|f| program.symbols.name(*f))
+                .collect();
+            if vm_fields != fields.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>() {
+                continue;
+            }
+            out.by_name.insert(a.name.name.clone(), id as u16);
+            out.fields.insert(id as u16, (a.name.name.clone(), fields));
+        }
+        out
+    }
+
+    fn field_types(&self) -> HashMap<u16, Vec<NTy>> {
+        self.fields
+            .iter()
+            .map(|(id, (_, f))| (*id, f.iter().map(|(_, t)| *t).collect()))
+            .collect()
+    }
+
+    fn count(&self, id: u16) -> usize {
+        self.fields.get(&id).map_or(0, |(_, f)| f.len())
+    }
+
+    fn field(&self, id: u16, name: &str) -> Option<(usize, NTy)> {
+        let (_, fields) = self.fields.get(&id)?;
+        fields
+            .iter()
+            .position(|(n, _)| n == name)
+            .map(|i| (i, fields[i].1))
+    }
+
+    fn name(&self, id: u16) -> &str {
+        self.fields.get(&id).map_or("?", |(n, _)| n.as_str())
+    }
+}
+
+/// A parameter's type: a scalar, a list of `int` or `float`, or a struct
+/// the tier handles.
+fn param_type(t: &TypeExpr, structs: &Structs) -> Option<NTy> {
+    if let TypeExprKind::Named { path, args } = &t.kind {
+        if args.is_empty() && path.segments.len() == 1 {
+            if let Some(id) = structs.by_name.get(&path.segments[0].name) {
+                return Some(NTy::Struct(*id));
+            }
+        }
+    }
     if let TypeExprKind::List(inner) = &t.kind {
         return match scalar_type(inner)? {
             NTy::Int => Some(NTy::ListInt),
@@ -460,8 +546,9 @@ fn param_type(t: &TypeExpr) -> Option<NTy> {
     scalar_type(t)
 }
 
-/// A candidate's signature, or why it cannot be one.
-fn signature(f: &FnDecl) -> Res<(Vec<NTy>, NTy)> {
+/// A candidate's signature, or why it cannot be one. For a method,
+/// `self_ty` is its struct.
+fn signature(f: &FnDecl, structs: &Structs, self_ty: Option<u16>) -> Res<(Vec<NTy>, NTy)> {
     let m = &f.modifiers;
     if m.is_async || m.is_kernel || m.export.is_some() || !f.generics.is_empty() {
         return Err("async, kernel, exported and generic functions stay interpreted".into());
@@ -470,30 +557,45 @@ fn signature(f: &FnDecl) -> Res<(Vec<NTy>, NTy)> {
         return Err("functions that declare `fails` stay interpreted".into());
     }
     let mut params = Vec::new();
-    for p in &f.params {
+    for (i, p) in f.params.iter().enumerate() {
+        if let (0, Some(id), "self") = (i, self_ty, p.name.name.as_str()) {
+            // `mut self` changes the caller's struct, which a copy cannot.
+            if p.pass != PassMode::Borrow {
+                return Err("`mut self` methods stay interpreted".into());
+            }
+            params.push(NTy::Struct(id));
+            continue;
+        }
         if p.default.is_some() || p.pass != PassMode::Borrow {
             return Err(format!(
                 "parameter `{}` has a default or a pass mode",
                 p.name.name
             ));
         }
-        let ty = p.declared_ty.as_ref().and_then(param_type).ok_or_else(|| {
-            format!(
-                "parameter `{}` is not declared int, float, bool, [int] or [float]",
-                p.name.name
-            )
-        })?;
+        let ty = p
+            .declared_ty
+            .as_ref()
+            .and_then(|t| param_type(t, structs))
+            .ok_or_else(|| {
+                format!(
+                    "parameter `{}` is not declared int, float, bool, [int] or [float]",
+                    p.name.name
+                )
+            })?;
         params.push(ty);
     }
     let ret = match &f.result.returns {
         None => NTy::Unit,
-        Some(t) => param_type(t).ok_or("the result is not int, float, bool, [int] or [float]")?,
+        Some(t) => param_type(t, structs)
+            .ok_or("the result is not int, float, bool, [int], [float] or a struct of those")?,
     };
     Ok((params, ret))
 }
 
 struct Candidate<'a> {
     decl: &'a FnDecl,
+    /// The name calls use: `name`, or `Type.method` for a method.
+    key: String,
     proto: usize,
     params: Vec<NTy>,
     ret: NTy,
@@ -517,6 +619,7 @@ pub fn attach(module: &Module, program: &Program) {
     let mut math_names: Vec<String> = Vec::new();
     let mut all_names: Vec<String> = Vec::new();
     let mut candidates: Vec<Candidate> = Vec::new();
+    let structs = Structs::of(module, program);
     for item in &module.items {
         match &item.kind {
             ItemKind::Use(u) => {
@@ -545,9 +648,10 @@ pub fn attach(module: &Module, program: &Program) {
                 else {
                     continue;
                 };
-                match signature(f) {
+                match signature(f, &structs, None) {
                     Ok((params, ret)) => candidates.push(Candidate {
                         decl: f,
+                        key: f.name.name.clone(),
                         proto: *proto,
                         params,
                         ret,
@@ -555,7 +659,38 @@ pub fn attach(module: &Module, program: &Program) {
                     Err(why) => report(&f.name.name, &format!("interpreted: {why}")),
                 }
             }
-            ItemKind::Aggregate(a) => all_names.push(a.name.name.clone()),
+            ItemKind::Aggregate(a) => {
+                all_names.push(a.name.name.clone());
+                let Some(&id) = structs.by_name.get(&a.name.name) else {
+                    continue;
+                };
+                for m in &a.methods {
+                    let ItemKind::Fn(f) = &m.kind else { continue };
+                    if !m.decorators.is_empty() || !matches!(f.body, FnBody::Block(_)) {
+                        continue;
+                    }
+                    let Some(proto) = program
+                        .symbols
+                        .get(&f.name.name)
+                        .and_then(|sym| program.types[id as usize].methods.get(&sym))
+                    else {
+                        continue;
+                    };
+                    let key = format!("{}.{}", a.name.name, f.name.name);
+                    match signature(f, &structs, Some(id)) {
+                        Ok((params, ret)) if params.first() == Some(&NTy::Struct(id)) => candidates
+                            .push(Candidate {
+                                decl: f,
+                                key,
+                                proto: *proto,
+                                params,
+                                ret,
+                            }),
+                        Ok(_) => report(&key, "interpreted: a method without `self`"),
+                        Err(why) => report(&key, &format!("interpreted: {why}")),
+                    }
+                }
+            }
             ItemKind::Enum(e) => all_names.push(e.name.name.clone()),
             ItemKind::Const(c) => all_names.push(c.name.name.clone()),
             _ => {}
@@ -564,9 +699,11 @@ pub fn attach(module: &Module, program: &Program) {
     if candidates.is_empty() {
         return;
     }
+    let struct_types = Rc::new(structs.field_types());
     let env = Env {
         math: math_names,
         globals: all_names,
+        structs,
     };
 
     // Drop candidates that cannot be lowered, until the rest only call
@@ -574,7 +711,7 @@ pub fn attach(module: &Module, program: &Program) {
     loop {
         let sigs: HashMap<String, (Vec<NTy>, NTy)> = candidates
             .iter()
-            .map(|c| (c.decl.name.name.clone(), (c.params.clone(), c.ret)))
+            .map(|c| (c.key.clone(), (c.params.clone(), c.ret)))
             .collect();
         let mut jit = match Jit::new() {
             Ok(j) => j,
@@ -598,10 +735,7 @@ pub fn attach(module: &Module, program: &Program) {
             }
         }
         if let Some((i, why)) = failed {
-            report(
-                &candidates[i].decl.name.name,
-                &format!("interpreted: {why}"),
-            );
+            report(&candidates[i].key, &format!("interpreted: {why}"));
             candidates.remove(i);
             if candidates.is_empty() {
                 return;
@@ -611,10 +745,10 @@ pub fn attach(module: &Module, program: &Program) {
         // Everything left compiles: add the entry points and finish.
         let mut entries = Vec::new();
         for c in &candidates {
-            match jit.define_entry(&c.decl.name.name, &c.params, c.ret, ids[&c.decl.name.name]) {
+            match jit.define_entry(&c.key, &c.params, c.ret, ids[&c.key], &env.structs) {
                 Ok(id) => entries.push(id),
                 Err(e) => {
-                    report(&c.decl.name.name, &e);
+                    report(&c.key, &e);
                     return;
                 }
             }
@@ -632,14 +766,15 @@ pub fn attach(module: &Module, program: &Program) {
             // SAFETY: the entry was built with exactly the `Entry` signature.
             let entry: crate::vm::native_abi::Entry = unsafe { std::mem::transmute(ptr) };
             let native = NativeFn {
-                name: c.decl.name.name.clone(),
+                name: c.key.clone(),
                 entry,
                 params: c.params.clone(),
                 ret: c.ret,
+                structs: struct_types.clone(),
                 keep: keep.clone(),
             };
             let _ = program.protos[c.proto].native.set(Rc::new(native));
-            report(&c.decl.name.name, "compiled to machine code");
+            report(&c.key, "compiled to machine code");
         }
         return;
     }
@@ -657,6 +792,7 @@ struct Env {
     /// Every top-level function, type and constant: a call to one that is
     /// not a candidate cannot be compiled.
     globals: Vec<String>,
+    structs: Structs,
 }
 
 // ==== the code generator ====================================================
@@ -671,7 +807,7 @@ struct Jit {
 
 fn cl_type(t: NTy) -> Type {
     match t {
-        NTy::Int | NTy::Unit | NTy::ListInt | NTy::ListFloat => types::I64,
+        NTy::Int | NTy::Unit | NTy::ListInt | NTy::ListFloat | NTy::Struct(_) => types::I64,
         NTy::Float => types::F64,
         NTy::Bool => types::I8,
     }
@@ -751,6 +887,10 @@ impl Jit {
         for p in params {
             sig.params.push(AbiParam::new(cl_type(*p)));
         }
+        // A struct result is written where the caller says.
+        if matches!(ret, NTy::Struct(_)) {
+            sig.params.push(AbiParam::new(self.ptr));
+        }
         sig.params.push(AbiParam::new(self.ptr));
         sig.returns.push(AbiParam::new(cl_type(ret)));
         sig
@@ -791,7 +931,9 @@ impl Jit {
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);
             let args: Vec<Value> = b.block_params(entry).to_vec();
-            let err = args[c.params.len()];
+            let has_sret = matches!(c.ret, NTy::Struct(_));
+            let sret = has_sret.then(|| args[c.params.len()]);
+            let err = args[c.params.len() + usize::from(has_sret)];
             let mut lower = Lower {
                 b,
                 module: &mut self.module,
@@ -806,11 +948,12 @@ impl Jit {
                 ret: c.ret,
                 line: c.decl.name.span.start.line,
                 layout: list_layout(),
+                sret: None,
             };
+            lower.sret = sret;
+            // Each parameter is the function's own; a struct is copied in.
             for (p, (v, ty)) in c.decl.params.iter().zip(args.iter().zip(&c.params)) {
-                let var = lower.b.declare_var(cl_type(*ty));
-                lower.b.def_var(var, *v);
-                lower.scopes[0].push((p.name.name.clone(), var, *ty));
+                lower.declare(&p.name.name, *v, *ty);
             }
             // Count the call against the nesting limit.
             let depth = lower
@@ -836,7 +979,7 @@ impl Jit {
             lower.b.seal_all_blocks();
             lower.b.finalize(frontend);
         }
-        let id = ids[&c.decl.name.name];
+        let id = ids[&c.key];
         self.module
             .define_function(id, &mut self.ctx)
             .map_err(|e| format!("code generation failed: {e:?}"))?;
@@ -846,7 +989,14 @@ impl Jit {
 
     /// The entry the VM calls: arguments from an array of words, the
     /// result as a word.
-    fn define_entry(&mut self, name: &str, params: &[NTy], ret: NTy, inner: FuncId) -> Res<FuncId> {
+    fn define_entry(
+        &mut self,
+        name: &str,
+        params: &[NTy],
+        ret: NTy,
+        inner: FuncId,
+        structs: &Structs,
+    ) -> Res<FuncId> {
         let mut sig = self.module.make_signature();
         sig.params.push(AbiParam::new(self.ptr));
         sig.params.push(AbiParam::new(self.ptr));
@@ -865,18 +1015,31 @@ impl Jit {
             b.switch_to_block(entry);
             let (args_ptr, err) = (b.block_params(entry)[0], b.block_params(entry)[1]);
             let mut args = Vec::new();
-            for (i, p) in params.iter().enumerate() {
+            let mut at = 0usize;
+            for p in params {
+                if let NTy::Struct(id) = p {
+                    // A struct's fields are consecutive words: pass where
+                    // they start (the callee copies them).
+                    args.push(b.ins().iadd_imm_s(args_ptr, (at * 8) as i64));
+                    at += structs.count(*id);
+                    continue;
+                }
                 let word = b.ins().load(
                     types::I64,
                     MemFlagsData::trusted(),
                     args_ptr,
-                    (i * 8) as i32,
+                    (at * 8) as i32,
                 );
+                at += 1;
                 args.push(match p {
                     NTy::Float => b.ins().bitcast(types::F64, MemFlagsData::new(), word),
                     NTy::Bool => b.ins().ireduce(types::I8, word),
                     _ => word,
                 });
+            }
+            if matches!(ret, NTy::Struct(_)) {
+                // Fields of a returned struct go in the state's `ret` words.
+                args.push(b.ins().iadd_imm_s(err, 48));
             }
             args.push(err);
             let callee = self.module.declare_func_in_func(inner, b.func);
@@ -914,6 +1077,8 @@ struct Lower<'a, 'f> {
     ret: NTy,
     line: u32,
     layout: Option<ListLayout>,
+    /// Where a struct result goes.
+    sret: Option<Value>,
 }
 
 impl Lower<'_, '_> {
@@ -1035,6 +1200,11 @@ impl Lower<'_, '_> {
 
     fn assign(&mut self, name: &str, v: Value, t: NTy) -> Res<()> {
         match self.lookup(name) {
+            Some((var, NTy::Struct(id))) if t == NTy::Struct(id) => {
+                let slot = self.b.use_var(var);
+                self.copy_struct(slot, v, id);
+                Ok(())
+            }
             Some((var, old)) if old == t => {
                 self.b.def_var(var, v);
                 Ok(())
@@ -1052,6 +1222,15 @@ impl Lower<'_, '_> {
     }
 
     fn declare(&mut self, name: &str, v: Value, t: NTy) {
+        // A struct variable owns a slot of its own, and holds its address.
+        let v = match t {
+            NTy::Struct(id) => {
+                let slot = self.struct_slot(id);
+                self.copy_struct(slot, v, id);
+                slot
+            }
+            _ => v,
+        };
         let var = self.b.declare_var(cl_type(t));
         self.b.def_var(var, v);
         self.scopes
@@ -1068,10 +1247,13 @@ impl Lower<'_, '_> {
                     return Err("only plain names can be bound".into());
                 };
                 let value = binding.value.as_ref().ok_or("a binding without a value")?;
-                let want = binding.declared_ty.as_ref().and_then(param_type);
+                let want = binding
+                    .declared_ty
+                    .as_ref()
+                    .and_then(|t| param_type(t, &self.env.structs));
                 let (v, t) = self.expr_as(value, want)?;
                 if let Some(declared) = &binding.declared_ty {
-                    if param_type(declared) != Some(t) {
+                    if param_type(declared, &self.env.structs) != Some(t) {
                         return Err(format!(
                             "`{}`'s declared type differs from its value",
                             name.name
@@ -1086,6 +1268,14 @@ impl Lower<'_, '_> {
             StmtKind::Assign { target, op, value } => {
                 if let ExprKind::Index { base, subscripts } = &target.kind {
                     return self.assign_item(base, subscripts, *op, value);
+                }
+                if let ExprKind::Field {
+                    base,
+                    name,
+                    optional: false,
+                } = &target.kind
+                {
+                    return self.assign_field(base, &name.name, *op, value);
                 }
                 let ExprKind::Name(name) = &target.kind else {
                     return Err("only variables and list items can be assigned".into());
@@ -1136,7 +1326,13 @@ impl Lower<'_, '_> {
                             ty_name(want)
                         ));
                     }
-                    self.ret(v);
+                    if let (NTy::Struct(id), Some(sret)) = (want, self.sret) {
+                        self.copy_struct(sret, v, id);
+                        let z = self.b.ins().iconst(types::I64, 0);
+                        self.ret(z);
+                    } else {
+                        self.ret(v);
+                    }
                 }
                 _ => return Err("the `return` does not match the declared result".into()),
             },
@@ -1335,6 +1531,142 @@ impl Lower<'_, '_> {
         Ok(())
     }
 
+    // ---- structs ----
+
+    /// A fresh stack slot for a struct: one 8-byte word per field.
+    fn struct_slot(&mut self, id: u16) -> Value {
+        let size = (self.env.structs.count(id).max(1) * 8) as u32;
+        let slot = self.b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            size,
+            3,
+        ));
+        self.b.ins().stack_addr(types::I64, slot, 0)
+    }
+
+    fn copy_struct(&mut self, to: Value, from: Value, id: u16) {
+        let fields: Vec<NTy> = self
+            .env
+            .structs
+            .fields
+            .get(&id)
+            .map(|(_, f)| f.iter().map(|(_, t)| *t).collect())
+            .unwrap_or_default();
+        for (i, t) in fields.into_iter().enumerate() {
+            let off = (i * 8) as i32;
+            let v = self
+                .b
+                .ins()
+                .load(cl_type(t), MemFlagsData::trusted(), from, off);
+            self.b.ins().store(MemFlagsData::trusted(), v, to, off);
+        }
+    }
+
+    /// Calls a compiled function or method with `values` (its arguments,
+    /// `err` added here); a struct result lands in a new slot.
+    fn call_compiled(&mut self, key: &str, mut values: Vec<Value>, ret: NTy) -> (Value, NTy) {
+        let sret = match ret {
+            NTy::Struct(id) => {
+                let slot = self.struct_slot(id);
+                values.push(slot);
+                Some(slot)
+            }
+            _ => None,
+        };
+        values.push(self.err);
+        let f = self.func_ref(self.ids[key]);
+        let call = self.b.ins().call(f, &values);
+        let v = self.b.inst_results(call)[0];
+        self.check_err();
+        (sret.unwrap_or(v), ret)
+    }
+
+    /// `Point(1.0, 2.0)` or `Point(x = 1.0, y = 2.0)`: every field given,
+    /// each with exactly its declared type.
+    fn construct(&mut self, id: u16, args: &[crate::ast::Arg]) -> Res<(Value, NTy)> {
+        let fields: Vec<(String, NTy)> = self.env.structs.fields[&id].1.clone();
+        if args.len() != fields.len() {
+            return Err(format!(
+                "`{}(...)` without every field",
+                self.env.structs.name(id)
+            ));
+        }
+        let slot = self.struct_slot(id);
+        let named = args.iter().any(|a| a.name.is_some());
+        for (k, a) in args.iter().enumerate() {
+            let i = match (&a.name, named) {
+                (Some(n), _) => fields
+                    .iter()
+                    .position(|(f, _)| *f == n.name)
+                    .ok_or_else(|| format!("no field `{}`", n.name))?,
+                (None, false) => k,
+                (None, true) => {
+                    return Err("a constructor mixing named and positional fields".into())
+                }
+            };
+            let (v, t) = self.expr(&a.value)?;
+            if t != fields[i].1 {
+                return Err(format!(
+                    "field `{}` given {} where {} is declared",
+                    fields[i].0,
+                    ty_name(t),
+                    ty_name(fields[i].1)
+                ));
+            }
+            self.b
+                .ins()
+                .store(MemFlagsData::trusted(), v, slot, (i * 8) as i32);
+        }
+        Ok((slot, NTy::Struct(id)))
+    }
+
+    /// `p.x = v` and `p.x += v` on a struct variable.
+    fn assign_field(&mut self, base: &Expr, field: &str, op: AssignOp, value: &Expr) -> Res<()> {
+        let ExprKind::Name(var) = &base.kind else {
+            return Err("assigning a field of something that is not a variable".into());
+        };
+        let (v, t) = self
+            .lookup(&var.name)
+            .ok_or_else(|| format!("`{}` is not a local struct", var.name))?;
+        let NTy::Struct(id) = t else {
+            return Err("assigning a field of something that is not a struct".into());
+        };
+        let slot = self.b.use_var(v);
+        let (i, ft) = self
+            .env
+            .structs
+            .field(id, field)
+            .ok_or_else(|| format!("no field `{field}`"))?;
+        let off = (i * 8) as i32;
+        let (nv, nt) = match op {
+            AssignOp::Assign => self.expr(value)?,
+            op => {
+                let current = self
+                    .b
+                    .ins()
+                    .load(cl_type(ft), MemFlagsData::trusted(), slot, off);
+                let (rhs, rt) = self.expr(value)?;
+                let bop = assign_op(op).ok_or("this compound assignment")?;
+                if bop == BinaryOp::Pow
+                    && rt == NTy::Int
+                    && !matches!(value.kind, ExprKind::Int { .. })
+                {
+                    return Err("`**=` with an exponent that is not a literal".into());
+                }
+                self.binary(bop, current, ft, rhs, rt)?
+            }
+        };
+        if nt != ft {
+            return Err(format!(
+                "field `{field}` given {} where {} is declared",
+                ty_name(nt),
+                ty_name(ft)
+            ));
+        }
+        self.b.ins().store(MemFlagsData::trusted(), nv, slot, off);
+        Ok(())
+    }
+
     // ---- lists ----
 
     fn list_and_index(
@@ -1484,6 +1816,30 @@ impl Lower<'_, '_> {
     /// `xs.append(x)`, and `len` as a method.
     fn method(&mut self, base: &Expr, name: &str, args: &[crate::ast::Arg]) -> Res<(Value, NTy)> {
         let (list, lt) = self.expr(base)?;
+        if let NTy::Struct(id) = lt {
+            let key = format!("{}.{name}", self.env.structs.name(id));
+            let (params, ret) = self
+                .sigs
+                .get(&key)
+                .cloned()
+                .ok_or_else(|| format!("calls `{key}`, which stays interpreted"))?;
+            if args.len() + 1 != params.len() {
+                return Err(format!("`{key}` called with {} arguments", args.len()));
+            }
+            let mut values = vec![list];
+            for (a, want) in args.iter().zip(&params[1..]) {
+                let (v, t) = self.expr_as(&a.value, Some(*want))?;
+                if t != *want {
+                    return Err(format!(
+                        "`{key}` receives {} where it declares {}",
+                        ty_name(t),
+                        ty_name(*want)
+                    ));
+                }
+                values.push(v);
+            }
+            return Ok(self.call_compiled(&key, values, ret));
+        }
         if !lt.is_list() {
             return Err("method calls on values that are not lists of numbers".into());
         }
@@ -1806,6 +2162,29 @@ impl Lower<'_, '_> {
             }
             ExprKind::Call { callee, args } => self.call(callee, args)?,
             ExprKind::List(items) => self.list_literal(items)?,
+            ExprKind::Field {
+                base,
+                name,
+                optional: false,
+            } => {
+                let (p, t) = self.expr(base)?;
+                let NTy::Struct(id) = t else {
+                    return Err("a field of something that is not a struct".into());
+                };
+                let (i, ft) = self.env.structs.field(id, &name.name).ok_or_else(|| {
+                    format!(
+                        "`{}` has no field `{}`",
+                        self.env.structs.name(id),
+                        name.name
+                    )
+                })?;
+                (
+                    self.b
+                        .ins()
+                        .load(cl_type(ft), MemFlagsData::trusted(), p, (i * 8) as i32),
+                    ft,
+                )
+            }
             ExprKind::ListComp { element, clauses } => self.comprehension(element, clauses)?,
             ExprKind::Index { base, subscripts } => {
                 let (list, lt, i) = self.list_and_index(base, subscripts)?;
@@ -2057,6 +2436,17 @@ impl Lower<'_, '_> {
     }
 
     fn call(&mut self, callee: &Expr, args: &[crate::ast::Arg]) -> Res<(Value, NTy)> {
+        // Constructors take fields by name too.
+        if let ExprKind::Name(n) = &callee.kind {
+            if let Some(&id) = self.env.structs.by_name.get(&n.name) {
+                if self.lookup(&n.name).is_none() && !self.sigs.contains_key(&n.name) {
+                    if args.iter().any(|a| a.is_mut) {
+                        return Err("a constructor with `mut` arguments".into());
+                    }
+                    return self.construct(id, args);
+                }
+            }
+        }
         if args.iter().any(|a| a.name.is_some() || a.is_mut) {
             return Err("calls with keyword or `mut` arguments".into());
         }
@@ -2098,12 +2488,10 @@ impl Lower<'_, '_> {
                 }
                 values.push(v);
             }
-            values.push(self.err);
-            let f = self.func_ref(self.ids[&name]);
-            let call = self.b.ins().call(f, &values);
-            let v = self.b.inst_results(call)[0];
-            self.check_err();
-            return Ok((v, ret));
+            return Ok(self.call_compiled(&name, values, ret));
+        }
+        if let Some(&id) = self.env.structs.by_name.get(&name) {
+            return self.construct(id, args);
         }
         if self.env.globals.contains(&name) {
             return Err(format!("calls `{name}`, which stays interpreted"));
@@ -2305,5 +2693,6 @@ fn ty_name(t: NTy) -> &'static str {
         NTy::Unit => "none",
         NTy::ListInt => "[int]",
         NTy::ListFloat => "[float]",
+        NTy::Struct(_) => "a struct",
     }
 }
