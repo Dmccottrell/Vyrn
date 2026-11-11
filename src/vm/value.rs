@@ -207,6 +207,9 @@ pub struct Instance {
 pub struct Closure {
     pub proto: Rc<Proto>,
     pub captures: Vec<Value>,
+    /// `obj.method` taken as a value: the object, passed as `self` on
+    /// every call.
+    pub bound: Option<Value>,
 }
 
 impl fmt::Debug for Closure {

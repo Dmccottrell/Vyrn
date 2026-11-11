@@ -1256,3 +1256,35 @@ fn kernels_explain_what_cannot_run_on_tensors() {
     );
     assert_eq!(e.kind, "TypeError");
 }
+
+// ---- decorators, variadics, spread, bound methods ---------------------------
+
+#[test]
+fn decorators_wrap_functions() {
+    assert_eq!(
+        run("create twice(f):\n    return x => f(f(x))\nend\n\
+             create tagged(label):\n    create wrap(f):\n        create inner(args...):\n            return \"{label}:{f(args...)}\"\n        end\n        return inner\n    end\n    return wrap\nend\n\
+             @twice\ncreate inc(x): return x + 1\n\
+             @tagged(\"sum\")\ncreate add(a, b): return a + b\n\
+             main:\n    print(inc(1), add(2, 3))\nend\n"),
+        "3 sum:5\n"
+    );
+}
+
+#[test]
+fn rest_parameters_and_spread_arguments() {
+    assert_eq!(
+        run("create total(label, nums...):\n    return \"{label} {nums} {sum(nums)}\"\nend\n\
+             main:\n    xs = [4, 5]\n    print(total(\"a\"))\n    print(total(\"b\", 1, 2))\n    print(total(\"c\", xs..., 6))\n    print(max(xs...))\nend\n"),
+        "a [] 0\nb [1, 2] 3\nc [4, 5, 6] 15\n5\n"
+    );
+}
+
+#[test]
+fn methods_taken_as_values_remember_their_object() {
+    assert_eq!(
+        run("object Counter:\n    n: int = 0\n    create add(self, k): self.n += k\nend\n\
+             main:\n    c = Counter()\n    f = c.add\n    f(2)\n    [3, 4].each(c.add)\n    print(c.n)\nend\n"),
+        "9\n"
+    );
+}

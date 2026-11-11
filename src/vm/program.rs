@@ -31,6 +31,8 @@ pub struct Proto {
     pub captures: Vec<Capture>,
     /// `async fn`: calling it starts a task and returns its handle.
     pub is_async: bool,
+    /// The last parameter takes every remaining argument as a list.
+    pub variadic: bool,
     /// `kernel fn`: its body lowered for running on tensors, or why it
     /// could not be.
     pub kernel: Option<Rc<Result<super::kernel::Kernel, String>>>,

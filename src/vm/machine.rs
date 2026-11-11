@@ -223,6 +223,7 @@ impl Vm {
                 Rc::new(Closure {
                     proto: proto.clone(),
                     captures: Vec::new(),
+                    bound: None,
                 })
             })
             .collect();
@@ -1360,7 +1361,10 @@ impl Vm {
     }
 
     #[inline]
-    fn push_frame(
+    /// `create f(a, rest...)`: the arguments after the fixed ones become
+    /// one list.
+    #[cold]
+    fn push_variadic_frame(
         &mut self,
         closure: Rc<Closure>,
         ret: usize,
@@ -1368,7 +1372,56 @@ impl Vm {
         argc: usize,
     ) -> VmResult<()> {
         let proto = &closure.proto;
+        let fixed = proto.params.len() - 1;
+        if argc < proto.required {
+            return Err(err(
+                "CallError",
+                format!(
+                    "`{}` takes at least {} argument{}, got {argc}",
+                    proto.name,
+                    proto.required,
+                    if proto.required == 1 { "" } else { "s" }
+                ),
+            ));
+        }
+        let needed = base + proto.num_regs.max(fixed + 1).max(argc);
+        if self.stack.len() < needed {
+            self.stack.resize(needed, Value::None);
+        }
+        let rest: Vec<Value> = if argc > fixed {
+            self.stack[base + fixed..base + argc].to_vec()
+        } else {
+            for slot in &mut self.stack[base + argc..base + fixed] {
+                *slot = Value::Missing;
+            }
+            Vec::new()
+        };
+        self.stack[base + fixed] = Value::list(rest);
+        self.push_frame_unchecked(closure, ret, base, fixed + 1)
+    }
+
+    fn push_frame(
+        &mut self,
+        closure: Rc<Closure>,
+        ret: usize,
+        base: usize,
+        argc: usize,
+    ) -> VmResult<()> {
+        let mut argc = argc;
+        if let Some(receiver) = &closure.bound {
+            // The object goes first, as `self`.
+            if self.stack.len() < base + argc + 1 {
+                self.stack.resize(base + argc + 1, Value::None);
+            }
+            self.stack[base..base + argc + 1].rotate_right(1);
+            self.stack[base] = receiver.clone();
+            argc += 1;
+        }
+        let proto = &closure.proto;
         let arity = proto.params.len();
+        if proto.variadic {
+            return self.push_variadic_frame(closure, ret, base, argc);
+        }
         if argc > arity || argc < proto.required {
             let expected = if proto.required == arity {
                 arity.to_string()
@@ -1384,6 +1437,19 @@ impl Vm {
                 ),
             ));
         }
+        self.push_frame_unchecked(closure, ret, base, argc)
+    }
+
+    #[inline]
+    fn push_frame_unchecked(
+        &mut self,
+        closure: Rc<Closure>,
+        ret: usize,
+        base: usize,
+        argc: usize,
+    ) -> VmResult<()> {
+        let proto = &closure.proto;
+        let arity = proto.params.len();
         if self.frames.len() >= MAX_FRAMES {
             return Err(err(
                 "StackOverflow",
@@ -1594,6 +1660,18 @@ impl Vm {
             .position(|f| *f == name)
     }
 
+    /// `obj.method` without a call: a function that remembers `obj`.
+    fn bound_method(&self, receiver: &Value, ty: u16, name: Symbol) -> VmResult<Value> {
+        match self.methods.get(&(ty, name)) {
+            Some(method) => Ok(Value::Function(Rc::new(Closure {
+                proto: method.proto.clone(),
+                captures: method.captures.clone(),
+                bound: Some(receiver.clone()),
+            }))),
+            None => Err(self.no_field(ty, name)),
+        }
+    }
+
     fn no_field(&self, ty: u16, name: Symbol) -> Value {
         err(
             "FieldError",
@@ -1711,6 +1789,74 @@ impl Vm {
                         continue 'frames;
                     }
                 };
+            }
+            // A call of the value in stack[at] with `argc` arguments after it.
+            macro_rules! call_at {
+                ($at:expr, $argc:expr) => {{
+                    let at: usize = $at;
+                    let argc: usize = $argc;
+                        match &self.stack[at] {
+                            Value::Function(c)
+                                if c.bound.is_none() && c.proto.native.get().is_some() =>
+                            {
+                                let native = c.proto.native.get().cloned().expect("checked");
+                                match self.call_native(&native, at + 1, argc) {
+                                    Some(result) => {
+                                        let v = check!(result);
+                                        self.stack[at] = v;
+                                    }
+                                    None => {
+                                        let Value::Function(callee) =
+                                            std::mem::replace(&mut self.stack[at], Value::None)
+                                        else {
+                                            unreachable!()
+                                        };
+                                        save_ip!();
+                                        check!(self.enter(callee, at, at + 1, argc));
+                                        continue 'frames;
+                                    }
+                                }
+                            }
+                            Value::Function(_) => {
+                                // The return value replaces the function,
+                                // so the frame can take it over.
+                                let Value::Function(callee) =
+                                    std::mem::replace(&mut self.stack[at], Value::None)
+                                else {
+                                    unreachable!()
+                                };
+                                save_ip!();
+                                check!(self.enter(callee, at, at + 1, argc));
+                                continue 'frames;
+                            }
+                            Value::Native(id) => {
+                                let id = *id;
+                                let result = check!(builtins::call(
+                                    id,
+                                    &mut self.ctx,
+                                    &self.stack[at + 1..at + 1 + argc]
+                                ));
+                                self.stack[at] = result;
+                                block_on!();
+                            }
+                            Value::Foreign(f) => {
+                                let f = f.clone();
+                                let args: Vec<Value> =
+                                    self.stack[at + 1..at + 1 + argc].to_vec();
+                                let result = check!(f.call(&mut self.ctx, &args, &[]));
+                                self.stack[at] = result;
+                            }
+                            Value::Type(t) => {
+                                let name = self.type_name(*t);
+                                throw!(type_error(format!(
+                                    "`{name}` is an enum; create a value with one of its variants, as in `{name}.Variant(...)`"
+                                )));
+                            }
+                            other => {
+                                throw!(type_error(format!("{} is not callable", other.type_name())))
+                            }
+                        }
+                                    }};
             }
             macro_rules! jump {
                 ($offset:expr) => {
@@ -1869,6 +2015,7 @@ impl Vm {
                         reg!(dst) = Value::Function(Rc::new(Closure {
                             proto: target,
                             captures,
+                            bound: None,
                         }));
                     }
 
@@ -2156,66 +2303,21 @@ impl Vm {
 
                     // ---- calls ----
                     Op::Call { func, argc } => {
+                        call_at!(base + func as usize, argc as usize);
+                    }
+                    // `f(a, xs...)`: the arguments arrive as one list.
+                    Op::CallSpread { func } => {
                         let at = base + func as usize;
-                        match &self.stack[at] {
-                            Value::Function(c) if c.proto.native.get().is_some() => {
-                                let native = c.proto.native.get().cloned().expect("checked");
-                                match self.call_native(&native, at + 1, argc as usize) {
-                                    Some(result) => {
-                                        let v = check!(result);
-                                        self.stack[at] = v;
-                                    }
-                                    None => {
-                                        let Value::Function(callee) =
-                                            std::mem::replace(&mut self.stack[at], Value::None)
-                                        else {
-                                            unreachable!()
-                                        };
-                                        save_ip!();
-                                        check!(self.enter(callee, at, at + 1, argc as usize));
-                                        continue 'frames;
-                                    }
-                                }
-                            }
-                            Value::Function(_) => {
-                                // The return value replaces the function,
-                                // so the frame can take it over.
-                                let Value::Function(callee) =
-                                    std::mem::replace(&mut self.stack[at], Value::None)
-                                else {
-                                    unreachable!()
-                                };
-                                save_ip!();
-                                check!(self.enter(callee, at, at + 1, argc as usize));
-                                continue 'frames;
-                            }
-                            Value::Native(id) => {
-                                let id = *id;
-                                let result = check!(builtins::call(
-                                    id,
-                                    &mut self.ctx,
-                                    &self.stack[at + 1..at + 1 + argc as usize]
-                                ));
-                                self.stack[at] = result;
-                                block_on!();
-                            }
-                            Value::Foreign(f) => {
-                                let f = f.clone();
-                                let args: Vec<Value> =
-                                    self.stack[at + 1..at + 1 + argc as usize].to_vec();
-                                let result = check!(f.call(&mut self.ctx, &args, &[]));
-                                self.stack[at] = result;
-                            }
-                            Value::Type(t) => {
-                                let name = self.type_name(*t);
-                                throw!(type_error(format!(
-                                    "`{name}` is an enum; create a value with one of its variants, as in `{name}.Variant(...)`"
-                                )));
-                            }
-                            other => {
-                                throw!(type_error(format!("{} is not callable", other.type_name())))
-                            }
+                        let args = check!(ops::collect(&self.stack[at + 1]));
+                        let needed = at + 1 + args.len() + 1;
+                        if self.stack.len() < needed {
+                            self.stack.resize(needed, Value::None);
                         }
+                        let n = args.len();
+                        for (i, a) in args.into_iter().enumerate() {
+                            self.stack[at + 1 + i] = a;
+                        }
+                        call_at!(at, n);
                     }
                     Op::CallKw { func, argc } => {
                         let at = base + func as usize;
@@ -2559,13 +2661,13 @@ impl Vm {
                         let result: VmResult<Value> = match &reg!(obj) {
                             Value::Struct(inst) => match self.field_slot(inst.ty, symbol) {
                                 Some(i) => Ok(inst.fields[i].clone()),
-                                None => Err(self.no_field(inst.ty, symbol)),
+                                None => self.bound_method(&reg!(obj), inst.ty, symbol),
                             },
                             Value::Object(o) => {
-                                let o = o.borrow();
-                                match self.field_slot(o.ty, symbol) {
-                                    Some(i) => Ok(o.fields[i].clone()),
-                                    None => Err(self.no_field(o.ty, symbol)),
+                                let ty = o.borrow().ty;
+                                match self.field_slot(ty, symbol) {
+                                    Some(i) => Ok(o.borrow().fields[i].clone()),
+                                    None => self.bound_method(&reg!(obj), ty, symbol),
                                 }
                             }
                             Value::Type(t) => self.type_member(*t, symbol),

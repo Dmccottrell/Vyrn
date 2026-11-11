@@ -279,6 +279,11 @@ pub enum Op {
     },
     /// Like `Call`, with keyword arguments: the last arguments are matched
     /// to parameters by the names in the tuple in the register after them.
+    /// Calls `func` with the items of the list in `func + 1` as its
+    /// arguments: `f(xs...)`.
+    CallSpread {
+        func: u8,
+    },
     CallKw {
         func: u8,
         argc: u8,

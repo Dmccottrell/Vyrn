@@ -132,6 +132,32 @@ const NAMES: &[(&str, u32)] = &[
     ("gold", 0xffc107),
     ("sky", 0x81d4fa),
     ("darkgreen", 0x1b5e20),
+    ("skyblue", 0x87ceeb),
+    ("lightblue", 0xadd8e6),
+    ("darkblue", 0x0d47a1),
+    ("darkred", 0x8b0000),
+    ("lightgreen", 0x90ee90),
+    ("olive", 0x808000),
+    ("maroon", 0x800000),
+    ("violet", 0xee82ee),
+    ("indigo", 0x4b0082),
+    ("silver", 0xc0c0c0),
+    ("beige", 0xf5f5dc),
+    ("coral", 0xff7f50),
+    ("salmon", 0xfa8072),
+    ("tan", 0xd2b48c),
+    ("turquoise", 0x40e0d0),
+    ("crimson", 0xdc143c),
+    ("chocolate", 0xd2691e),
+    ("khaki", 0xf0e68c),
+    ("lavender", 0xe6e6fa),
+    ("mint", 0x98ff98),
+    ("peach", 0xffcba4),
+    ("ivory", 0xfffff0),
+    ("aqua", 0x00ffff),
+    ("forestgreen", 0x228b22),
+    ("tomato", 0xff6347),
+    ("orchid", 0xda70d6),
 ];
 
 fn parse_color(v: &Value) -> VmResult<Color> {
@@ -142,7 +168,13 @@ fn parse_color(v: &Value) -> VmResult<Color> {
     };
     match v {
         Value::Str(s) => {
-            let s = s.trim().to_lowercase();
+            // "Sky Blue", "sky_blue" and "skyblue" are the same colour.
+            let s: String = s
+                .trim()
+                .to_lowercase()
+                .chars()
+                .filter(|c| !matches!(c, ' ' | '_' | '-'))
+                .collect();
             if let Some(hex) = s.strip_prefix('#') {
                 let full: String = match hex.len() {
                     3 => hex.chars().flat_map(|c| [c, c]).collect(),
@@ -1589,7 +1621,7 @@ impl Foreign for Turtle {
         Ok(Value::Float(match name {
             "x" => s.x,
             "y" => s.y,
-            "heading" => s.heading,
+            "heading" => s.heading.rem_euclid(360.0),
             _ => return Err(err("FieldError", format!("a Turtle has no field `{name}`"))),
         }))
     }

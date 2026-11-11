@@ -275,6 +275,8 @@ pub struct Param {
     pub declared_ty: Option<TypeExpr>,
     pub default: Option<Expr>,
     pub ty: TypeSlot,
+    /// `args...`: takes every remaining argument, as a list.
+    pub variadic: bool,
 }
 
 /// `-> T`, `fails E`, or `-> T fails E`.
@@ -1092,6 +1094,8 @@ pub struct Arg {
     /// The caller wrote `mut`, acknowledging that the callee may modify it.
     pub is_mut: bool,
     pub value: Expr,
+    /// `xs...`: the items of a list become separate arguments.
+    pub spread: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

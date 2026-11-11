@@ -224,6 +224,9 @@ struct Compiler {
     /// Globals filled by a builtin call before anything else runs: Python
     /// modules and C functions. Global slot, builtin, and its arguments.
     foreign_inits: Vec<(u16, u16, Vec<Value>)>,
+    /// Functions with decorators: the global to wrap, and the decorators
+    /// (outermost first).
+    decorated: Vec<(u16, Vec<Decorator>)>,
     /// Constants with a literal number value, which kernels may read.
     numeric_consts: HashMap<String, f32>,
     symbols: Interner,
@@ -349,6 +352,7 @@ impl Compiler {
             modules: HashMap::new(),
             imports: HashMap::new(),
             foreign_inits: Vec::new(),
+            decorated: Vec::new(),
             numeric_consts: HashMap::new(),
             symbols: Interner::default(),
             routes: Vec::new(),
@@ -446,6 +450,9 @@ impl Compiler {
                 }
             }
         }
+        for (slot, decorators) in std::mem::take(&mut self.decorated) {
+            self.apply_decorators(slot, &decorators);
+        }
         let proto = self.end_fn();
         self.set_proto(init, proto);
 
@@ -475,6 +482,7 @@ impl Compiler {
                         num_regs: 1,
                         captures: Vec::new(),
                         is_async: false,
+                        variadic: false,
                         kernel: None,
                     })
                 })
@@ -489,6 +497,127 @@ impl Compiler {
             main: self.main,
             routes: self.routes,
         })
+    }
+
+    /// `f(a, xs..., b)`: the arguments are gathered into one list, then
+    /// passed one by one.
+    fn spread_call(&mut self, callee: &Expr, args: &[Arg], dst: u8) -> CResult<()> {
+        if let Some(a) = args.iter().find(|a| a.name.is_some()) {
+            return Err(self.error(
+                "named arguments cannot be mixed with `...` in one call",
+                a.span,
+            ));
+        }
+        let span = callee.span;
+        let mut all: Option<Expr> = None;
+        let mut plain: Vec<Expr> = Vec::new();
+        let join = |acc: Option<Expr>, part: Expr| match acc {
+            None => part,
+            Some(a) => Expr::new(
+                NodeId(0),
+                ExprKind::Binary {
+                    op: BinaryOp::Add,
+                    lhs: Box::new(a),
+                    rhs: Box::new(part),
+                },
+                span,
+            ),
+        };
+        for a in args {
+            if a.spread {
+                if !plain.is_empty() {
+                    let part =
+                        Expr::new(NodeId(0), ExprKind::List(std::mem::take(&mut plain)), span);
+                    all = Some(join(all, part));
+                }
+                let as_list = Expr::new(
+                    NodeId(0),
+                    ExprKind::Call {
+                        callee: Box::new(Expr::new(
+                            NodeId(0),
+                            ExprKind::Name(Ident {
+                                name: "list".into(),
+                                span,
+                            }),
+                            span,
+                        )),
+                        args: vec![Arg {
+                            span: a.span,
+                            name: None,
+                            is_mut: false,
+                            value: a.value.clone(),
+                            spread: false,
+                        }],
+                    },
+                    a.span,
+                );
+                all = Some(join(all, as_list));
+            } else {
+                plain.push(a.value.clone());
+            }
+        }
+        if !plain.is_empty() {
+            let part = Expr::new(NodeId(0), ExprKind::List(plain), span);
+            all = Some(join(all, part));
+        }
+        let all = all.unwrap_or_else(|| Expr::new(NodeId(0), ExprKind::List(Vec::new()), span));
+        let mark = self.f().next_reg;
+        let regs = self.alloc_n(2)?;
+        self.expr_to(callee, regs[0])?;
+        self.expr_to(&all, regs[1])?;
+        self.emit(Op::CallSpread { func: regs[0] });
+        if regs[0] != dst {
+            self.emit(Op::Move { dst, src: regs[0] });
+        }
+        self.release(mark);
+        Ok(())
+    }
+
+    /// `@d create f(...)`: in module setup, `f = d(f)`; `@d(args)` gives
+    /// `f = d(args)(f)`. The decorator nearest the function applies first.
+    fn apply_decorators(&mut self, slot: u16, decorators: &[Decorator]) {
+        let Ok(r) = self.alloc() else { return };
+        self.emit(Op::GetGlobal { dst: r, idx: slot });
+        for d in decorators.iter().rev() {
+            self.set_pos(d.span);
+            let hidden = format!("<decorated {slot}>");
+            self.bind_name(&hidden, r);
+            let span = d.span;
+            let mut callee = path_expr(&d.name);
+            if !d.args.is_empty() {
+                callee = Expr::new(
+                    NodeId(0),
+                    ExprKind::Call {
+                        callee: Box::new(callee),
+                        args: d.args.clone(),
+                    },
+                    span,
+                );
+            }
+            let call = Expr::new(
+                NodeId(0),
+                ExprKind::Call {
+                    callee: Box::new(callee),
+                    args: vec![Arg {
+                        span,
+                        name: None,
+                        is_mut: false,
+                        spread: false,
+                        value: Expr::new(
+                            NodeId(0),
+                            ExprKind::Name(Ident { name: hidden, span }),
+                            span,
+                        ),
+                    }],
+                },
+                span,
+            );
+            if self.expr_to(&call, r).is_err() {
+                break;
+            }
+        }
+        self.emit(Op::SetGlobal { src: r, idx: slot });
+        self.release(0);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -549,8 +678,24 @@ impl Compiler {
                                 .collect::<Vec<_>>(),
                         ),
                     };
-                    self.global_index
-                        .insert(f.name.name.clone(), GlobalKind::Function { slot, sig });
+                    let decorators: Vec<Decorator> = item
+                        .decorators
+                        .iter()
+                        .filter(|d| !is_builtin_decorator(&d.name))
+                        .cloned()
+                        .collect();
+                    let variadic = f.params.last().is_some_and(|p| p.variadic);
+                    if decorators.is_empty() && !variadic {
+                        self.global_index
+                            .insert(f.name.name.clone(), GlobalKind::Function { slot, sig });
+                    } else {
+                        // Calls go through the global, which holds whatever
+                        // the decorators gave back.
+                        let _ = sig;
+                        self.global_index
+                            .insert(f.name.name.clone(), GlobalKind::Const { slot });
+                        self.decorated.push((slot, decorators));
+                    }
                     plans.push(Plan::Function {
                         slot: proto,
                         decl: f,
@@ -858,7 +1003,23 @@ impl Compiler {
         if let FnBody::Block(block) = body {
             self.stmts(&block.stmts);
         }
-        self.end_fn()
+        let mut proto = self.end_fn();
+        self.mark_variadic(&mut proto, params);
+        proto
+    }
+
+    /// `create f(a, rest...)`: the last parameter gathers the rest.
+    fn mark_variadic(&mut self, proto: &mut Proto, params: &[Param]) {
+        if params.last().is_some_and(|p| p.variadic) {
+            proto.variadic = true;
+            proto.required = proto.required.min(params.len() - 1);
+        }
+        if let Some(p) = params.iter().rev().skip(1).find(|p| p.variadic) {
+            self.error(
+                "only the last parameter can take the rest (`name...`)",
+                p.span,
+            );
+        }
     }
 
     // ==== tables ===========================================================
@@ -1029,6 +1190,7 @@ impl Compiler {
             num_regs: f.max_reg.max(1),
             captures: f.captures.into_iter().map(|(_, c, _)| c).collect(),
             is_async: false,
+            variadic: false,
             kernel: None,
         }
     }
@@ -1711,6 +1873,7 @@ impl Compiler {
         self.stmts(&body.stmts);
         let mut proto = self.end_fn();
         proto.is_async = f.modifiers.is_async;
+        self.mark_variadic(&mut proto, &f.params);
         let index = self.add_proto(proto)?;
         if recursive {
             let closure = self.alloc()?;
@@ -3213,6 +3376,9 @@ impl Compiler {
                     self.emit(Op::GetField { dst, obj, name: n });
                 }
             }
+            ExprKind::Call { callee, args } if args.iter().any(|a| a.spread) => {
+                self.spread_call(callee, args, dst)?;
+            }
             ExprKind::Call { callee, args } => {
                 let list = args
                     .iter()
@@ -3271,6 +3437,7 @@ impl Compiler {
                 }
                 let mut proto = self.end_fn();
                 proto.is_async = *is_async;
+                self.mark_variadic(&mut proto, params);
                 let index = self.add_proto(proto)?;
                 self.emit(Op::MakeClosure { dst, proto: index });
             }
@@ -4083,4 +4250,46 @@ fn c_signature(f: &FnDecl) -> Result<String, (String, Span)> {
         },
     };
     Ok(format!("{result}({})", params.join(",")))
+}
+
+/// Decorators the toolchain itself reads (C linking, GPU kernels), which
+/// do not wrap the function.
+fn is_builtin_decorator(name: &Path) -> bool {
+    matches!(
+        name.segments
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .as_slice(),
+        ["link"
+            | "compute"
+            | "workgroup_size"
+            | "binding"
+            | "group"
+            | "inline"
+            | "vertex"
+            | "fragment"]
+    )
+}
+
+/// `a.b.c` as an expression.
+fn path_expr(path: &Path) -> Expr {
+    let mut segments = path.segments.iter();
+    let first = segments.next().cloned().unwrap_or(Ident {
+        name: String::new(),
+        span: path.span,
+    });
+    let mut e = Expr::new(NodeId(0), ExprKind::Name(first), path.span);
+    for s in segments {
+        e = Expr::new(
+            NodeId(0),
+            ExprKind::Field {
+                base: Box::new(e),
+                name: s.clone(),
+                optional: false,
+            },
+            path.span,
+        );
+    }
+    e
 }

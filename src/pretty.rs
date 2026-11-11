@@ -725,9 +725,10 @@ fn params(params: &[Param]) -> String {
     join(
         params.iter().map(|p| {
             format!(
-                "{}{}{}{}",
+                "{}{}{}{}{}",
                 pass_mode(p.pass),
                 p.name.name,
+                if p.variadic { "..." } else { "" },
                 annotation(&p.declared_ty),
                 default(&p.default)
             )
@@ -774,6 +775,7 @@ fn arg(arg: &Arg) -> String {
     match (&arg.name, arg.is_mut) {
         (Some(name), _) => format!("{}={}", name.name, expr(&arg.value)),
         (None, true) => format!("(mut {})", expr(&arg.value)),
+        (None, false) if arg.spread => format!("{}...", expr(&arg.value)),
         (None, false) => expr(&arg.value),
     }
 }

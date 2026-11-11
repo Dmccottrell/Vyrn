@@ -924,6 +924,12 @@ impl Parser {
         } else {
             None
         };
+        let variadic = self.eat_p(P::Ellipsis);
+        let declared_ty = if variadic && declared_ty.is_none() && self.eat_p(P::Colon) {
+            Some(self.type_expr()?)
+        } else {
+            declared_ty
+        };
         let default = if self.eat_p(P::Eq) {
             Some(self.expression()?)
         } else {
@@ -937,6 +943,7 @@ impl Parser {
             declared_ty,
             default,
             ty: TypeSlot::Pending,
+            variadic,
         })
     }
 
@@ -2413,15 +2420,18 @@ impl Parser {
                 name: Some(name),
                 is_mut: false,
                 value,
+                spread: false,
             });
         }
         let is_mut = self.eat_kw(K::Mut);
         let value = self.expression()?;
+        let spread = self.eat_p(P::Ellipsis);
         Ok(Arg {
             span: self.span_from(start),
             name: None,
             is_mut,
             value,
+            spread,
         })
     }
 
@@ -2640,6 +2650,7 @@ impl Parser {
             name: None,
             is_mut: false,
             value: list,
+            spread: false,
         }];
         Ok(self.mk(
             ExprKind::Call {
@@ -2755,6 +2766,7 @@ impl Parser {
             name: None,
             is_mut: false,
             value,
+            spread: false,
         };
         let args = vec![arg(expr), arg(spec)];
         Some(Expr::new(

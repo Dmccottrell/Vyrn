@@ -127,7 +127,7 @@ fn turtles_draw_by_moving() {
          \x20   print(c.get_pixel(60, 140))\n\
          end\n",
     );
-    assert_eq!(out, "0 0 360.0\n#e53935 #e53935 #e53935 #000000\n#e53935\n");
+    assert_eq!(out, "0 0 0.0\n#e53935 #e53935 #e53935 #000000\n#e53935\n");
 }
 
 #[cfg(feature = "draw")]
