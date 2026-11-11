@@ -174,10 +174,17 @@ impl Response {
         }
     }
 
+    /// Text, sent as a web page when it is one (it starts with `<`, as a
+    /// rendered template does), as Flask sends strings.
     pub fn text(status: u16, body: String) -> Response {
+        let page = body.trim_start().starts_with('<');
         Response {
             status,
-            content_type: "text/plain; charset=utf-8",
+            content_type: if page {
+                "text/html; charset=utf-8"
+            } else {
+                "text/plain; charset=utf-8"
+            },
             body,
         }
     }

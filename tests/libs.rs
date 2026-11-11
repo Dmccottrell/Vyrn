@@ -171,3 +171,66 @@ fn windows_without_a_screen_explain() {
     assert!(e.starts_with("DrawError: cannot open a window"), "{e}");
     assert!(e.contains("draw.canvas"), "{e}");
 }
+
+#[cfg(feature = "html")]
+#[test]
+fn parsing_html() {
+    let out = run(
+        "use std.html\n\
+         main:\n\
+         \x20   let page = html.parse(\"\"\"\n\
+         <html><head><title> Shop  </title></head><body>\n\
+         <div id=\"main\"><h1 class=\"big title\">Books &amp; more</h1>\n\
+         <ul><li class=\"item\" data-price=\"12\">Rust <b>book</b></li><li class=\"item sale\" data-price=\"8\">Vyrn guide</li></ul>\n\
+         <a href=\"/a\">first</a><a>no link</a><a href=\"/b\">second</a>\n\
+         <p>unclosed <p>tags</div></body></html>\"\"\")\n\
+         \x20   print(page.title)\n\
+         \x20   let h = page.select_one(\"h1\")\n\
+         \x20   print(h.text, h.tag, h.classes, h.has_class(\"big\"), h.parent.id)\n\
+         \x20   each li in page.select(\"li.item\"): print(li.text, int(li.attr(\"data-price\")), li.attr(\"nope\"))\n\
+         \x20   print([a.attr(\"href\") each a in page.select(\"a[href]\")], len(page.select(\"p\")))\n\
+         \x20   print(page.select_one(\"li.sale\").text, page.select_one(\"table\"), page.select_one(\"#main\").select(\"b\")[0].html)\n\
+         \x20   print(html.escape(\"<a href='x'>&</a>\"))\n\
+         end\n",
+    );
+    assert_eq!(
+        out,
+        "Shop\nBooks & more h1 [\"big\", \"title\"] true main\nRust book 12 none\nVyrn guide 8 none\n[\"/a\", \"/b\"] 2\nVyrn guide none book\n&lt;a href=&#39;x&#39;&gt;&amp;&lt;/a&gt;\n"
+    );
+    assert!(
+        error("use std.html\nmain: html.parse(\"<p>\").select(\"p[[\")\n")
+            .contains("is not a CSS selector")
+    );
+}
+
+#[test]
+fn templates() {
+    let out = run(
+        "use std.template\n\
+         struct Item:\n    name: str\n    price: float\nend\n\
+         main:\n\
+         \x20   let items = [Item(\"pen\", 1.5), Item(\"<script>\", 2.0)]\n\
+         \x20   let page = template.render(r\"<h1>{{title}}</h1>{{! a comment }}{{#each items}}<li>{{@index}}. {{name}}: {{price}}</li>{{/each}}{{#if empty}}none{{else}}{{count}} items{{/if}}{{#unless empty}}!{{/unless}} {{{raw}}} {{user.name}} {{missing}}.\", {\"title\": \"Shop & Co\", \"items\": items, \"empty\": false, \"count\": len(items), \"raw\": \"<b>hi</b>\", \"user\": {\"name\": \"Ada\"}})\n\
+         \x20   print(page)\n\
+         \x20   print(template.render(r\"{{#each xs}}[{{this}}]{{/each}}\", {\"xs\": [1, 2, 3]}))\n\
+         end\n",
+    );
+    assert_eq!(
+        out,
+        "<h1>Shop &amp; Co</h1><li>0. pen: 1.5</li><li>1. &lt;script&gt;: 2.0</li>2 items! <b>hi</b> Ada .\n[1][2][3]\n"
+    );
+    assert!(
+        error("use std.template\nmain: template.render(r\"{{#each xs}}oops\", {})\n")
+            .contains("never closed")
+    );
+    assert!(
+        error("use std.template\nmain: template.render(r\"{{/if}}\", {})\n")
+            .contains("does not close")
+    );
+    // Template syntax in an ordinary string is explained.
+    let e = match run_source("main: print(\"{{name}}\")\n") {
+        Err(RunError::Compile(errors)) => errors[0].hint.clone().unwrap_or_default(),
+        _ => String::new(),
+    };
+    assert!(e.contains("raw string"), "{e}");
+}

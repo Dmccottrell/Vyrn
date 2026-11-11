@@ -24,6 +24,8 @@ pub mod lib_draw;
 #[cfg(not(feature = "draw"))]
 #[path = "lib_draw_off.rs"]
 pub mod lib_draw;
+pub mod lib_html;
+pub mod lib_template;
 pub mod machine;
 pub mod native_abi;
 pub mod op;

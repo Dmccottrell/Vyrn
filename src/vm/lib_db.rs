@@ -42,9 +42,9 @@ fn text_arg<'a>(args: &'a [Value], i: usize, what: &str) -> VmResult<&'a str> {
 #[cfg(feature = "db")]
 mod imp {
     use super::*;
+    use rusqlite::types::{Value as Sql, ValueRef};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use rusqlite::types::{Value as Sql, ValueRef};
 
     pub struct Database {
         pub path: String,

@@ -260,6 +260,22 @@ pub static NATIVES: &[Native] = &[
         1,
         super::lib_draw::text_width,
     ),
+    // ---- std.html ----
+    fixed("html.parse", &["text"], 1, super::lib_html::parse),
+    fixed("html.escape", &["text"], 1, super::lib_html::escape),
+    // ---- std.template ----
+    fixed(
+        "template.render",
+        &["text", "data"],
+        1,
+        super::lib_template::render_fn,
+    ),
+    fixed(
+        "template.render_file",
+        &["path", "data"],
+        1,
+        super::lib_template::render_file,
+    ),
     // ---- std.db ----
     fixed("db.open", &["path"], 1, super::lib_db::db_open),
     // ---- std.task ----
@@ -295,6 +311,8 @@ pub fn std_module(name: &str) -> Option<&'static str> {
         "task" => Some("task"),
         "db" => Some("db"),
         "draw" => Some("draw"),
+        "html" => Some("html"),
+        "template" => Some("template"),
         _ => None,
     }
 }

@@ -2713,6 +2713,15 @@ impl Parser {
     /// Parses the expression inside `{...}` in a string. Positions stay
     /// relative to the whole file, and node ids continue from this parser.
     fn interpolation(&mut self, source: &str, span: Span) -> Option<Expr> {
+        // `"{{name}}"`: template syntax in an ordinary string.
+        if source.trim_start().starts_with('{') {
+            self.error(
+                "`{{` inside a string starts an interpolation",
+                span,
+                Some("for template text such as `{{name}}`, use a raw string `r\"...\"` or a template file; for a literal brace write `\\{`"),
+            );
+            return None;
+        }
         // `{price:.2f}`: a format spec after a `:` outside brackets.
         let (source, spec) = split_format_spec(source);
         let expr = self.interpolation_expr(source, span)?;
