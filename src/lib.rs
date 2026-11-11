@@ -21,6 +21,7 @@ pub mod parser;
 pub mod prelude;
 pub mod pretty;
 pub mod project;
+pub mod repl;
 pub mod span;
 pub mod token;
 pub mod vm;

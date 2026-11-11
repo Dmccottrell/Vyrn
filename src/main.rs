@@ -29,6 +29,8 @@ use vyrn::{parse_recovering, pretty, Diagnostic, Lexer};
 const USAGE: &str = "\
 usage: vyrn <command> [arguments]
 
+  (no command)           start the interactive prompt (also: vyrn repl)
+  file.vyrn [args...]    run a file (same as vyrn run file.vyrn)
   new <name>             create a project
   run [file] [args...]   run a program (the project's main file by default)
   check [file]           find errors without running
@@ -53,10 +55,15 @@ fn main() -> ExitCode {
         return run_bundle(bundle, &args);
     }
     let Some((command, rest)) = args.split_first() else {
-        eprintln!("{USAGE}");
-        return ExitCode::from(2);
+        return repl();
     };
     match command.as_str() {
+        "repl" => repl(),
+        "--version" | "-V" | "version" => {
+            println!("vyrn {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
+        file if file.ends_with(".vyrn") => run(&args),
         "new" => new(rest),
         "run" => run(rest),
         "check" => check(rest),
@@ -737,4 +744,127 @@ fn bytecode(file: &str) -> ExitCode {
         }
         None => ExitCode::FAILURE,
     }
+}
+
+// ==== the interactive prompt ===============================================
+
+const REPL_HELP: &str = "\
+Type Vyrn code and press Enter. A line ending in `:` opens a block; finish
+it with `end`. Declarations (create, struct, object, enum, use, const) and
+variables last until you leave.
+
+  :vars    show the variables
+  :reset   forget everything
+  :help    show this
+  :quit    leave (or Ctrl-D)";
+
+/// The indentation for the next line of an open block.
+fn continuation_indent(buffer: &str) -> String {
+    let mut depth: i32 = 0;
+    for line in buffer.lines() {
+        let t = line.trim();
+        let first = t.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("");
+        let continues = matches!(first, "else" | "catch" | "always" | "is");
+        if t == "end" {
+            depth -= 1;
+        } else if t.ends_with(':') && !continues {
+            depth += 1;
+        } else if continues && !t.ends_with(':') {
+            // A one-line `else: x` closes nothing and opens nothing.
+        }
+    }
+    "    ".repeat(depth.max(0) as usize)
+}
+
+fn repl() -> ExitCode {
+    use rustyline::error::ReadlineError;
+    use vyrn::repl::{Outcome, Session};
+
+    println!(
+        "Vyrn {} - type code to run it, :help for help, :quit to leave",
+        env!("CARGO_PKG_VERSION")
+    );
+    let mut editor = match rustyline::DefaultEditor::new() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: cannot start the prompt: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let history = project::resolve::vyrn_home().join("history");
+    let _ = editor.load_history(&history);
+    let mut session = Session::default();
+    let mut buffer = String::new();
+    loop {
+        let (prompt, indent) = if buffer.is_empty() {
+            (">>> ", String::new())
+        } else {
+            ("... ", continuation_indent(&buffer))
+        };
+        let line = match editor.readline_with_initial(prompt, (&indent, "")) {
+            Ok(line) => line,
+            Err(ReadlineError::Interrupted) => {
+                if !buffer.is_empty() {
+                    buffer.clear();
+                    println!("(entry cleared)");
+                } else {
+                    println!("(type :quit or press Ctrl-D to leave)");
+                }
+                continue;
+            }
+            Err(ReadlineError::Eof) => break,
+            Err(e) => {
+                eprintln!("error: {e}");
+                break;
+            }
+        };
+        if buffer.is_empty() {
+            match line.trim() {
+                "" => continue,
+                ":quit" | ":q" | "quit" | "exit" | ":exit" => break,
+                ":help" | ":h" | "help" => {
+                    println!("{REPL_HELP}");
+                    continue;
+                }
+                ":reset" => {
+                    session = Session::default();
+                    println!("(everything forgotten)");
+                    continue;
+                }
+                ":vars" => {
+                    let vars = session.variables();
+                    if vars.is_empty() {
+                        println!("(no variables yet)");
+                    }
+                    for (name, value) in vars {
+                        println!("{name} = {value}");
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        // An empty line inside a block is part of it; two in a row give up
+        // on finishing the block and run what is there.
+        let give_up = !buffer.is_empty() && line.trim().is_empty() && buffer.ends_with("\n\n");
+        if !buffer.is_empty() {
+            buffer.push('\n');
+        }
+        buffer.push_str(&line);
+        let outcome = session.eval(&buffer);
+        match outcome {
+            Outcome::NeedsMore if !give_up => continue,
+            Outcome::NeedsMore => {
+                eprintln!("error: the block is not finished; close it with `end`")
+            }
+            Outcome::Done(Some(value)) => println!("{value}"),
+            Outcome::Done(None) => {}
+            Outcome::Failed(e) => eprintln!("{e}"),
+        }
+        let _ = editor.add_history_entry(buffer.trim_end());
+        buffer.clear();
+    }
+    let _ = std::fs::create_dir_all(project::resolve::vyrn_home());
+    let _ = editor.save_history(&history);
+    ExitCode::SUCCESS
 }
