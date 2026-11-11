@@ -2396,8 +2396,16 @@ impl Parser {
 
     fn argument(&mut self) -> PResult<Arg> {
         let start = self.start();
-        if matches!(self.kind(), Tk::Ident(_)) && self.kind_at(1).is_punct(P::Eq) {
-            let name = self.expect_ident("an argument name")?;
+        // `name = value`. Any word can name an argument there, keywords
+        // included (`mail.send(to = ...)`), since `=` follows it.
+        let word = match self.kind() {
+            Tk::Ident(n) => Some(n.clone()),
+            Tk::Keyword(k) => Some(k.as_str().to_string()),
+            _ => None,
+        };
+        if let (Some(word), true) = (word, self.kind_at(1).is_punct(P::Eq)) {
+            let span = self.bump().span;
+            let name = Ident { name: word, span };
             self.bump();
             let value = self.expression()?;
             return Ok(Arg {

@@ -276,6 +276,43 @@ pub static NATIVES: &[Native] = &[
         1,
         super::lib_template::render_file,
     ),
+    // ---- vyrn.mail ----
+    fixed(
+        "mail.send",
+        super::lib_mail::PARAMS,
+        1,
+        super::lib_mail::send,
+    ),
+    // ---- vyrn.chart ----
+    fixed(
+        "chart.line",
+        super::lib_chart::XY,
+        2,
+        super::lib_chart::line,
+    ),
+    fixed(
+        "chart.scatter",
+        super::lib_chart::XY,
+        2,
+        super::lib_chart::scatter,
+    ),
+    fixed("chart.bar", super::lib_chart::BAR, 2, super::lib_chart::bar),
+    fixed("chart.pie", super::lib_chart::BAR, 2, super::lib_chart::pie),
+    fixed(
+        "chart.hist",
+        super::lib_chart::HIST,
+        1,
+        super::lib_chart::hist,
+    ),
+    // ---- vyrn.table ----
+    fixed("table.read_csv", &["path"], 1, super::lib_table::read_csv),
+    fixed("table.from_csv", &["text"], 1, super::lib_table::from_csv),
+    fixed(
+        "table.from_rows",
+        &["rows", "columns"],
+        1,
+        super::lib_table::from_rows,
+    ),
     // ---- vyrn.db ----
     fixed("db.open", &["path"], 1, super::lib_db::db_open),
     // ---- vyrn.task ----
@@ -313,6 +350,9 @@ pub fn std_module(name: &str) -> Option<&'static str> {
         "draw" => Some("draw"),
         "html" => Some("html"),
         "template" => Some("template"),
+        "table" => Some("table"),
+        "chart" => Some("chart"),
+        "mail" => Some("mail"),
         _ => None,
     }
 }

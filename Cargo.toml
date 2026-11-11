@@ -18,7 +18,7 @@ path = "src/main.rs"
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
 sha2 = "0.10"
-# `use std.re`: regular expressions.
+# `use vyrn.re`: regular expressions.
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
 ureq = { version = "3", optional = true }
 wgpu = { version = "30", optional = true, default-features = false, features = ["vulkan", "metal", "dx12", "wgsl"] }
@@ -30,13 +30,15 @@ libloading = { version = "0.9", optional = true }
 libffi = { version = "5", optional = true }
 
 [features]
-default = ["net", "native", "db", "draw", "html"]
-# `use std.html`: parsing web pages.
+default = ["net", "native", "db", "draw", "html", "mail"]
+# `use vyrn.mail`: sending email.
+mail = ["dep:lettre"]
+# `use vyrn.html`: parsing web pages.
 html = ["dep:scraper", "dep:ego-tree"]
-# `use std.draw`: 2D and 3D drawing, images, and windows with keyboard and
+# `use vyrn.draw`: 2D and 3D drawing, images, and windows with keyboard and
 # mouse input (not on WebAssembly).
 draw = ["dep:minifb", "dep:png", "dep:font8x8"]
-# `use std.db`: SQLite databases (not on WebAssembly).
+# `use vyrn.db`: SQLite databases (not on WebAssembly).
 db = ["dep:rusqlite"]
 # Compiles typed functions to machine code with Cranelift (not on WebAssembly).
 native = ["dep:cranelift-codegen", "dep:cranelift-frontend", "dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-native"]
@@ -52,14 +54,16 @@ ffi = ["dep:libloading", "dep:libffi"]
 # The interactive prompt: line editing and history. Not needed on the web.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rustyline = { version = "15", default-features = false, features = ["with-file-history"] }
-# `use std.draw`: windows (minifb), PNG images, and a bitmap font.
+# `use vyrn.draw`: windows (minifb), PNG images, and a bitmap font.
 minifb = { version = "0.29", optional = true, default-features = false, features = ["x11"] }
 png = { version = "0.18", optional = true }
 font8x8 = { version = "0.3", optional = true }
-# `use std.html`: HTML parsing with CSS selectors.
+# `use vyrn.html`: HTML parsing with CSS selectors.
 scraper = { version = "0.29", optional = true, default-features = false }
 ego-tree = { version = "0.11", optional = true }
-# `use std.db`: SQLite, compiled in.
+# `use vyrn.mail`: sending email over SMTP, with TLS by rustls.
+lettre = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "builder", "hostname", "rustls-tls", "ring"] }
+# `use vyrn.db`: SQLite, compiled in.
 rusqlite = { version = "0.42", optional = true, features = ["bundled"] }
 # The native tier: typed functions compiled to machine code at load time.
 cranelift-codegen = { version = "0.137.1", optional = true }

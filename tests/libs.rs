@@ -234,3 +234,132 @@ fn templates() {
     };
     assert!(e.contains("raw string"), "{e}");
 }
+
+#[test]
+fn tables_of_data() {
+    let out = run(
+        "use vyrn.table\n\
+         main:\n\
+         \x20   let t = table.from_csv(\"region,amount,rep\\nnorth,120,Ada\\nsouth,80,Alan\\nnorth,150,\\neast,60.5,Grace\\n\")\n\
+         \x20   print(t.shape, t.columns, len(t))\n\
+         \x20   print(t.sum(\"amount\"), t.mean(\"amount\"), t.median(\"amount\"), t.min(\"amount\"), t.max(\"region\"), t.count(\"rep\"))\n\
+         \x20   print(t.where(\"amount\", \">\", 100).column(\"rep\"), t.where(\"rep\", \"contains\", \"A\").column(\"region\"))\n\
+         \x20   print(t.sort(\"amount\", descending = true).column(\"amount\"), t.sort(\"rep\").column(\"rep\"))\n\
+         \x20   print(t.group_by(\"region\", \"amount\", \"sum\").rows)\n\
+         \x20   print(t.group_by(\"region\").column(\"count\"), t.unique(\"region\"), t.row(-1))\n\
+         \x20   let u = t.select([\"rep\", \"amount\"]).add_column(\"double\", [x * 2 each x in t.column(\"amount\")])\n\
+         \x20   print(u.head(2))\n\
+         \x20   print(u.to_csv().lines())\n\
+         \x20   let m = table.from_rows([{\"a\": 1, \"b\": \"x\"}, {\"a\": 2, \"c\": true}])\n\
+         \x20   print(m.columns, m.rows)\n\
+         \x20   each row in table.from_rows([[1, 2], [3, 4]], [\"p\", \"q\"]): print(row[\"p\"] + row[\"q\"])\n\
+         end\n",
+    );
+    assert_eq!(
+        out,
+        "(4, 3) [\"region\", \"amount\", \"rep\"] 4\n\
+         410.5 102.625 100.0 60.5 south 3\n\
+         [\"Ada\", none] [\"north\", \"south\"]\n\
+         [150, 120, 80, 60.5] [\"Ada\", \"Alan\", \"Grace\", none]\n\
+         [{\"region\": \"north\", \"amount_sum\": 270}, {\"region\": \"south\", \"amount_sum\": 80}, {\"region\": \"east\", \"amount_sum\": 60.5}]\n\
+         [2, 1, 1] [\"north\", \"south\", \"east\"] {\"region\": \"east\", \"amount\": 60.5, \"rep\": \"Grace\"}\n\
+         rep   amount  double\n\
+         ----  ------  ------\n\
+         Ada      120     240\n\
+         Alan      80     160\n\
+         [\"rep,amount,double\", \"Ada,120,240\", \"Alan,80,160\", \",150,300\", \"Grace,60.5,121.0\"]\n\
+         [\"a\", \"b\", \"c\"] [{\"a\": 1, \"b\": \"x\", \"c\": none}, {\"a\": 2, \"b\": none, \"c\": true}]\n\
+         3\n7\n"
+    );
+    let e = error("use vyrn.table\nmain: table.from_csv(\"a,b\\n1,2\\n\").sum(\"c\")\n");
+    assert!(e.contains("no column \"c\"; the columns are a, b"), "{e}");
+}
+
+#[test]
+fn charts() {
+    let svg = temp("c.svg");
+    let out = run(&format!(
+        "use vyrn.chart\nuse vyrn.fs\n\
+         main:\n\
+         \x20   chart.bar([\"a\", \"b\"], [3, 7], title = \"Votes\").save(\"{svg}\")\n\
+         \x20   let text = fs.read_text(\"{svg}\")\n\
+         \x20   print(text.startswith(\"<svg\"), \"Votes\" in text, text.count(\"<rect\"))\n\
+         \x20   let s = chart.line([1, 2, 3], {{\"x\": [1, 4, 9], \"y\": [2, 3, 4]}}).svg()\n\
+         \x20   print(s.count(\"<line\") > 4, \">x<\" in s and \">y<\" in s)\n\
+         \x20   print(chart.pie([\"p\", \"q\"], [1, 3]).svg().count(\"<polygon\"), chart.hist([1, 2, 2, 3], bins = 3).svg().count(\"<rect\"))\n\
+         end\n"
+    ));
+    assert_eq!(out, "true true 3\ntrue true\n2 4\n");
+    assert!(
+        error("use vyrn.chart\nmain: chart.line([1, 2], [1, 2, 3])\n")
+            .contains("2 x values but 3 y values")
+    );
+    #[cfg(feature = "draw")]
+    {
+        let png = temp("c.png");
+        run(&format!("use vyrn.chart\nmain: chart.scatter([1, 2, 3], [3, 1, 2], title = \"Dots\").save(\"{png}\")\n"));
+        let out = run(&format!(
+            "use vyrn.draw\nmain:\n    let img = draw.image(\"{png}\")\n    print(img.width, img.height)\nend\n"
+        ));
+        assert_eq!(out, "640 400\n");
+    }
+}
+
+#[cfg(feature = "mail")]
+#[test]
+fn sending_mail() {
+    use std::io::{BufRead, BufReader, Write};
+    // A tiny SMTP server that accepts one message and hands it back.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut out = stream;
+        let mut data = String::new();
+        let mut in_data = false;
+        writeln!(out, "220 test ready\r").unwrap();
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap() == 0 {
+                break;
+            }
+            if in_data {
+                if line == ".\r\n" {
+                    in_data = false;
+                    write!(out, "250 queued\r\n").unwrap();
+                } else {
+                    data.push_str(&line);
+                }
+                continue;
+            }
+            let upper = line.to_uppercase();
+            if upper.starts_with("EHLO") || upper.starts_with("HELO") {
+                write!(out, "250-test\r\n250 OK\r\n").unwrap();
+            } else if upper.starts_with("DATA") {
+                in_data = true;
+                write!(out, "354 go\r\n").unwrap();
+            } else if upper.starts_with("QUIT") {
+                write!(out, "221 bye\r\n").unwrap();
+                break;
+            } else {
+                data.push_str(&line);
+                write!(out, "250 OK\r\n").unwrap();
+            }
+        }
+        data
+    });
+    run(&format!(
+        "use vyrn.mail\nmain:\n    mail.send(to = [\"a@example.com\", \"b@example.com\"], subject = \"Hi there\", body = \"Hello from Vyrn\", sender = \"me@example.com\", server = \"127.0.0.1\", port = {port}, security = \"none\")\nend\n"
+    ));
+    let data = server.join().unwrap();
+    assert!(data.contains("MAIL FROM:<me@example.com>"), "{data}");
+    assert!(
+        data.contains("RCPT TO:<a@example.com>") && data.contains("RCPT TO:<b@example.com>"),
+        "{data}"
+    );
+    assert!(data.contains("Subject: Hi there"), "{data}");
+    assert!(data.contains("Hello from Vyrn"), "{data}");
+    let e = error("use vyrn.mail\nmain: mail.send(to = \"not an address\", sender = \"me@example.com\", server = \"x\")\n");
+    assert!(e.contains("is not an email address"), "{e}");
+}

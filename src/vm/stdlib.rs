@@ -2026,6 +2026,10 @@ pub fn re_split(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 
 /// Splits CSV text into rows of fields. Handles quotes, `""` inside quotes,
 /// and line breaks inside quoted fields.
+pub fn csv_rows_pub(text: &str, sep: char) -> Vec<Vec<String>> {
+    csv_rows(text, sep)
+}
+
 fn csv_rows(text: &str, sep: char) -> Vec<Vec<String>> {
     let mut rows = Vec::new();
     let mut row = Vec::new();

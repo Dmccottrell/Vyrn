@@ -1606,3 +1606,46 @@ pub fn sphere_mesh_fn(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     };
     Ok(wrap(sphere_mesh(detail)))
 }
+
+/// Draws a chart's shapes (see `lib_chart`) and saves them as a PNG.
+pub fn save_prims(
+    w: usize,
+    h: usize,
+    prims: &[super::lib_chart::Prim],
+    path: &str,
+) -> VmResult<()> {
+    use super::lib_chart::Prim;
+    let mut p = Pixels::new(w, h);
+    for prim in prims {
+        match prim {
+            Prim::Rect { x, y, w, h, color } => {
+                p.rect(*x, *y, *w, *h, Color::opaque(*color), true, 1.0)
+            }
+            Prim::Line {
+                x1,
+                y1,
+                x2,
+                y2,
+                color,
+                width,
+            } => p.line(*x1, *y1, *x2, *y2, Color::opaque(*color), *width),
+            Prim::Circle { x, y, r, color } => {
+                p.circle(*x, *y, *r, Color::opaque(*color), true, 1.0)
+            }
+            Prim::Polygon { points, color } => p.polygon(points, Color::opaque(*color)),
+            Prim::Text {
+                x,
+                y,
+                text,
+                color,
+                size,
+                centered,
+            } => {
+                let width = 8.0 * size * text.chars().count() as f64;
+                let left = if *centered { x - width / 2.0 } else { *x };
+                p.text(text, left, *y, Color::opaque(*color), *size)
+            }
+        }
+    }
+    p.save_png(path)
+}
