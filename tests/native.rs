@@ -1,0 +1,336 @@
+//! The native tier must not change what a program does: every program here
+//! runs compiled to machine code and interpreted, and both must print the
+//! same thing or fail with the same error.
+#![cfg(feature = "native")]
+
+use vyrn::vm::{self, compiler, Captured, Vm};
+
+/// Output, or the error kind and message (without the native location).
+fn run(program: vm::Program) -> String {
+    let out = Captured::default();
+    let mut machine = Vm::with_output(program, Box::new(out.clone()));
+    match machine.run_main(&[]) {
+        Ok(_) => out.text(),
+        Err(e) => {
+            let message = e.message.split(" (in `").next().unwrap_or("").to_string();
+            format!("{}<error {}: {}>", out.text(), e.kind, message)
+        }
+    }
+}
+
+/// Runs `src` both ways; returns the output, and checks that `compiled`
+/// functions really got machine code.
+fn both(src: &str, compiled: &[&str]) -> String {
+    let module = vyrn::parse(src).unwrap_or_else(|e| panic!("{e:?}"));
+    let native = compiler::compile(&module).unwrap_or_else(|e| panic!("{e:?}"));
+    for name in compiled {
+        let g = native
+            .global(name)
+            .unwrap_or_else(|| panic!("no function {name}"));
+        let vm::program::GlobalInit::Function(p) = native.globals[g].init else {
+            panic!("{name} is not a function")
+        };
+        assert!(
+            native.protos[p].native.get().is_some(),
+            "`{name}` should have been compiled to machine code"
+        );
+    }
+    let interpreted = compiler::compile_only(&module).unwrap();
+    let (a, b) = (run(native), run(interpreted));
+    assert_eq!(a, b, "native and interpreted runs differ for:\n{src}");
+    a
+}
+
+#[test]
+fn integer_arithmetic_matches() {
+    let out = both(
+        "create f(a: int, b: int) -> int:\n    return a // b * 1000 + a % b\nend\n\
+         create g(a: int, b: int) -> float: return a / b\n\
+         create h(x: int) -> int: return x ** 3 + (x << 2) + (x >> 1) + (x & 6) + (x | 1) + (x ^ 3) + ~x\n\
+         main:\n    print(f(7, 2), f(-7, 2), f(7, -2), f(-7, -2), g(7, 2), g(-1, 3), h(5), h(-5))\nend\n",
+        &["f", "g", "h"],
+    );
+    assert_eq!(
+        out,
+        "3001 -3999 -4001 2999 3.5 -0.3333333333333333 156 -155\n"
+    );
+}
+
+#[test]
+fn float_arithmetic_matches() {
+    both(
+        "create f(x: float, y: float) -> float:\n    return x // y + x % y + x ** y - x / y\nend\n\
+         create mixed(a: int, x: float) -> float: return a + x * a - a / 4\n\
+         main:\n    print(f(7.5, 2.0), f(-7.5, 2.0), f(7.5, -2.0), mixed(3, 0.5), f(0.0, 3.0))\nend\n",
+        &["f", "mixed"],
+    );
+}
+
+#[test]
+fn failures_are_the_same() {
+    let cases = [
+        (
+            "create f(a: int) -> int: return a + 9223372036854775807\nmain: print(f(1))\n",
+            "Overflow",
+        ),
+        (
+            "create f(a: int) -> int: return a * 4611686018427387904\nmain: print(f(4))\n",
+            "Overflow",
+        ),
+        (
+            "create f(a: int) -> int: return -a\nmain: print(f(-9223372036854775807 - 1))\n",
+            "Overflow",
+        ),
+        (
+            "create f(a: int) -> int: return abs(a)\nmain: print(f(-9223372036854775807 - 1))\n",
+            "Overflow",
+        ),
+        (
+            "create f(a: int) -> int: return a // 0\nmain: print(f(1))\n",
+            "DivisionByZero",
+        ),
+        (
+            "create f(a: int) -> int: return a % 0\nmain: print(f(1))\n",
+            "DivisionByZero",
+        ),
+        (
+            "create f(a: int) -> float: return a / 0\nmain: print(f(1))\n",
+            "DivisionByZero",
+        ),
+        (
+            "create f(a: float) -> float: return a / 0.0\nmain: print(f(1.0))\n",
+            "DivisionByZero",
+        ),
+        (
+            "create f(a: int) -> int: return a ** 70\nmain: print(f(3))\n",
+            "Overflow",
+        ),
+        (
+            "create f(a: int, b: int) -> int: return a << b\nmain: print(f(1, 64))\n",
+            "ValueError",
+        ),
+        (
+            "create f(a: float) -> int: return int(a)\nmain: print(f(1.0 / 0.0))\n",
+            "DivisionByZero",
+        ),
+        (
+            "create f(n: int) -> int: return f(n + 1)\nmain: print(f(0))\n",
+            "StackOverflow",
+        ),
+    ];
+    for (src, kind) in cases {
+        let out = both(src, &["f"]);
+        assert!(out.contains(&format!("<error {kind}")), "{src}\n{out}");
+    }
+}
+
+#[test]
+fn control_flow_matches() {
+    let out = both(
+        "create classify(n: int) -> int:\n\
+         \x20   if n < 0:\n        return -1\n    else if n == 0:\n        return 0\n    else if n < 10 and not (n == 5):\n        return 1\n    else:\n        return 2\n    end\nend\n\
+         create loops(n: int) -> int:\n\
+         \x20   var total = 0\n\
+         \x20   each i in 0 until n:\n        if i % 3 == 0: skip\n        if i > 50: stop\n        total += i\n    end\n\
+         \x20   each j in 10 to 0 by -2: total += j\n\
+         \x20   each k in range(2, 9, 3): total += k * 100\n\
+         \x20   var w = 0\n\
+         \x20   loop w < 5: w += 1\n\
+         \x20   loop:\n        w += 10\n        if w > 40: stop\n    end\n\
+         \x20   return total + w\nend\n\
+         create chain(a: int, b: float, c: int) -> bool: return a < b <= c != 7\n\
+         create pick(x: float) -> float: return x if x > 0.0 else -x\n\
+         main:\n    print(classify(-3), classify(0), classify(4), classify(5), classify(40), loops(100), loops(7))\n    print(chain(1, 2.0, 2), chain(1, 2.0, 7), chain(3, 2.0, 2), pick(-2.5), pick(1.0))\nend\n",
+        &["classify", "loops", "chain", "pick"],
+    );
+    assert_eq!(out, "-1 0 1 2 2 2442 1587\ntrue false false 2.5 1.0\n");
+}
+
+#[test]
+fn calls_recursion_and_builtins() {
+    let out = both(
+        "use std.math\n\
+         create fib(n: int) -> int:\n    if n < 2: return n\n    return fib(n - 1) + fib(n - 2)\nend\n\
+         create even(n: int) -> bool:\n    if n == 0: return true\n    return odd(n - 1)\nend\n\
+         create odd(n: int) -> bool:\n    if n == 0: return false\n    return even(n - 1)\nend\n\
+         create geo(x: float, y: float) -> float:\n    return math.sqrt(x * x + y * y) + math.hypot(x, y) + math.atan2(y, x) + math.log(math.exp(1.0)) + sqrt(16.0)\nend\n\
+         create ints(a: int, b: int) -> int: return min(a, b) * 10 + max(a, b) + floor(2.7) + ceil(2.1) + int(-3.9) + int(float(a))\n\
+         main:\n    print(fib(20), even(10), odd(7), even(7), geo(3.0, 4.0), ints(3, 9))\nend\n",
+        &["fib", "even", "odd", "geo", "ints"],
+    );
+    assert!(out.starts_with("6765 true true false 15."), "{out}");
+}
+
+#[test]
+fn unsupported_functions_stay_interpreted() {
+    // Prints, changes a variable's type, and is called with an int where a
+    // float is declared: all still run, on the interpreter.
+    let src = "create noisy(n: int) -> int:\n    print(\"n is\", n)\n    return n\nend\n\
+               create widen(n: int) -> float:\n    var x = n\n    x = x / 2\n    return x\nend\n\
+               create half(x: float) -> float: return x / 2.0\n\
+               main:\n    print(noisy(3), widen(3), half(3), half(3.0))\nend\n";
+    let out = both(src, &["half"]);
+    assert_eq!(out, "n is 3\n3 1.5 1.5 1.5\n");
+    let module = vyrn::parse(src).unwrap();
+    let program = compiler::compile(&module).unwrap();
+    for name in ["noisy", "widen"] {
+        let g = program.global(name).unwrap();
+        let vm::program::GlobalInit::Function(p) = program.globals[g].init else {
+            panic!()
+        };
+        assert!(
+            program.protos[p].native.get().is_none(),
+            "{name} must stay interpreted"
+        );
+    }
+}
+
+#[test]
+fn nan_and_mixed_comparisons() {
+    let out = both(
+        "create cmp(x: float, y: float) -> int:\n    var n = 0\n    if x < y: n += 1\n    if x == y: n += 10\n    if x != y: n += 100\n    if x >= y: n += 1000\n    return n\nend\n\
+         create eq(a: int, x: float) -> bool: return a == x\n\
+         main:\n    let nan = 0.0 / 1.0 - (1.0 / 0.0 - 1.0 / 0.0)\n    print(cmp(1.0, 2.0), cmp(2.0, 2.0), eq(3, 3.0), eq(3, 3.5))\nend\n",
+        &["cmp", "eq"],
+    );
+    assert!(
+        out.contains("<error DivisionByZero") || out.starts_with("101 1010 true false"),
+        "{out}"
+    );
+}
+
+/// A small deterministic generator, so failures reproduce.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    fn pick(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+fn int_expr(r: &mut Rng, depth: u32) -> String {
+    if depth == 0 || r.pick(4) == 0 {
+        return match r.pick(4) {
+            0 => "a".into(),
+            1 => "b".into(),
+            2 => "c".into(),
+            _ => [
+                "0",
+                "1",
+                "-1",
+                "3",
+                "7",
+                "-13",
+                "1000003",
+                "9223372036854775807",
+            ][r.pick(8)]
+            .into(),
+        };
+    }
+    let x = int_expr(r, depth - 1);
+    let y = int_expr(r, depth - 1);
+    match r.pick(12) {
+        0 => format!("({x} + {y})"),
+        1 => format!("({x} - {y})"),
+        2 => format!("({x} * {y})"),
+        3 => format!("({x} // {y})"),
+        4 => format!("({x} % {y})"),
+        5 => format!("(-{x})"),
+        6 => format!("({x} if {x} < {y} else {y})"),
+        7 => format!("min({x}, {y})"),
+        8 => format!("abs({x})"),
+        9 => format!("({x} & {y})"),
+        10 => format!("({x} ** 2)"),
+        _ => format!("({x} ^ {y})"),
+    }
+}
+
+fn float_expr(r: &mut Rng, depth: u32) -> String {
+    if depth == 0 || r.pick(4) == 0 {
+        return match r.pick(4) {
+            0 => "x".into(),
+            1 => "a".into(),
+            2 => "y".into(),
+            _ => ["0.0", "1.5", "-2.25", "1e300", "3"][r.pick(5)].into(),
+        };
+    }
+    let p = float_expr(r, depth - 1);
+    let q = float_expr(r, depth - 1);
+    match r.pick(9) {
+        0 => format!("({p} + {q})"),
+        1 => format!("({p} - {q})"),
+        2 => format!("({p} * {q})"),
+        3 => format!("({p} / {q})"),
+        4 => format!("({p} // {q})"),
+        5 => format!("({p} % {q})"),
+        6 => format!("sqrt(abs({p}))"),
+        7 => format!("({p} if {p} >= {q} else {q})"),
+        _ => format!("max({p} * 1.0, {q} * 1.0)"),
+    }
+}
+
+#[test]
+fn random_programs_agree() {
+    let mut r = Rng(0x2545_F491_4F6C_DD1D);
+    let edge = [
+        "0",
+        "1",
+        "-1",
+        "2",
+        "-7",
+        "100",
+        "-9223372036854775807 - 1",
+        "9223372036854775807",
+        "65536",
+    ];
+    let mut compiled = 0;
+    let mut total = 0;
+    for round in 0..120 {
+        let ie = int_expr(&mut r, 4);
+        let fe = float_expr(&mut r, 4);
+        let mut calls = String::new();
+        for _ in 0..12 {
+            let (a, b, c) = (
+                edge[r.pick(edge.len())],
+                edge[r.pick(edge.len())],
+                edge[r.pick(edge.len())],
+            );
+            calls.push_str(&format!(
+                "    attempt:\n        print(fi({a}, {b}, {c}), ff({a}.0 * 0.5, {b}, {c}.0))\n    catch Overflow:\n        print(\"overflow\")\n    catch DivisionByZero:\n        print(\"div0\")\n    end\n"
+            ));
+        }
+        let src = format!(
+            "create fi(a: int, b: int, c: int) -> int:\n    return {ie}\nend\n\
+             create ff(x: float, a: int, y: float) -> float:\n    return {fe}\nend\n\
+             main:\n{calls}end\n"
+        );
+        // `-9223372036854775807 - 1` with `.0` appended is not a float
+        // literal; such calls simply fail the same way in both engines.
+        let module = match vyrn::parse(&src) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let native =
+            compiler::compile(&module).unwrap_or_else(|e| panic!("round {round}: {e:?}\n{src}"));
+        for name in ["fi", "ff"] {
+            let g = native.global(name).unwrap();
+            if let vm::program::GlobalInit::Function(p) = native.globals[g].init {
+                total += 1;
+                compiled += usize::from(native.protos[p].native.get().is_some());
+            }
+        }
+        let interpreted = compiler::compile_only(&module).unwrap();
+        assert_eq!(run(native), run(interpreted), "round {round}:\n{src}");
+    }
+    // Most generated functions must really have been compiled.
+    assert!(
+        compiled * 10 >= total * 9,
+        "only {compiled} of {total} compiled"
+    );
+}

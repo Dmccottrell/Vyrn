@@ -6,8 +6,8 @@ One program, two kinds of place to run it:
 |---|---|---|
 | Command | `vyrn build --target=linux-musl` | `vyrn build --target=wasm32-edge` |
 | Output | one static Linux executable | a directory: `vyrn.wasm`, the program, a few lines of JavaScript |
-| Runs today | the bytecode VM with the program bundled | the bytecode VM compiled to WebAssembly |
-| Next | LLVM-compiled native code (section 3) | the same, through the WebAssembly backend |
+| Runs today | the bytecode VM with the program bundled; typed functions as machine code (section 3) | the bytecode VM compiled to WebAssembly |
+| Next | lists, structs and strings in native code; an LLVM release tier (section 4) | the same, through the WebAssembly backend |
 
 Both builds run the same source. `examples/api.vyrn` serves the same
 responses from `vyrn run`, from a static Linux binary, and from the edge
@@ -125,13 +125,76 @@ The next step is optional imports the host may provide (`env.now_ms`,
 `env.fetch`, and WebGPU in browsers), each switching a stub back to the
 real capability. Modules without them keep working.
 
-## 3. Design: the LLVM cloud backend
+## 3. The native tier (runs today)
+
+Typed functions are compiled to machine code when a program loads, with
+Cranelift (`src/native/`), on every platform `vyrn` runs on, with nothing
+else installed. It works for `vyrn run`, the prompt, the language server's
+checks and the executables `vyrn build` makes.
+
+```vyrn
+create fib(n: int) -> int:
+    if n < 2: return n
+    return fib(n - 1) + fib(n - 2)
+end
+```
+
+**What compiles.** A top-level function whose parameters are all `int`,
+`float` or `bool` (and whose result is one of those, or nothing), when its
+body stays within: those three types for every variable; arithmetic,
+comparisons (chained too), `and`/`or`/`not` and `a if c else b`; `if`,
+`else if`, `else`, `loop`, `loop cond`, `each i in a until b` / `a to b` /
+`range(...)` with a literal `by`, `stop`, `skip`, `return`; calls to other
+compiled functions, recursion included; and `abs`, `min`, `max`, `sqrt`,
+`floor`, `ceil`, `int`, `float`, `exp`, `tanh` and the `std.math`
+functions. Anything else (strings, lists, `print`, a variable that
+changes from `int` to `float`, `int ** n` with a non-literal `n`, whose
+type depends on `n`'s sign) leaves the function to the interpreter. A
+call to a function that stays interpreted keeps its caller interpreted too.
+
+**Nothing changes but speed.** The interpreter calls the machine code
+only when the arguments have exactly the declared types, and runs the
+bytecode otherwise. Integer overflow, division by zero, `//` and `%`
+rounding toward negative infinity, `/` giving a float, NaN comparisons,
+`min`/`max` keeping the first of equal values, and the limit of 10,000
+nested calls all behave as in the interpreter, and failures come back
+as the same errors, naming the function and line. `tests/native.rs` runs
+every program both ways and requires the same output and the same errors,
+including 120 randomly generated functions on edge-case inputs such as
+the largest and smallest integers.
+
+| Benchmark (one core) | Interpreter | Native tier | CPython 3.13 | C (`clang -O2`) |
+|---|---|---|---|---|
+| `fib(30)`, recursion | 0.141 s | 0.007 s | 0.069 s | 0.003 s |
+| 5M-step integer loop | 0.206 s | 0.008 s | 0.203 s | 0.005 s |
+| Mandelbrot 300×200, floats | 0.374 s | 0.010 s | 0.224 s | 0.008 s |
+| Collatz up to 300,000 | 2.380 s | 0.134 s | 2.144 s | 0.039 s |
+
+The gap to C is mostly the overflow checks, which C does not make.
+
+**Seeing it.** `VYRN_NATIVE=verbose vyrn run file.vyrn` lists each
+function and why it was or was not compiled; `vyrn bytecode` marks
+compiled functions; `VYRN_NATIVE=off` turns the tier off. The cargo feature
+`native` (on by default, never on WebAssembly) builds it.
+
+**How it works.** For each candidate the lowering walks the syntax tree
+with the types of every local known, produces Cranelift IR, and drops
+the function if it meets anything outside the subset; this repeats until
+the remaining functions only call each other. Each compiled function also
+gets an entry point taking its arguments as an array of 64-bit words.
+Failures are written to a small state block (`src/vm/native_abi.rs`)
+that the VM turns into the usual error values.
+
+## 4. Design: the rest of the native backend
+
+Section 3 covers numbers. The design below extends it to every type, with
+LLVM as a release tier.
 
 Goal: a statically linked Linux binary whose Vyrn code is machine code, so
 the inference loop around the GPU work has no interpreter between
 operations.
 
-### 3.1 Pipeline
+### 4.1 Pipeline
 
 ```text
 source ─▶ syntax tree ─▶ checker (src/check.rs) ─▶ VIR ─▶ LLVM IR ─▶ object ─▶ static link
@@ -173,7 +236,7 @@ source ─▶ syntax tree ─▶ checker (src/check.rs) ─▶ VIR ─▶ LLVM I
    `x86_64-unknown-linux-musl`, with `-static`. The result needs nothing
    on the machine: no interpreter, no libc, no Python.
 
-### 3.2 What a typed function becomes
+### 4.2 What a typed function becomes
 
 ```vyrn
 strict create dot(a: [f32], b: [f32]) -> f32:
@@ -232,12 +295,12 @@ CPU and GPU, the backend marks arithmetic `reassoc contract`; with that,
 `opt -O2` for AVX2 turns the same loop into 8-wide vector code (also
 checked). The trade-off is visible in the source, as rule 4 asks.
 
-### 3.3 Order of work
+### 4.3 Order of work
 
-1. VIR from the checked tree, validated by interpreting VIR against the
-   bytecode VM on the whole test suite.
-2. Cranelift codegen from VIR: pure Rust, fast to compile, the development
-   tier and a JIT for `vyrn run`.
+1. Done for numbers: Cranelift code from the checked tree (section 3),
+   validated against the bytecode VM. Next: lists of numbers (`[int]`,
+   `[float]`) through runtime calls, then structs, then strings.
+2. VIR, so the Cranelift and LLVM tiers share one lowering.
 3. LLVM codegen from the same VIR (through `inkwell`), for release builds:
    `vyrn build --target=linux-musl --release` links statically against
    `vyrn_rt.a`.

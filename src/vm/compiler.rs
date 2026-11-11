@@ -27,6 +27,15 @@ use crate::span::Span;
 
 /// Compiles a parsed module.
 pub fn compile(module: &Module) -> Result<Program, Vec<Diagnostic>> {
+    let full = crate::prelude::with_prelude(module);
+    let program = Compiler::new().compile_module(&full)?;
+    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+    crate::native::attach(&full, &program);
+    Ok(program)
+}
+
+/// Compiles without the native tier, for tools that only want the errors.
+pub fn compile_only(module: &Module) -> Result<Program, Vec<Diagnostic>> {
     Compiler::new().compile_module(&crate::prelude::with_prelude(module))
 }
 
@@ -458,6 +467,7 @@ impl Compiler {
                         code: vec![Op::ReturnNone],
                         lines: vec![0],
                         file: 0,
+                        native: Default::default(),
                         consts: Vec::new(),
                         names: Vec::new(),
                         params: Vec::new(),
@@ -1011,6 +1021,7 @@ impl Compiler {
             code: f.code,
             lines: f.lines,
             file: self.span.start.offset >> 24,
+            native: Default::default(),
             consts: f.consts,
             names: f.names,
             params: f.params,

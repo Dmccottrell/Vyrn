@@ -748,7 +748,7 @@ impl Server {
             Ok(loaded) => {
                 let mut problems = crate::check::check(&loaded.module);
                 if problems.is_empty() {
-                    if let Err(errors) = crate::vm::compile(&loaded.module) {
+                    if let Err(errors) = crate::vm::compiler::compile_only(&loaded.module) {
                         problems = errors;
                     }
                 }

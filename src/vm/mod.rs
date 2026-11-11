@@ -19,6 +19,7 @@ pub mod gpu;
 pub mod json;
 pub mod kernel;
 pub mod machine;
+pub mod native_abi;
 pub mod op;
 pub mod ops;
 pub mod program;

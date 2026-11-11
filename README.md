@@ -4,9 +4,12 @@ A gradually typed, garbage-collector-free language for machine learning, web
 services and WebAssembly, and games and systems code.
 
 Status: v0.4. A complete toolchain in Rust: parser, gradual type and borrow
-checker, bytecode interpreter, formatter, interactive prompt, language
-server, package resolver and single-file builds. The LLVM native backend is
-designed (`docs/deploy.md`) but not built; programs run on the interpreter.
+checker, bytecode interpreter, a native tier that compiles typed functions
+to machine code (10-25 times faster than CPython on numeric code, within
+1.3-3.5 times of C), formatter, interactive prompt, language server,
+package resolver and single-file builds. Native code covers numbers so
+far; lists, structs and strings still run on the interpreter
+(`docs/deploy.md` section 3).
 
 ## Documents
 
@@ -142,6 +145,7 @@ cargo run --release --features gpu -- run program.vyrn
 | `src/repl.rs` | The interactive prompt |
 | `src/lsp.rs` | The language server |
 | `src/project/` | Multi-file programs, the URL module resolver, `vyrn.lock`, single-file builds |
+| `src/native/` | The native tier: typed functions to machine code with Cranelift |
 | `src/vm/` | Bytecode compiler, register VM, tensor backends and builtins (see `docs/architecture.md` section 2.4); `src/vm/stdlib.rs` holds files, sets, format specs and the `std.*` modules |
 | `.github/workflows/` | CI on Linux, macOS and Windows; release builds for the installers |
 

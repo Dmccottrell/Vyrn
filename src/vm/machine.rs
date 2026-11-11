@@ -96,6 +96,10 @@ impl fmt::Display for RuntimeError {
 
 impl std::error::Error for RuntimeError {}
 
+fn err_value(kind: &'static str, message: String) -> Value {
+    err(kind, message)
+}
+
 impl RuntimeError {
     /// What usually fixes an error of this kind, for the report.
     pub fn hint(&self) -> Option<&'static str> {
@@ -555,6 +559,46 @@ impl Vm {
             Ok(v) => self.response_for(Ok(v)),
             Err(e) => self.response_for(Err(e.value)),
         }
+    }
+
+    /// Calls a function's machine code when the arguments have exactly the
+    /// declared types; `None` means the bytecode must run instead.
+    fn call_native(
+        &mut self,
+        native: &super::native_abi::NativeFn,
+        args_at: usize,
+        argc: usize,
+    ) -> Option<VmResult<Value>> {
+        use super::native_abi::{ErrState, NTy};
+        if argc != native.params.len() || argc > 16 {
+            return None;
+        }
+        let mut words = [0u64; 16];
+        for (i, want) in native.params.iter().enumerate() {
+            words[i] = match (want, &self.stack[args_at + i]) {
+                (NTy::Int, Value::Int(v)) => *v as u64,
+                (NTy::Float, Value::Float(v)) => v.to_bits(),
+                (NTy::Bool, Value::Bool(v)) => u64::from(*v),
+                _ => return None,
+            };
+        }
+        let mut err = ErrState {
+            depth: self.frames.len() as u32,
+            ..ErrState::default()
+        };
+        // SAFETY: the entry was compiled for exactly these parameter types,
+        // and `words` holds at least as many words as it reads.
+        let word = unsafe { (native.entry)(words.as_ptr(), &mut err) };
+        if err.code != 0 {
+            let (kind, message) = err.describe(&native.name);
+            return Some(Err(err_value(kind, message)));
+        }
+        Some(Ok(match native.ret {
+            NTy::Int => Value::Int(word as i64),
+            NTy::Float => Value::Float(f64::from_bits(word)),
+            NTy::Bool => Value::Bool(word != 0),
+            NTy::Unit => Value::None,
+        }))
     }
 
     /// A Vyrn-written method of a list, string or map (from the Prelude).
@@ -2012,6 +2056,25 @@ impl Vm {
                     Op::Call { func, argc } => {
                         let at = base + func as usize;
                         match &self.stack[at] {
+                            Value::Function(c) if c.proto.native.get().is_some() => {
+                                let native = c.proto.native.get().cloned().expect("checked");
+                                match self.call_native(&native, at + 1, argc as usize) {
+                                    Some(result) => {
+                                        let v = check!(result);
+                                        self.stack[at] = v;
+                                    }
+                                    None => {
+                                        let Value::Function(callee) =
+                                            std::mem::replace(&mut self.stack[at], Value::None)
+                                        else {
+                                            unreachable!()
+                                        };
+                                        save_ip!();
+                                        check!(self.enter(callee, at, at + 1, argc as usize));
+                                        continue 'frames;
+                                    }
+                                }
+                            }
                             Value::Function(_) => {
                                 // The return value replaces the function,
                                 // so the frame can take it over.

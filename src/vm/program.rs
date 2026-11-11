@@ -17,6 +17,8 @@ pub struct Proto {
     pub lines: Vec<u32>,
     /// Which loaded file the function is in (its spans' `offset >> 24`).
     pub file: u32,
+    /// The function compiled to machine code, when it could be (`src/native`).
+    pub native: std::cell::OnceCell<Rc<super::native_abi::NativeFn>>,
     pub consts: Vec<Value>,
     /// Names used by field, method and type instructions.
     pub names: Vec<Symbol>,
@@ -135,6 +137,12 @@ impl Program {
                 params.join(", "),
                 proto.num_regs
             );
+            if proto.native.get().is_some() {
+                let _ = writeln!(
+                    out,
+                    "  native: runs as machine code when called with the declared types"
+                );
+            }
             for (i, value) in proto.consts.iter().enumerate() {
                 let _ = writeln!(out, "    k{i} = {value:?}");
             }

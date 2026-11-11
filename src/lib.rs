@@ -18,6 +18,8 @@ pub mod diagnostic;
 pub mod fmt;
 pub mod lexer;
 pub mod lsp;
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+pub mod native;
 pub mod parser;
 pub mod prelude;
 pub mod pretty;

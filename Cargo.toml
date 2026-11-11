@@ -30,7 +30,9 @@ libloading = { version = "0.9", optional = true }
 libffi = { version = "5", optional = true }
 
 [features]
-default = ["net"]
+default = ["net", "native"]
+# Compiles typed functions to machine code with Cranelift (not on WebAssembly).
+native = ["dep:cranelift-codegen", "dep:cranelift-frontend", "dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-native"]
 # Fetching `use "host/owner/repo@version"` modules over HTTPS.
 net = ["dep:ureq"]
 # Runs tensor work on a real GPU through wgpu (Vulkan, Metal or DirectX 12).
@@ -43,3 +45,9 @@ ffi = ["dep:libloading", "dep:libffi"]
 # The interactive prompt: line editing and history. Not needed on the web.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rustyline = { version = "15", default-features = false, features = ["with-file-history"] }
+# The native tier: typed functions compiled to machine code at load time.
+cranelift-codegen = { version = "0.137.1", optional = true }
+cranelift-frontend = { version = "0.137.1", optional = true }
+cranelift-jit = { version = "0.137.1", optional = true }
+cranelift-module = { version = "0.137.1", optional = true }
+cranelift-native = { version = "0.137.1", optional = true }

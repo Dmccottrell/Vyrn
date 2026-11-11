@@ -1,0 +1,1624 @@
+//! The native tier: typed functions compiled to machine code.
+//!
+//! When a program is compiled, every top-level function whose parameters
+//! are all `int`, `float` or `bool` is also translated to machine code
+//! with Cranelift, if its body stays within what the native tier handles:
+//! numbers and booleans, arithmetic, comparisons, `if`/`else if`/`else`,
+//! `loop`, `each i in a until b`, `stop`, `skip`, `return`, calls to other
+//! such functions (recursion included) and math builtins (`abs`, `sqrt`,
+//! `min`, `max`, `std.math`, ...). The interpreter then calls the machine
+//! code whenever the arguments have the declared types, and runs the
+//! bytecode otherwise, so a program means exactly the same either way.
+//!
+//! Semantics match the interpreter's: integer overflow, division by zero,
+//! `//` and `%` rounding toward negative infinity, `/` giving a float, and
+//! the limit on nested calls all behave alike, and failures come back as
+//! the same errors. Anything outside the subset (strings, lists, `print`,
+//! a variable that changes type, ...) leaves the function to the
+//! interpreter. `VYRN_NATIVE=off` turns the tier off, and
+//! `VYRN_NATIVE=verbose` says what was compiled and why the rest was not.
+
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
+use cranelift_codegen::ir::{
+    types, AbiParam, Block, FuncRef, InstBuilder, MemFlagsData, Type, Value,
+};
+use cranelift_codegen::settings::{self, Configurable};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
+use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_module::{FuncId, Linkage, Module as _};
+
+use crate::ast::{
+    AssignOp, BinaryOp, BindTarget, Block as AstBlock, CompareOp, Condition, Expr, ExprKind,
+    FnBody, FnDecl, ForMode, ItemKind, Module, PassMode, Stmt, StmtKind, TypeExpr, TypeExprKind,
+    UnaryOp, UseKind,
+};
+use crate::vm::native_abi::{
+    ErrState, NTy, NativeFn, ERR_DIV_ZERO, ERR_FLOAT_TO_INT, ERR_NO_RETURN, ERR_OVERFLOW,
+    ERR_SHIFT, ERR_STACK, MAX_DEPTH,
+};
+use crate::vm::program::{GlobalInit, Program};
+
+type Fail = String;
+type Res<T> = Result<T, Fail>;
+
+const OP_ADD: u32 = 0;
+const OP_SUB: u32 = 1;
+const OP_MUL: u32 = 2;
+const OP_POW: u32 = 3;
+const OP_FLOORDIV: u32 = 4;
+const OP_REM: u32 = 5;
+const OP_SHL: u32 = 6;
+const OP_ABS: u32 = 7;
+const OP_NEG: u32 = 8;
+
+// ==== runtime helpers called from machine code ==============================
+
+extern "C" fn rt_ipow(x: i64, y: i64, err: *mut ErrState) -> i64 {
+    match u32::try_from(y).ok().and_then(|e| x.checked_pow(e)) {
+        Some(v) => v,
+        None => {
+            // SAFETY: `err` is the state the VM passed to the entry point.
+            unsafe {
+                (*err).code = ERR_OVERFLOW;
+                (*err).detail = OP_POW;
+            }
+            0
+        }
+    }
+}
+
+extern "C" fn rt_ishl(x: i64, y: i64, err: *mut ErrState) -> i64 {
+    let shift = u32::try_from(y).ok().filter(|s| *s < 64);
+    match shift {
+        Some(s) => match x.checked_shl(s) {
+            Some(v) => v,
+            None => {
+                // SAFETY: as above.
+                unsafe {
+                    (*err).code = ERR_OVERFLOW;
+                    (*err).detail = OP_SHL;
+                }
+                0
+            }
+        },
+        None => {
+            // SAFETY: as above.
+            unsafe {
+                (*err).code = ERR_SHIFT;
+                (*err).value = y;
+            }
+            0
+        }
+    }
+}
+
+extern "C" fn rt_powf(x: f64, y: f64) -> f64 {
+    x.powf(y)
+}
+extern "C" fn rt_exp(x: f64) -> f64 {
+    x.exp()
+}
+extern "C" fn rt_ln(x: f64) -> f64 {
+    x.ln()
+}
+extern "C" fn rt_log2(x: f64) -> f64 {
+    x.log2()
+}
+extern "C" fn rt_log10(x: f64) -> f64 {
+    x.log10()
+}
+extern "C" fn rt_sin(x: f64) -> f64 {
+    x.sin()
+}
+extern "C" fn rt_cos(x: f64) -> f64 {
+    x.cos()
+}
+extern "C" fn rt_tan(x: f64) -> f64 {
+    x.tan()
+}
+extern "C" fn rt_tanh(x: f64) -> f64 {
+    x.tanh()
+}
+extern "C" fn rt_atan(x: f64) -> f64 {
+    x.atan()
+}
+extern "C" fn rt_atan2(y: f64, x: f64) -> f64 {
+    y.atan2(x)
+}
+extern "C" fn rt_hypot(x: f64, y: f64) -> f64 {
+    x.hypot(y)
+}
+// Libcalls Cranelift may emit for rounding on CPUs without SSE4.1; given
+// here so static (musl) builds, which cannot look them up, work too.
+extern "C" fn rt_floor(x: f64) -> f64 {
+    x.floor()
+}
+extern "C" fn rt_ceil(x: f64) -> f64 {
+    x.ceil()
+}
+extern "C" fn rt_trunc(x: f64) -> f64 {
+    x.trunc()
+}
+extern "C" fn rt_nearest(x: f64) -> f64 {
+    x.round_ties_even()
+}
+extern "C" fn rt_floorf(x: f32) -> f32 {
+    x.floor()
+}
+extern "C" fn rt_ceilf(x: f32) -> f32 {
+    x.ceil()
+}
+extern "C" fn rt_truncf(x: f32) -> f32 {
+    x.trunc()
+}
+extern "C" fn rt_nearestf(x: f32) -> f32 {
+    x.round_ties_even()
+}
+
+/// Float functions of one argument, by their Vyrn name.
+const FLOAT1: &[(&str, &str)] = &[
+    ("exp", "vyrn_exp"),
+    ("log", "vyrn_ln"),
+    ("log2", "vyrn_log2"),
+    ("log10", "vyrn_log10"),
+    ("sin", "vyrn_sin"),
+    ("cos", "vyrn_cos"),
+    ("tan", "vyrn_tan"),
+    ("tanh", "vyrn_tanh"),
+    ("atan", "vyrn_atan"),
+];
+
+fn helper_symbols() -> Vec<(&'static str, *const u8)> {
+    vec![
+        ("vyrn_ipow", rt_ipow as *const u8),
+        ("vyrn_ishl", rt_ishl as *const u8),
+        ("vyrn_powf", rt_powf as *const u8),
+        ("vyrn_exp", rt_exp as *const u8),
+        ("vyrn_ln", rt_ln as *const u8),
+        ("vyrn_log2", rt_log2 as *const u8),
+        ("vyrn_log10", rt_log10 as *const u8),
+        ("vyrn_sin", rt_sin as *const u8),
+        ("vyrn_cos", rt_cos as *const u8),
+        ("vyrn_tan", rt_tan as *const u8),
+        ("vyrn_tanh", rt_tanh as *const u8),
+        ("vyrn_atan", rt_atan as *const u8),
+        ("vyrn_atan2", rt_atan2 as *const u8),
+        ("vyrn_hypot", rt_hypot as *const u8),
+        ("floor", rt_floor as *const u8),
+        ("ceil", rt_ceil as *const u8),
+        ("trunc", rt_trunc as *const u8),
+        ("nearbyint", rt_nearest as *const u8),
+        ("floorf", rt_floorf as *const u8),
+        ("ceilf", rt_ceilf as *const u8),
+        ("truncf", rt_truncf as *const u8),
+        ("nearbyintf", rt_nearestf as *const u8),
+    ]
+}
+
+// ==== choosing functions ====================================================
+
+fn scalar_type(t: &TypeExpr) -> Option<NTy> {
+    let TypeExprKind::Named { path, args } = &t.kind else {
+        return None;
+    };
+    if !args.is_empty() || path.segments.len() != 1 {
+        return None;
+    }
+    match path.segments[0].name.as_str() {
+        "int" | "i64" => Some(NTy::Int),
+        "float" | "f64" => Some(NTy::Float),
+        "bool" => Some(NTy::Bool),
+        _ => None,
+    }
+}
+
+/// A candidate's signature, or why it cannot be one.
+fn signature(f: &FnDecl) -> Res<(Vec<NTy>, NTy)> {
+    let m = &f.modifiers;
+    if m.is_async || m.is_kernel || m.export.is_some() || !f.generics.is_empty() {
+        return Err("async, kernel, exported and generic functions stay interpreted".into());
+    }
+    if f.result.fails.is_some() {
+        return Err("functions that declare `fails` stay interpreted".into());
+    }
+    let mut params = Vec::new();
+    for p in &f.params {
+        if p.default.is_some() || p.pass != PassMode::Borrow {
+            return Err(format!(
+                "parameter `{}` has a default or a pass mode",
+                p.name.name
+            ));
+        }
+        let ty = p
+            .declared_ty
+            .as_ref()
+            .and_then(scalar_type)
+            .ok_or_else(|| {
+                format!(
+                    "parameter `{}` is not declared int, float or bool",
+                    p.name.name
+                )
+            })?;
+        params.push(ty);
+    }
+    let ret = match &f.result.returns {
+        None => NTy::Unit,
+        Some(t) => scalar_type(t).ok_or("the result is not int, float or bool")?,
+    };
+    Ok((params, ret))
+}
+
+struct Candidate<'a> {
+    decl: &'a FnDecl,
+    proto: usize,
+    params: Vec<NTy>,
+    ret: NTy,
+}
+
+/// Compiles what it can of `module` and attaches the machine code to the
+/// program's functions.
+pub fn attach(module: &Module, program: &Program) {
+    let mode = std::env::var("VYRN_NATIVE").unwrap_or_default();
+    if mode == "off" || mode == "0" {
+        return;
+    }
+    let verbose = mode == "verbose";
+    let report = |name: &str, what: &str| {
+        if verbose {
+            eprintln!("native: {name}: {what}");
+        }
+    };
+
+    // `use std.math` (or `as m`): the local name of the math module.
+    let mut math_names: Vec<String> = Vec::new();
+    let mut all_names: Vec<String> = Vec::new();
+    let mut candidates: Vec<Candidate> = Vec::new();
+    for item in &module.items {
+        match &item.kind {
+            ItemKind::Use(u) => {
+                let segs: Vec<&str> = u.path.segments.iter().map(|s| s.name.as_str()).collect();
+                if segs == ["std", "math"] {
+                    if let UseKind::Module { alias } = &u.kind {
+                        math_names.push(
+                            alias
+                                .as_ref()
+                                .map_or("math".to_string(), |a| a.name.clone()),
+                        );
+                    }
+                }
+            }
+            ItemKind::Fn(f) => {
+                all_names.push(f.name.name.clone());
+                if crate::prelude::is_prelude_offset(f.name.span.start.offset) {
+                    continue;
+                }
+                if !item.decorators.is_empty() || !matches!(f.body, FnBody::Block(_)) {
+                    continue;
+                }
+                let Some(GlobalInit::Function(proto)) = program
+                    .global(&f.name.name)
+                    .map(|g| &program.globals[g].init)
+                else {
+                    continue;
+                };
+                match signature(f) {
+                    Ok((params, ret)) => candidates.push(Candidate {
+                        decl: f,
+                        proto: *proto,
+                        params,
+                        ret,
+                    }),
+                    Err(why) => report(&f.name.name, &format!("interpreted: {why}")),
+                }
+            }
+            ItemKind::Aggregate(a) => all_names.push(a.name.name.clone()),
+            ItemKind::Enum(e) => all_names.push(e.name.name.clone()),
+            ItemKind::Const(c) => all_names.push(c.name.name.clone()),
+            _ => {}
+        }
+    }
+    if candidates.is_empty() {
+        return;
+    }
+    let env = Env {
+        math: math_names,
+        globals: all_names,
+    };
+
+    // Drop candidates that cannot be lowered, until the rest only call
+    // each other.
+    loop {
+        let sigs: HashMap<String, (Vec<NTy>, NTy)> = candidates
+            .iter()
+            .map(|c| (c.decl.name.name.clone(), (c.params.clone(), c.ret)))
+            .collect();
+        let mut jit = match Jit::new() {
+            Ok(j) => j,
+            Err(e) => {
+                report("native tier", &format!("unavailable: {e}"));
+                return;
+            }
+        };
+        let ids = match jit.declare_all(&sigs) {
+            Ok(ids) => ids,
+            Err(e) => {
+                report("native tier", &e);
+                return;
+            }
+        };
+        let mut failed = None;
+        for (i, c) in candidates.iter().enumerate() {
+            if let Err(why) = jit.define(c, &sigs, &ids, &env) {
+                failed = Some((i, why));
+                break;
+            }
+        }
+        if let Some((i, why)) = failed {
+            report(
+                &candidates[i].decl.name.name,
+                &format!("interpreted: {why}"),
+            );
+            candidates.remove(i);
+            if candidates.is_empty() {
+                return;
+            }
+            continue;
+        }
+        // Everything left compiles: add the entry points and finish.
+        let mut entries = Vec::new();
+        for c in &candidates {
+            match jit.define_entry(&c.decl.name.name, &c.params, c.ret, ids[&c.decl.name.name]) {
+                Ok(id) => entries.push(id),
+                Err(e) => {
+                    report(&c.decl.name.name, &e);
+                    return;
+                }
+            }
+        }
+        if let Err(e) = jit.module.finalize_definitions() {
+            report("native tier", &format!("could not finish: {e}"));
+            return;
+        }
+        let pointers: Vec<*const u8> = entries
+            .iter()
+            .map(|id| jit.module.get_finalized_function(*id))
+            .collect();
+        let keep: Rc<dyn std::any::Any> = Rc::new(KeepAlive(Some(jit.module)));
+        for (c, ptr) in candidates.iter().zip(pointers) {
+            // SAFETY: the entry was built with exactly the `Entry` signature.
+            let entry: crate::vm::native_abi::Entry = unsafe { std::mem::transmute(ptr) };
+            let native = NativeFn {
+                name: c.decl.name.name.clone(),
+                entry,
+                params: c.params.clone(),
+                ret: c.ret,
+                keep: keep.clone(),
+            };
+            let _ = program.protos[c.proto].native.set(Rc::new(native));
+            report(&c.decl.name.name, "compiled to machine code");
+        }
+        return;
+    }
+}
+
+/// Owns the machine code. It is never freed while a program can call it;
+/// programs are dropped at exit, or when the REPL compiles the next entry.
+#[allow(dead_code)] // held only so the code is not freed
+struct KeepAlive(Option<JITModule>);
+
+/// What names mean to the lowering, besides locals and the candidates.
+struct Env {
+    /// Local names of `std.math`.
+    math: Vec<String>,
+    /// Every top-level function, type and constant: a call to one that is
+    /// not a candidate cannot be compiled.
+    globals: Vec<String>,
+}
+
+// ==== the code generator ====================================================
+
+struct Jit {
+    module: JITModule,
+    ctx: cranelift_codegen::Context,
+    fctx: FunctionBuilderContext,
+    helpers: HashMap<&'static str, FuncId>,
+    ptr: Type,
+}
+
+fn cl_type(t: NTy) -> Type {
+    match t {
+        NTy::Int | NTy::Unit => types::I64,
+        NTy::Float => types::F64,
+        NTy::Bool => types::I8,
+    }
+}
+
+impl Jit {
+    fn new() -> Res<Jit> {
+        let mut flags = settings::builder();
+        flags
+            .set("use_colocated_libcalls", "false")
+            .map_err(|e| e.to_string())?;
+        flags.set("is_pic", "false").map_err(|e| e.to_string())?;
+        flags.set("opt_level", "speed").map_err(|e| e.to_string())?;
+        let isa = cranelift_native::builder()
+            .map_err(|e| e.to_string())?
+            .finish(settings::Flags::new(flags))
+            .map_err(|e| e.to_string())?;
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        for (name, ptr) in helper_symbols() {
+            builder.symbol(name, ptr);
+        }
+        let mut module = JITModule::new(builder);
+        let ptr = module.target_config().pointer_type();
+        let mut helpers = HashMap::new();
+        let mut declare = |name: &'static str, params: &[Type], ret: Type| -> Res<()> {
+            let mut sig = module.make_signature();
+            for p in params {
+                sig.params.push(AbiParam::new(*p));
+            }
+            sig.returns.push(AbiParam::new(ret));
+            let id = module
+                .declare_function(name, Linkage::Import, &sig)
+                .map_err(|e| e.to_string())?;
+            helpers.insert(name, id);
+            Ok(())
+        };
+        declare("vyrn_ipow", &[types::I64, types::I64, ptr], types::I64)?;
+        declare("vyrn_ishl", &[types::I64, types::I64, ptr], types::I64)?;
+        declare("vyrn_powf", &[types::F64, types::F64], types::F64)?;
+        declare("vyrn_atan2", &[types::F64, types::F64], types::F64)?;
+        declare("vyrn_hypot", &[types::F64, types::F64], types::F64)?;
+        for (_, sym) in FLOAT1 {
+            declare(sym, &[types::F64], types::F64)?;
+        }
+        let ctx = module.make_context();
+        Ok(Jit {
+            module,
+            ctx,
+            fctx: FunctionBuilderContext::new(),
+            helpers,
+            ptr,
+        })
+    }
+
+    fn inner_signature(&self, params: &[NTy], ret: NTy) -> cranelift_codegen::ir::Signature {
+        let mut sig = self.module.make_signature();
+        for p in params {
+            sig.params.push(AbiParam::new(cl_type(*p)));
+        }
+        sig.params.push(AbiParam::new(self.ptr));
+        sig.returns.push(AbiParam::new(cl_type(ret)));
+        sig
+    }
+
+    fn declare_all(
+        &mut self,
+        sigs: &HashMap<String, (Vec<NTy>, NTy)>,
+    ) -> Res<HashMap<String, FuncId>> {
+        let mut ids = HashMap::new();
+        for (name, (params, ret)) in sigs {
+            let sig = self.inner_signature(params, *ret);
+            let id = self
+                .module
+                .declare_function(&format!("vyrn_fn_{name}"), Linkage::Local, &sig)
+                .map_err(|e| e.to_string())?;
+            ids.insert(name.clone(), id);
+        }
+        Ok(ids)
+    }
+
+    fn define(
+        &mut self,
+        c: &Candidate,
+        sigs: &HashMap<String, (Vec<NTy>, NTy)>,
+        ids: &HashMap<String, FuncId>,
+        env: &Env,
+    ) -> Res<()> {
+        self.module.clear_context(&mut self.ctx);
+        self.ctx.func.signature = self.inner_signature(&c.params, c.ret);
+        let FnBody::Block(body) = &c.decl.body else {
+            return Err("no body".into());
+        };
+        let frontend = self.module.isa().frontend_config();
+        {
+            let mut b = FunctionBuilder::new(&mut self.ctx.func, &mut self.fctx);
+            let entry = b.create_block();
+            b.append_block_params_for_function_params(entry);
+            b.switch_to_block(entry);
+            let args: Vec<Value> = b.block_params(entry).to_vec();
+            let err = args[c.params.len()];
+            let mut lower = Lower {
+                b,
+                module: &mut self.module,
+                helpers: &self.helpers,
+                sigs,
+                ids,
+                env,
+                refs: HashMap::new(),
+                scopes: vec![Vec::new()],
+                loops: Vec::new(),
+                err,
+                ret: c.ret,
+                line: c.decl.name.span.start.line,
+            };
+            for (p, (v, ty)) in c.decl.params.iter().zip(args.iter().zip(&c.params)) {
+                let var = lower.b.declare_var(cl_type(*ty));
+                lower.b.def_var(var, *v);
+                lower.scopes[0].push((p.name.name.clone(), var, *ty));
+            }
+            // Count the call against the nesting limit.
+            let depth = lower
+                .b
+                .ins()
+                .load(types::I32, MemFlagsData::trusted(), err, 12);
+            let depth = lower.b.ins().iadd_imm_s(depth, 1);
+            lower.b.ins().store(MemFlagsData::trusted(), depth, err, 12);
+            let too_deep =
+                lower
+                    .b
+                    .ins()
+                    .icmp_imm_s(IntCC::UnsignedGreaterThan, depth, i64::from(MAX_DEPTH));
+            lower.fail_if(too_deep, ERR_STACK, 0);
+            lower.block(body)?;
+            // Falling off the end.
+            if c.ret == NTy::Unit {
+                let zero = lower.b.ins().iconst(types::I64, 0);
+                lower.ret(zero);
+            } else {
+                lower.fail_now(ERR_NO_RETURN, 0);
+            }
+            lower.b.seal_all_blocks();
+            lower.b.finalize(frontend);
+        }
+        let id = ids[&c.decl.name.name];
+        self.module
+            .define_function(id, &mut self.ctx)
+            .map_err(|e| format!("code generation failed: {e:?}"))?;
+        self.module.clear_context(&mut self.ctx);
+        Ok(())
+    }
+
+    /// The entry the VM calls: arguments from an array of words, the
+    /// result as a word.
+    fn define_entry(&mut self, name: &str, params: &[NTy], ret: NTy, inner: FuncId) -> Res<FuncId> {
+        let mut sig = self.module.make_signature();
+        sig.params.push(AbiParam::new(self.ptr));
+        sig.params.push(AbiParam::new(self.ptr));
+        sig.returns.push(AbiParam::new(types::I64));
+        let id = self
+            .module
+            .declare_function(&format!("vyrn_entry_{name}"), Linkage::Local, &sig)
+            .map_err(|e| e.to_string())?;
+        self.module.clear_context(&mut self.ctx);
+        self.ctx.func.signature = sig;
+        let frontend = self.module.isa().frontend_config();
+        {
+            let mut b = FunctionBuilder::new(&mut self.ctx.func, &mut self.fctx);
+            let entry = b.create_block();
+            b.append_block_params_for_function_params(entry);
+            b.switch_to_block(entry);
+            let (args_ptr, err) = (b.block_params(entry)[0], b.block_params(entry)[1]);
+            let mut args = Vec::new();
+            for (i, p) in params.iter().enumerate() {
+                let word = b.ins().load(
+                    types::I64,
+                    MemFlagsData::trusted(),
+                    args_ptr,
+                    (i * 8) as i32,
+                );
+                args.push(match p {
+                    NTy::Float => b.ins().bitcast(types::F64, MemFlagsData::new(), word),
+                    NTy::Bool => b.ins().ireduce(types::I8, word),
+                    _ => word,
+                });
+            }
+            args.push(err);
+            let callee = self.module.declare_func_in_func(inner, b.func);
+            let call = b.ins().call(callee, &args);
+            let result = b.inst_results(call)[0];
+            let word = match ret {
+                NTy::Float => b.ins().bitcast(types::I64, MemFlagsData::new(), result),
+                NTy::Bool => b.ins().uextend(types::I64, result),
+                _ => result,
+            };
+            b.ins().return_(&[word]);
+            b.seal_all_blocks();
+            b.finalize(frontend);
+        }
+        self.module
+            .define_function(id, &mut self.ctx)
+            .map_err(|e| format!("code generation failed: {e:?}"))?;
+        self.module.clear_context(&mut self.ctx);
+        Ok(id)
+    }
+}
+
+struct Lower<'a, 'f> {
+    b: FunctionBuilder<'f>,
+    module: &'a mut JITModule,
+    helpers: &'a HashMap<&'static str, FuncId>,
+    sigs: &'a HashMap<String, (Vec<NTy>, NTy)>,
+    ids: &'a HashMap<String, FuncId>,
+    env: &'a Env,
+    refs: HashMap<FuncId, FuncRef>,
+    scopes: Vec<Vec<(String, Variable, NTy)>>,
+    /// For each loop: where `skip` and `stop` go.
+    loops: Vec<(Block, Block)>,
+    err: Value,
+    ret: NTy,
+    line: u32,
+}
+
+impl Lower<'_, '_> {
+    fn func_ref(&mut self, id: FuncId) -> FuncRef {
+        if let Some(r) = self.refs.get(&id) {
+            return *r;
+        }
+        let r = self.module.declare_func_in_func(id, self.b.func);
+        self.refs.insert(id, r);
+        r
+    }
+
+    fn lookup(&self, name: &str) -> Option<(Variable, NTy)> {
+        for scope in self.scopes.iter().rev() {
+            if let Some((_, v, t)) = scope.iter().rev().find(|(n, _, _)| n == name) {
+                return Some((*v, *t));
+            }
+        }
+        None
+    }
+
+    /// Starts a fresh block for code after a jump or return; it is
+    /// unreachable unless something jumps to it.
+    fn dead(&mut self) {
+        let next = self.b.create_block();
+        self.b.switch_to_block(next);
+    }
+
+    fn zero(&mut self, t: NTy) -> Value {
+        match t {
+            NTy::Float => self.b.ins().f64const(0.0),
+            NTy::Bool => self.b.ins().iconst(types::I8, 0),
+            _ => self.b.ins().iconst(types::I64, 0),
+        }
+    }
+
+    fn ret(&mut self, v: Value) {
+        let depth = self
+            .b
+            .ins()
+            .load(types::I32, MemFlagsData::trusted(), self.err, 12);
+        let depth = self.b.ins().iadd_imm_s(depth, -1);
+        self.b
+            .ins()
+            .store(MemFlagsData::trusted(), depth, self.err, 12);
+        self.b.ins().return_(&[v]);
+        self.dead();
+    }
+
+    /// Records a failure and returns at once; the VM reads it.
+    fn fail_now(&mut self, code: u32, detail: u32) {
+        let c = self.b.ins().iconst(types::I32, i64::from(code));
+        let d = self.b.ins().iconst(types::I32, i64::from(detail));
+        let l = self.b.ins().iconst(types::I32, i64::from(self.line));
+        self.b.ins().store(MemFlagsData::trusted(), c, self.err, 0);
+        self.b.ins().store(MemFlagsData::trusted(), d, self.err, 4);
+        self.b.ins().store(MemFlagsData::trusted(), l, self.err, 8);
+        let z = self.zero(self.ret);
+        self.b.ins().return_(&[z]);
+        self.dead();
+    }
+
+    fn fail_if(&mut self, cond: Value, code: u32, detail: u32) {
+        let bad = self.b.create_block();
+        let ok = self.b.create_block();
+        self.b.ins().brif(cond, bad, &[], ok, &[]);
+        self.b.switch_to_block(bad);
+        self.fail_now(code, detail);
+        // `fail_now` left a dead block current; leave it terminated.
+        let z = self.zero(self.ret);
+        self.b.ins().return_(&[z]);
+        self.b.switch_to_block(ok);
+    }
+
+    /// After a call into native code: pass a failure on.
+    fn check_err(&mut self) {
+        let code = self
+            .b
+            .ins()
+            .load(types::I32, MemFlagsData::trusted(), self.err, 0);
+        let bad = self.b.create_block();
+        let ok = self.b.create_block();
+        self.b.ins().brif(code, bad, &[], ok, &[]);
+        self.b.switch_to_block(bad);
+        let z = self.zero(self.ret);
+        self.b.ins().return_(&[z]);
+        self.b.switch_to_block(ok);
+    }
+
+    fn as_float(&mut self, v: Value, t: NTy) -> Value {
+        match t {
+            NTy::Int => self.b.ins().fcvt_from_sint(types::F64, v),
+            _ => v,
+        }
+    }
+
+    fn truthy(&mut self, v: Value, t: NTy) -> Res<Value> {
+        Ok(match t {
+            NTy::Bool => v,
+            NTy::Int => self.b.ins().icmp_imm_s(IntCC::NotEqual, v, 0),
+            NTy::Float => {
+                let z = self.b.ins().f64const(0.0);
+                self.b.ins().fcmp(FloatCC::NotEqual, v, z)
+            }
+            NTy::Unit => return Err("`none` used as a condition".into()),
+        })
+    }
+
+    // ---- statements ----
+
+    fn block(&mut self, block: &AstBlock) -> Res<()> {
+        self.scopes.push(Vec::new());
+        for stmt in &block.stmts {
+            self.stmt(stmt)?;
+        }
+        self.scopes.pop();
+        Ok(())
+    }
+
+    fn assign(&mut self, name: &str, v: Value, t: NTy) -> Res<()> {
+        match self.lookup(name) {
+            Some((var, old)) if old == t => {
+                self.b.def_var(var, v);
+                Ok(())
+            }
+            Some((_, old)) => Err(format!(
+                "`{name}` changes from {} to {}",
+                ty_name(old),
+                ty_name(t)
+            )),
+            None => {
+                self.declare(name, v, t);
+                Ok(())
+            }
+        }
+    }
+
+    fn declare(&mut self, name: &str, v: Value, t: NTy) {
+        let var = self.b.declare_var(cl_type(t));
+        self.b.def_var(var, v);
+        self.scopes
+            .last_mut()
+            .expect("a scope is open")
+            .push((name.to_string(), var, t));
+    }
+
+    fn stmt(&mut self, stmt: &Stmt) -> Res<()> {
+        self.line = stmt.span.start.line;
+        match &stmt.kind {
+            StmtKind::Binding(binding) => {
+                let BindTarget::Name(name) = &binding.target else {
+                    return Err("only plain names can be bound".into());
+                };
+                let value = binding.value.as_ref().ok_or("a binding without a value")?;
+                let (v, t) = self.expr(value)?;
+                if let Some(declared) = &binding.declared_ty {
+                    if scalar_type(declared) != Some(t) {
+                        return Err(format!(
+                            "`{}`'s declared type differs from its value",
+                            name.name
+                        ));
+                    }
+                }
+                if t == NTy::Unit {
+                    return Err("a variable holding `none`".into());
+                }
+                self.declare(&name.name, v, t);
+            }
+            StmtKind::Assign { target, op, value } => {
+                let ExprKind::Name(name) = &target.kind else {
+                    return Err("only variables can be assigned".into());
+                };
+                let (v, t) = match op {
+                    AssignOp::Assign => self.expr(value)?,
+                    op => {
+                        let (var, old) = self
+                            .lookup(&name.name)
+                            .ok_or_else(|| format!("`{}` is not a local number", name.name))?;
+                        let current = self.b.use_var(var);
+                        let (rhs, rt) = self.expr(value)?;
+                        let bop = assign_op(*op).ok_or("this compound assignment")?;
+                        if bop == BinaryOp::Pow
+                            && old == NTy::Int
+                            && rt == NTy::Int
+                            && !matches!(value.kind, ExprKind::Int { .. })
+                        {
+                            return Err(
+                                "`int **= int` with an exponent that is not a literal".into()
+                            );
+                        }
+                        self.binary(bop, current, old, rhs, rt)?
+                    }
+                };
+                if t == NTy::Unit {
+                    return Err("a variable holding `none`".into());
+                }
+                self.assign(&name.name, v, t)?;
+            }
+            StmtKind::Expr(e) => {
+                self.expr(e)?;
+            }
+            StmtKind::Return(value) => match (value, self.ret) {
+                (None, NTy::Unit) => {
+                    let z = self.b.ins().iconst(types::I64, 0);
+                    self.ret(z);
+                }
+                (Some(e), want) if want != NTy::Unit => {
+                    let (v, t) = self.expr(e)?;
+                    if t != want {
+                        return Err(format!(
+                            "returns {} where {} is declared",
+                            ty_name(t),
+                            ty_name(want)
+                        ));
+                    }
+                    self.ret(v);
+                }
+                _ => return Err("the `return` does not match the declared result".into()),
+            },
+            StmtKind::If(s) => {
+                let merge = self.b.create_block();
+                for (cond, body) in &s.branches {
+                    let Condition::Expr(c) = cond else {
+                        return Err("`if let`".into());
+                    };
+                    let (v, t) = self.expr(c)?;
+                    let c = self.truthy(v, t)?;
+                    let then = self.b.create_block();
+                    let next = self.b.create_block();
+                    self.b.ins().brif(c, then, &[], next, &[]);
+                    self.b.switch_to_block(then);
+                    self.block(body)?;
+                    self.b.ins().jump(merge, &[]);
+                    self.b.switch_to_block(next);
+                }
+                if let Some(body) = &s.else_body {
+                    self.block(body)?;
+                }
+                self.b.ins().jump(merge, &[]);
+                self.b.switch_to_block(merge);
+            }
+            StmtKind::While { condition, body } => {
+                let Condition::Expr(c) = condition else {
+                    return Err("`loop let`".into());
+                };
+                let header = self.b.create_block();
+                let inside = self.b.create_block();
+                let exit = self.b.create_block();
+                self.b.ins().jump(header, &[]);
+                self.b.switch_to_block(header);
+                let (v, t) = self.expr(c)?;
+                let c = self.truthy(v, t)?;
+                self.b.ins().brif(c, inside, &[], exit, &[]);
+                self.b.switch_to_block(inside);
+                self.loops.push((header, exit));
+                self.block(body)?;
+                self.loops.pop();
+                self.b.ins().jump(header, &[]);
+                self.b.switch_to_block(exit);
+            }
+            StmtKind::Loop(body) => {
+                let header = self.b.create_block();
+                let exit = self.b.create_block();
+                self.b.ins().jump(header, &[]);
+                self.b.switch_to_block(header);
+                self.loops.push((header, exit));
+                self.block(body)?;
+                self.loops.pop();
+                self.b.ins().jump(header, &[]);
+                self.b.switch_to_block(exit);
+            }
+            StmtKind::For(f) => self.each(f)?,
+            StmtKind::Stop => {
+                let (_, exit) = *self.loops.last().ok_or("`stop` outside a loop")?;
+                self.b.ins().jump(exit, &[]);
+                self.dead();
+            }
+            StmtKind::Skip => {
+                let (next, _) = *self.loops.last().ok_or("`skip` outside a loop")?;
+                self.b.ins().jump(next, &[]);
+                self.dead();
+            }
+            _ => return Err(format!("this kind of statement (line {})", self.line)),
+        }
+        Ok(())
+    }
+
+    /// `each i in a until b by step`, `a to b`, or `range(...)`.
+    fn each(&mut self, f: &crate::ast::ForStmt) -> Res<()> {
+        if f.mode != ForMode::Sequential || f.pass != PassMode::Borrow {
+            return Err("`par each`, `async each` and `each mut` loops".into());
+        }
+        let BindTarget::Name(var_name) = &f.target else {
+            return Err("loops that unpack items".into());
+        };
+        let (start, end, inclusive, step) = match &f.iter.kind {
+            ExprKind::Range {
+                start,
+                end,
+                inclusive,
+                step,
+            } => (
+                &**start,
+                &**end,
+                *inclusive,
+                step.as_deref().map(literal_int).transpose()?,
+            ),
+            ExprKind::Call { callee, args }
+                if matches!(&callee.kind, ExprKind::Name(n) if n.name == "range" && self.lookup("range").is_none() && !self.env.globals.iter().any(|g| g == "range"))
+                    && (1..=3).contains(&args.len())
+                    && args.iter().all(|a| a.name.is_none()) =>
+            {
+                return self.each_range_call(var_name, args, &f.body);
+            }
+            _ => return Err("loops over anything but a range of integers".into()),
+        };
+        let step = step.unwrap_or(1);
+        if step == 0 {
+            return Err("a range with step 0".into());
+        }
+        let (s, st) = self.expr(start)?;
+        let (e, et) = self.expr(end)?;
+        if st != NTy::Int || et != NTy::Int {
+            return Err("ranges of floats".into());
+        }
+        self.counted_loop(&var_name.name, s, e, inclusive, step, &f.body)
+    }
+
+    fn each_range_call(
+        &mut self,
+        var_name: &crate::ast::Ident,
+        args: &[crate::ast::Arg],
+        body: &AstBlock,
+    ) -> Res<()> {
+        let step = match args.get(2) {
+            Some(a) => literal_int(&a.value)?,
+            None => 1,
+        };
+        if step == 0 {
+            return Err("a range with step 0".into());
+        }
+        let (s, e) = if args.len() == 1 {
+            let (e, et) = self.expr(&args[0].value)?;
+            if et != NTy::Int {
+                return Err("ranges of floats".into());
+            }
+            (self.b.ins().iconst(types::I64, 0), e)
+        } else {
+            let (s, st) = self.expr(&args[0].value)?;
+            let (e, et) = self.expr(&args[1].value)?;
+            if st != NTy::Int || et != NTy::Int {
+                return Err("ranges of floats".into());
+            }
+            (s, e)
+        };
+        self.counted_loop(&var_name.name, s, e, false, step, body)
+    }
+
+    fn counted_loop(
+        &mut self,
+        name: &str,
+        start: Value,
+        end: Value,
+        inclusive: bool,
+        step: i64,
+        body: &AstBlock,
+    ) -> Res<()> {
+        let counter = self.b.declare_var(types::I64);
+        self.b.def_var(counter, start);
+        let header = self.b.create_block();
+        let inside = self.b.create_block();
+        let next = self.b.create_block();
+        let exit = self.b.create_block();
+        self.b.ins().jump(header, &[]);
+        self.b.switch_to_block(header);
+        let i = self.b.use_var(counter);
+        let cc = match (step > 0, inclusive) {
+            (true, false) => IntCC::SignedLessThan,
+            (true, true) => IntCC::SignedLessThanOrEqual,
+            (false, false) => IntCC::SignedGreaterThan,
+            (false, true) => IntCC::SignedGreaterThanOrEqual,
+        };
+        let go = self.b.ins().icmp(cc, i, end);
+        self.b.ins().brif(go, inside, &[], exit, &[]);
+        self.b.switch_to_block(inside);
+        self.scopes.push(Vec::new());
+        let i = self.b.use_var(counter);
+        self.declare(name, i, NTy::Int);
+        self.loops.push((next, exit));
+        for stmt in &body.stmts {
+            self.stmt(stmt)?;
+        }
+        self.loops.pop();
+        self.scopes.pop();
+        self.b.ins().jump(next, &[]);
+        self.b.switch_to_block(next);
+        let i = self.b.use_var(counter);
+        let step_v = self.b.ins().iconst(types::I64, step);
+        let (n, overflow) = self.b.ins().sadd_overflow(i, step_v);
+        self.b.def_var(counter, n);
+        // Past the largest integer: the range has ended.
+        self.b.ins().brif(overflow, exit, &[], header, &[]);
+        self.b.switch_to_block(exit);
+        Ok(())
+    }
+
+    // ---- expressions ----
+
+    fn expr(&mut self, e: &Expr) -> Res<(Value, NTy)> {
+        let saved = self.line;
+        if e.span.start.line > 0 && e.span.start.offset < (0xFE << 24) {
+            self.line = e.span.start.line;
+        }
+        let result = self.expr_inner(e);
+        self.line = saved;
+        result
+    }
+
+    fn expr_inner(&mut self, e: &Expr) -> Res<(Value, NTy)> {
+        Ok(match &e.kind {
+            ExprKind::Int {
+                value,
+                suffix: None,
+            } => {
+                let v = i64::try_from(*value).map_err(|_| "an integer literal too large")?;
+                (self.b.ins().iconst(types::I64, v), NTy::Int)
+            }
+            ExprKind::Float {
+                value,
+                suffix: None,
+            } => (self.b.ins().f64const(*value), NTy::Float),
+            ExprKind::Bool(v) => (self.b.ins().iconst(types::I8, i64::from(*v)), NTy::Bool),
+            ExprKind::Name(n) => {
+                let (var, t) = self
+                    .lookup(&n.name)
+                    .ok_or_else(|| format!("`{}` is not a local number", n.name))?;
+                (self.b.use_var(var), t)
+            }
+            ExprKind::Unary { op, operand } => {
+                let (v, t) = self.expr(operand)?;
+                match (op, t) {
+                    (UnaryOp::Neg, NTy::Int) => {
+                        let z = self.b.ins().iconst(types::I64, 0);
+                        let (r, of) = self.b.ins().ssub_overflow(z, v);
+                        self.fail_if(of, ERR_OVERFLOW, OP_NEG);
+                        (r, NTy::Int)
+                    }
+                    (UnaryOp::Neg, NTy::Float) => (self.b.ins().fneg(v), NTy::Float),
+                    (UnaryOp::Pos, NTy::Int | NTy::Float) => (v, t),
+                    (UnaryOp::BitNot, NTy::Int) => (self.b.ins().bnot(v), NTy::Int),
+                    (UnaryOp::Not, _) => {
+                        let truth = self.truthy(v, t)?;
+                        (self.b.ins().icmp_imm_s(IntCC::Equal, truth, 0), NTy::Bool)
+                    }
+                    _ => return Err("this unary operator on this type".into()),
+                }
+            }
+            ExprKind::Binary {
+                op: op @ (BinaryOp::And | BinaryOp::Or),
+                lhs,
+                rhs,
+            } => {
+                let (l, lt) = self.expr(lhs)?;
+                if lt != NTy::Bool {
+                    return Err("`and`/`or` on values that are not booleans".into());
+                }
+                let rhs_block = self.b.create_block();
+                let done = self.b.create_block();
+                self.b.append_block_param(done, types::I8);
+                if *op == BinaryOp::And {
+                    self.b.ins().brif(l, rhs_block, &[], done, &[l.into()]);
+                } else {
+                    self.b.ins().brif(l, done, &[l.into()], rhs_block, &[]);
+                }
+                self.b.switch_to_block(rhs_block);
+                let (r, rt) = self.expr(rhs)?;
+                if rt != NTy::Bool {
+                    return Err("`and`/`or` on values that are not booleans".into());
+                }
+                self.b.ins().jump(done, &[r.into()]);
+                self.b.switch_to_block(done);
+                (self.b.block_params(done)[0], NTy::Bool)
+            }
+            ExprKind::Binary { op, lhs, rhs } => {
+                let (l, lt) = self.expr(lhs)?;
+                let (r, rt) = self.expr(rhs)?;
+                // `x ** n` with an integer `n` gives a float when `n` is
+                // negative, so only a literal exponent has a known type.
+                if *op == BinaryOp::Pow
+                    && lt == NTy::Int
+                    && rt == NTy::Int
+                    && !matches!(rhs.kind, ExprKind::Int { .. })
+                {
+                    return Err("`int ** int` with an exponent that is not a literal".into());
+                }
+                self.binary(*op, l, lt, r, rt)?
+            }
+            ExprKind::Compare { operands, ops } => self.compare(operands, ops)?,
+            ExprKind::If {
+                then_value,
+                condition,
+                else_value,
+            } => {
+                let (c, ct) = self.expr(condition)?;
+                let c = self.truthy(c, ct)?;
+                let then = self.b.create_block();
+                let other = self.b.create_block();
+                let done = self.b.create_block();
+                self.b.ins().brif(c, then, &[], other, &[]);
+                self.b.switch_to_block(then);
+                let (a, at) = self.expr(then_value)?;
+                self.b.append_block_param(done, cl_type(at));
+                self.b.ins().jump(done, &[a.into()]);
+                self.b.switch_to_block(other);
+                let (b, bt) = self.expr(else_value)?;
+                if at != bt {
+                    return Err("the two sides of `a if c else b` have different types".into());
+                }
+                self.b.ins().jump(done, &[b.into()]);
+                self.b.switch_to_block(done);
+                (self.b.block_params(done)[0], at)
+            }
+            ExprKind::Call { callee, args } => self.call(callee, args)?,
+            _ => return Err("this kind of expression".into()),
+        })
+    }
+
+    fn binary(&mut self, op: BinaryOp, l: Value, lt: NTy, r: Value, rt: NTy) -> Res<(Value, NTy)> {
+        use BinaryOp as B;
+        match (lt, rt) {
+            (NTy::Int, NTy::Int) => self.int_binary(op, l, r),
+            (NTy::Int | NTy::Float, NTy::Int | NTy::Float) => {
+                if matches!(op, B::BitAnd | B::BitOr | B::BitXor | B::Shl | B::Shr) {
+                    return Err("bit operators on floats".into());
+                }
+                let x = self.as_float(l, lt);
+                let y = self.as_float(r, rt);
+                self.float_binary(op, x, y)
+            }
+            _ => Err(format!("`{op:?}` on {} and {}", ty_name(lt), ty_name(rt))),
+        }
+    }
+
+    fn int_binary(&mut self, op: BinaryOp, x: Value, y: Value) -> Res<(Value, NTy)> {
+        use BinaryOp as B;
+        let checked = |s: &mut Self, (v, of): (Value, Value), detail| {
+            s.fail_if(of, ERR_OVERFLOW, detail);
+            (v, NTy::Int)
+        };
+        Ok(match op {
+            B::Add => {
+                let r = self.b.ins().sadd_overflow(x, y);
+                checked(self, r, OP_ADD)
+            }
+            B::Sub => {
+                let r = self.b.ins().ssub_overflow(x, y);
+                checked(self, r, OP_SUB)
+            }
+            B::Mul => {
+                let r = self.b.ins().smul_overflow(x, y);
+                checked(self, r, OP_MUL)
+            }
+            B::Div => {
+                let zero = self.b.ins().icmp_imm_s(IntCC::Equal, y, 0);
+                self.fail_if(zero, ERR_DIV_ZERO, 0);
+                let fx = self.b.ins().fcvt_from_sint(types::F64, x);
+                let fy = self.b.ins().fcvt_from_sint(types::F64, y);
+                (self.b.ins().fdiv(fx, fy), NTy::Float)
+            }
+            B::FloorDiv | B::Rem => {
+                let zero = self.b.ins().icmp_imm_s(IntCC::Equal, y, 0);
+                self.fail_if(zero, ERR_DIV_ZERO, 0);
+                // i64::MIN by -1 overflows.
+                let min = self.b.ins().icmp_imm_s(IntCC::Equal, x, i64::MIN);
+                let neg1 = self.b.ins().icmp_imm_s(IntCC::Equal, y, -1);
+                let both = self.b.ins().band(min, neg1);
+                self.fail_if(
+                    both,
+                    ERR_OVERFLOW,
+                    if op == B::FloorDiv {
+                        OP_FLOORDIV
+                    } else {
+                        OP_REM
+                    },
+                );
+                let q = self.b.ins().sdiv(x, y);
+                let r = self.b.ins().srem(x, y);
+                // Round toward negative infinity: adjust when the remainder
+                // is nonzero and its sign differs from the divisor's.
+                let r_nonzero = self.b.ins().icmp_imm_s(IntCC::NotEqual, r, 0);
+                let xor = self.b.ins().bxor(r, y);
+                let signs_differ = self.b.ins().icmp_imm_s(IntCC::SignedLessThan, xor, 0);
+                let adjust = self.b.ins().band(r_nonzero, signs_differ);
+                if op == B::FloorDiv {
+                    let q1 = self.b.ins().iadd_imm_s(q, -1);
+                    (self.b.ins().select(adjust, q1, q), NTy::Int)
+                } else {
+                    let r1 = self.b.ins().iadd(r, y);
+                    (self.b.ins().select(adjust, r1, r), NTy::Int)
+                }
+            }
+            B::Pow => {
+                // The exponent is a literal (checked by the caller); a
+                // negative one fails here as the interpreter's would not, so
+                // it is refused there too.
+                let f = self.func_ref(self.helpers["vyrn_ipow"]);
+                let call = self.b.ins().call(f, &[x, y, self.err]);
+                let v = self.b.inst_results(call)[0];
+                self.check_err_with_line();
+                (v, NTy::Int)
+            }
+            B::BitAnd => (self.b.ins().band(x, y), NTy::Int),
+            B::BitOr => (self.b.ins().bor(x, y), NTy::Int),
+            B::BitXor => (self.b.ins().bxor(x, y), NTy::Int),
+            B::Shl => {
+                let f = self.func_ref(self.helpers["vyrn_ishl"]);
+                let call = self.b.ins().call(f, &[x, y, self.err]);
+                let v = self.b.inst_results(call)[0];
+                self.check_err_with_line();
+                (v, NTy::Int)
+            }
+            B::Shr => {
+                let ok = self.b.ins().icmp_imm_s(IntCC::UnsignedLessThan, y, 64);
+                let bad = self.b.ins().icmp_imm_s(IntCC::Equal, ok, 0);
+                // The message names the amount.
+                self.b.ins().store(MemFlagsData::trusted(), y, self.err, 16);
+                self.fail_if(bad, ERR_SHIFT, 0);
+                (self.b.ins().sshr(x, y), NTy::Int)
+            }
+            B::And | B::Or => unreachable!("handled with short-circuiting"),
+        })
+    }
+
+    /// After a helper that may have failed: set the line and return.
+    fn check_err_with_line(&mut self) {
+        let code = self
+            .b
+            .ins()
+            .load(types::I32, MemFlagsData::trusted(), self.err, 0);
+        let bad = self.b.create_block();
+        let ok = self.b.create_block();
+        self.b.ins().brif(code, bad, &[], ok, &[]);
+        self.b.switch_to_block(bad);
+        let l = self.b.ins().iconst(types::I32, i64::from(self.line));
+        self.b.ins().store(MemFlagsData::trusted(), l, self.err, 8);
+        let z = self.zero(self.ret);
+        self.b.ins().return_(&[z]);
+        self.b.switch_to_block(ok);
+    }
+
+    fn float_binary(&mut self, op: BinaryOp, x: Value, y: Value) -> Res<(Value, NTy)> {
+        use BinaryOp as B;
+        let zero_check = |s: &mut Self| {
+            let z = s.b.ins().f64const(0.0);
+            let is_zero = s.b.ins().fcmp(FloatCC::Equal, y, z);
+            s.fail_if(is_zero, ERR_DIV_ZERO, 0);
+        };
+        Ok((
+            match op {
+                B::Add => self.b.ins().fadd(x, y),
+                B::Sub => self.b.ins().fsub(x, y),
+                B::Mul => self.b.ins().fmul(x, y),
+                B::Div => {
+                    zero_check(self);
+                    self.b.ins().fdiv(x, y)
+                }
+                B::FloorDiv => {
+                    zero_check(self);
+                    let q = self.b.ins().fdiv(x, y);
+                    self.b.ins().floor(q)
+                }
+                B::Rem => {
+                    zero_check(self);
+                    let q = self.b.ins().fdiv(x, y);
+                    let f = self.b.ins().floor(q);
+                    let m = self.b.ins().fmul(y, f);
+                    self.b.ins().fsub(x, m)
+                }
+                B::Pow => {
+                    let f = self.func_ref(self.helpers["vyrn_powf"]);
+                    let call = self.b.ins().call(f, &[x, y]);
+                    self.b.inst_results(call)[0]
+                }
+                _ => return Err("this operator on floats".into()),
+            },
+            NTy::Float,
+        ))
+    }
+
+    fn compare(&mut self, operands: &[Expr], ops: &[CompareOp]) -> Res<(Value, NTy)> {
+        let done = self.b.create_block();
+        self.b.append_block_param(done, types::I8);
+        let (mut left, mut lt) = self.expr(&operands[0])?;
+        for (i, op) in ops.iter().enumerate() {
+            let (right, rt) = self.expr(&operands[i + 1])?;
+            let result = self.compare_pair(*op, left, lt, right, rt)?;
+            if i + 1 == ops.len() {
+                self.b.ins().jump(done, &[result.into()]);
+            } else {
+                let next = self.b.create_block();
+                let f = self.b.ins().iconst(types::I8, 0);
+                self.b.ins().brif(result, next, &[], done, &[f.into()]);
+                self.b.switch_to_block(next);
+            }
+            left = right;
+            lt = rt;
+        }
+        self.b.switch_to_block(done);
+        Ok((self.b.block_params(done)[0], NTy::Bool))
+    }
+
+    fn compare_pair(&mut self, op: CompareOp, l: Value, lt: NTy, r: Value, rt: NTy) -> Res<Value> {
+        use CompareOp as C;
+        match (lt, rt) {
+            (NTy::Int, NTy::Int) | (NTy::Bool, NTy::Bool) => {
+                if lt == NTy::Bool && !matches!(op, C::Eq | C::NotEq) {
+                    return Err("ordering booleans".into());
+                }
+                let cc = match op {
+                    C::Eq => IntCC::Equal,
+                    C::NotEq => IntCC::NotEqual,
+                    C::Lt => IntCC::SignedLessThan,
+                    C::LtEq => IntCC::SignedLessThanOrEqual,
+                    C::Gt => IntCC::SignedGreaterThan,
+                    C::GtEq => IntCC::SignedGreaterThanOrEqual,
+                    _ => return Err("`in` on numbers".into()),
+                };
+                Ok(self.b.ins().icmp(cc, l, r))
+            }
+            (NTy::Int | NTy::Float, NTy::Int | NTy::Float) => {
+                let x = self.as_float(l, lt);
+                let y = self.as_float(r, rt);
+                let cc = match op {
+                    C::Eq => FloatCC::Equal,
+                    C::NotEq => FloatCC::NotEqual,
+                    C::Lt => FloatCC::LessThan,
+                    C::LtEq => FloatCC::LessThanOrEqual,
+                    C::Gt => FloatCC::GreaterThan,
+                    C::GtEq => FloatCC::GreaterThanOrEqual,
+                    _ => return Err("`in` on numbers".into()),
+                };
+                Ok(self.b.ins().fcmp(cc, x, y))
+            }
+            _ => Err(format!("comparing {} with {}", ty_name(lt), ty_name(rt))),
+        }
+    }
+
+    fn call(&mut self, callee: &Expr, args: &[crate::ast::Arg]) -> Res<(Value, NTy)> {
+        if args.iter().any(|a| a.name.is_some() || a.is_mut) {
+            return Err("calls with keyword or `mut` arguments".into());
+        }
+        // `math.sqrt(x)` when `use std.math`.
+        let name = match &callee.kind {
+            ExprKind::Name(n) => {
+                if self.lookup(&n.name).is_some() {
+                    return Err("calling a variable".into());
+                }
+                n.name.clone()
+            }
+            ExprKind::Field {
+                base,
+                name,
+                optional: false,
+            } => match &base.kind {
+                ExprKind::Name(m)
+                    if self.env.math.contains(&m.name) && self.lookup(&m.name).is_none() =>
+                {
+                    return self.math_call(&name.name, args);
+                }
+                _ => return Err("method calls".into()),
+            },
+            _ => return Err("this kind of call".into()),
+        };
+        if let Some((params, ret)) = self.sigs.get(&name).cloned() {
+            if args.len() != params.len() {
+                return Err(format!("`{name}` called with {} arguments", args.len()));
+            }
+            let mut values = Vec::new();
+            for (a, want) in args.iter().zip(&params) {
+                let (v, t) = self.expr(&a.value)?;
+                if t != *want {
+                    return Err(format!(
+                        "`{name}` receives {} where it declares {}",
+                        ty_name(t),
+                        ty_name(*want)
+                    ));
+                }
+                values.push(v);
+            }
+            values.push(self.err);
+            let f = self.func_ref(self.ids[&name]);
+            let call = self.b.ins().call(f, &values);
+            let v = self.b.inst_results(call)[0];
+            self.check_err();
+            return Ok((v, ret));
+        }
+        if self.env.globals.contains(&name) {
+            return Err(format!("calls `{name}`, which stays interpreted"));
+        }
+        self.builtin(&name, args)
+    }
+
+    fn args(&mut self, args: &[crate::ast::Arg], n: usize) -> Res<Vec<(Value, NTy)>> {
+        if args.len() != n {
+            return Err("a builtin with an unexpected number of arguments".into());
+        }
+        args.iter().map(|a| self.expr(&a.value)).collect()
+    }
+
+    fn builtin(&mut self, name: &str, args: &[crate::ast::Arg]) -> Res<(Value, NTy)> {
+        Ok(match name {
+            "abs" => {
+                let a = self.args(args, 1)?;
+                let (v, t) = a[0];
+                match t {
+                    NTy::Int => {
+                        let min = self.b.ins().icmp_imm_s(IntCC::Equal, v, i64::MIN);
+                        self.fail_if(min, ERR_OVERFLOW, OP_ABS);
+                        let neg = self.b.ins().ineg(v);
+                        let is_neg = self.b.ins().icmp_imm_s(IntCC::SignedLessThan, v, 0);
+                        (self.b.ins().select(is_neg, neg, v), NTy::Int)
+                    }
+                    NTy::Float => (self.b.ins().fabs(v), NTy::Float),
+                    _ => return Err("abs of a boolean".into()),
+                }
+            }
+            "float" => {
+                let a = self.args(args, 1)?;
+                match a[0].1 {
+                    NTy::Int | NTy::Float => (self.as_float(a[0].0, a[0].1), NTy::Float),
+                    _ => return Err("float of a boolean".into()),
+                }
+            }
+            "int" => {
+                let a = self.args(args, 1)?;
+                match a[0].1 {
+                    NTy::Int => a[0],
+                    NTy::Float => {
+                        let v = a[0].0;
+                        // Not finite: the interpreter refuses it.
+                        let inf = self.b.ins().f64const(f64::INFINITY);
+                        let abs = self.b.ins().fabs(v);
+                        let finite = self.b.ins().fcmp(FloatCC::LessThan, abs, inf);
+                        let bad = self.b.ins().icmp_imm_s(IntCC::Equal, finite, 0);
+                        self.fail_if(bad, ERR_FLOAT_TO_INT, 0);
+                        let t = self.b.ins().trunc(v);
+                        (self.b.ins().fcvt_to_sint_sat(types::I64, t), NTy::Int)
+                    }
+                    _ => return Err("int of a boolean".into()),
+                }
+            }
+            "sqrt" => {
+                let a = self.args(args, 1)?;
+                let x = self.float_arg(a[0])?;
+                (self.b.ins().sqrt(x), NTy::Float)
+            }
+            "exp" | "tanh" => return self.math_call(name, args),
+            "floor" | "ceil" => {
+                let a = self.args(args, 1)?;
+                match a[0].1 {
+                    NTy::Int => a[0],
+                    NTy::Float => {
+                        let r = if name == "floor" {
+                            self.b.ins().floor(a[0].0)
+                        } else {
+                            self.b.ins().ceil(a[0].0)
+                        };
+                        (self.b.ins().fcvt_to_sint_sat(types::I64, r), NTy::Int)
+                    }
+                    _ => return Err("floor of a boolean".into()),
+                }
+            }
+            "min" | "max" => {
+                let a = self.args(args, 2)?;
+                let ((x, xt), (y, yt)) = (a[0], a[1]);
+                if xt != yt || xt == NTy::Bool {
+                    return Err("`min`/`max` of values with different types".into());
+                }
+                // Ties keep the first, as the interpreter does.
+                let pick_second = match (xt, name) {
+                    (NTy::Int, "min") => self.b.ins().icmp(IntCC::SignedLessThan, y, x),
+                    (NTy::Int, _) => self.b.ins().icmp(IntCC::SignedGreaterThan, y, x),
+                    (_, "min") => self.b.ins().fcmp(FloatCC::LessThan, y, x),
+                    _ => self.b.ins().fcmp(FloatCC::GreaterThan, y, x),
+                };
+                (self.b.ins().select(pick_second, y, x), xt)
+            }
+            _ => return Err(format!("calls `{name}`")),
+        })
+    }
+
+    fn float_arg(&mut self, (v, t): (Value, NTy)) -> Res<Value> {
+        match t {
+            NTy::Int | NTy::Float => Ok(self.as_float(v, t)),
+            _ => Err("a math function of a boolean".into()),
+        }
+    }
+
+    /// `std.math` functions, and `exp`/`tanh`.
+    fn math_call(&mut self, name: &str, args: &[crate::ast::Arg]) -> Res<(Value, NTy)> {
+        if let Some((_, sym)) = FLOAT1.iter().find(|(n, _)| *n == name) {
+            if name == "log" && args.len() != 1 {
+                return Err("`log` with a base".into());
+            }
+            let a = self.args(args, 1)?;
+            let x = self.float_arg(a[0])?;
+            let f = self.func_ref(self.helpers[sym]);
+            let call = self.b.ins().call(f, &[x]);
+            return Ok((self.b.inst_results(call)[0], NTy::Float));
+        }
+        match name {
+            "sqrt" | "floor" | "ceil" => self.builtin(name, args),
+            "atan2" | "hypot" => {
+                let a = self.args(args, 2)?;
+                let x = self.float_arg(a[0])?;
+                let y = self.float_arg(a[1])?;
+                let f = self.func_ref(
+                    self.helpers[if name == "atan2" {
+                        "vyrn_atan2"
+                    } else {
+                        "vyrn_hypot"
+                    }],
+                );
+                let call = self.b.ins().call(f, &[x, y]);
+                Ok((self.b.inst_results(call)[0], NTy::Float))
+            }
+            _ => Err(format!("calls `math.{name}`")),
+        }
+    }
+}
+
+fn literal_int(e: &Expr) -> Res<i64> {
+    match &e.kind {
+        ExprKind::Int {
+            value,
+            suffix: None,
+        } => i64::try_from(*value).map_err(|_| "a step too large".into()),
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            operand,
+        } => literal_int(operand).map(|v| -v),
+        _ => Err("a range whose step is not a literal".into()),
+    }
+}
+
+fn assign_op(op: AssignOp) -> Option<BinaryOp> {
+    Some(match op {
+        AssignOp::Add => BinaryOp::Add,
+        AssignOp::Sub => BinaryOp::Sub,
+        AssignOp::Mul => BinaryOp::Mul,
+        AssignOp::Div => BinaryOp::Div,
+        AssignOp::FloorDiv => BinaryOp::FloorDiv,
+        AssignOp::Rem => BinaryOp::Rem,
+        AssignOp::Pow => BinaryOp::Pow,
+        AssignOp::BitAnd => BinaryOp::BitAnd,
+        AssignOp::BitOr => BinaryOp::BitOr,
+        AssignOp::BitXor => BinaryOp::BitXor,
+        AssignOp::Shl => BinaryOp::Shl,
+        AssignOp::Shr => BinaryOp::Shr,
+        _ => return None,
+    })
+}
+
+fn ty_name(t: NTy) -> &'static str {
+    match t {
+        NTy::Int => "int",
+        NTy::Float => "float",
+        NTy::Bool => "bool",
+        NTy::Unit => "none",
+    }
+}
