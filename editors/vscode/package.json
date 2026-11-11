@@ -1,0 +1,71 @@
+{
+  "name": "vyrn",
+  "displayName": "Vyrn",
+  "description": "Vyrn language support: highlighting, errors as you type from vyrn check, formatting and running",
+  "version": "0.3.0",
+  "publisher": "vyrn",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Formatters",
+    "Linters"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:vyrn"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "vyrn",
+        "aliases": [
+          "Vyrn",
+          "vyrn"
+        ],
+        "extensions": [
+          ".vyrn"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "vyrn",
+        "scopeName": "source.vyrn",
+        "path": "./syntaxes/vyrn.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "vyrn.run",
+        "title": "Vyrn: Run File"
+      },
+      {
+        "command": "vyrn.test",
+        "title": "Vyrn: Run Tests"
+      }
+    ],
+    "configuration": {
+      "title": "Vyrn",
+      "properties": {
+        "vyrn.path": {
+          "type": "string",
+          "default": "vyrn",
+          "description": "The vyrn executable."
+        },
+        "vyrn.checkOnType": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check the file as you type (after a short pause), not only on save."
+        }
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dmccottrell/vyrn"
+  }
+}

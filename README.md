@@ -8,6 +8,7 @@ The type checker, borrow checker and native backends do not exist yet.
 
 ## Documents
 
+- [`docs/tutorial.md`](docs/tutorial.md): learn Vyrn in an hour, every example tested
 - [`docs/syntax.md`](docs/syntax.md): the syntax at a glance, and how it maps from Python
 - [`docs/grammar.ebnf`](docs/grammar.ebnf): the complete EBNF grammar (v0.4)
 - [`docs/architecture.md`](docs/architecture.md): compiler tiers, memory model, GPU bridge and concurrency design
@@ -52,6 +53,12 @@ cd hello && vyrn run
 Files of a project use each other with `use geo.shapes` (loads `geo/shapes.vyrn`),
 and modules from any git host with `use "github.com/ann/neural@v1"`. There is no
 central registry: `docs/ffi.md` describes the resolver.
+
+## Editor
+
+`editors/vscode` is the VS Code extension: highlighting, errors from `vyrn check`
+as you type, formatting with `vyrn fmt`, and run and test commands. Its README
+says how to package and install it.
 
 ## Compiler
 

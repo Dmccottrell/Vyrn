@@ -1,0 +1,175 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Vyrn",
+  "scopeName": "source.vyrn",
+  "fileTypes": ["vyrn"],
+  "patterns": [
+    { "include": "#doc-comment" },
+    { "include": "#comment" },
+    { "include": "#decorator" },
+    { "include": "#route" },
+    { "include": "#declaration" },
+    { "include": "#string-triple" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#keyword" },
+    { "include": "#type" },
+    { "include": "#builtin" },
+    { "include": "#call" },
+    { "include": "#operator" }
+  ],
+  "repository": {
+    "doc-comment": {
+      "match": "##.*$",
+      "name": "comment.line.documentation.vyrn"
+    },
+    "comment": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.vyrn"
+    },
+    "decorator": {
+      "match": "^\\s*(@[A-Za-z_][A-Za-z0-9_.]*)",
+      "captures": { "1": { "name": "entity.name.function.decorator.vyrn" } }
+    },
+    "route": {
+      "match": "\\b(route)\\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|WS|SSE)\\b",
+      "captures": {
+        "1": { "name": "keyword.other.route.vyrn" },
+        "2": { "name": "constant.language.http-method.vyrn" }
+      }
+    },
+    "declaration": {
+      "patterns": [
+        {
+          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.function.vyrn" },
+            "2": { "name": "entity.name.function.vyrn" }
+          }
+        },
+        {
+          "match": "\\b(struct|class|enum|trait|type)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.vyrn" },
+            "2": { "name": "entity.name.type.vyrn" }
+          }
+        },
+        {
+          "match": "\\b(let|var|const)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.vyrn" },
+            "2": { "name": "variable.other.declaration.vyrn" }
+          }
+        }
+      ]
+    },
+    "string-triple": {
+      "begin": "\"\"\"",
+      "end": "\"\"\"",
+      "name": "string.quoted.triple.vyrn",
+      "patterns": [{ "include": "#escape" }, { "include": "#interpolation" }]
+    },
+    "string": {
+      "patterns": [
+        {
+          "begin": "\"",
+          "end": "\"|$",
+          "name": "string.quoted.double.vyrn",
+          "patterns": [{ "include": "#escape" }, { "include": "#interpolation" }]
+        },
+        {
+          "begin": "'",
+          "end": "'|$",
+          "name": "string.quoted.single.vyrn",
+          "patterns": [{ "include": "#escape" }, { "include": "#interpolation" }]
+        }
+      ]
+    },
+    "escape": {
+      "match": "\\\\(?:[nrt0\\\\\"'{}]|u\\{[0-9A-Fa-f]{1,6}\\})",
+      "name": "constant.character.escape.vyrn"
+    },
+    "interpolation": {
+      "begin": "\\{",
+      "end": "\\}",
+      "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.vyrn" } },
+      "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.vyrn" } },
+      "name": "meta.interpolation.vyrn",
+      "patterns": [
+        { "include": "#number" },
+        { "include": "#keyword" },
+        { "include": "#builtin" },
+        { "include": "#call" },
+        { "include": "#operator" }
+      ]
+    },
+    "number": {
+      "patterns": [
+        {
+          "match": "\\b0x[0-9A-Fa-f_]+(?:[iu](?:8|16|32|64))?\\b",
+          "name": "constant.numeric.hex.vyrn"
+        },
+        {
+          "match": "\\b0b[01_]+(?:[iu](?:8|16|32|64))?\\b",
+          "name": "constant.numeric.binary.vyrn"
+        },
+        {
+          "match": "\\b0o[0-7_]+(?:[iu](?:8|16|32|64))?\\b",
+          "name": "constant.numeric.octal.vyrn"
+        },
+        {
+          "match": "\\b[0-9][0-9_]*(?:\\.[0-9][0-9_]*)?(?:[eE][+-]?[0-9_]+)?(?:f16|bf16|f32|f64|[iu](?:8|16|32|64))?\\b",
+          "name": "constant.numeric.decimal.vyrn"
+        }
+      ]
+    },
+    "keyword": {
+      "patterns": [
+        {
+          "match": "\\b(if|elif|else|for|while|loop|match|is|stop|skip|return|fail|fails|try|catch|finally|with|defer|await|spawn|async|in|to|until|by|on|region|unsafe|main)\\b",
+          "name": "keyword.control.vyrn"
+        },
+        {
+          "match": "\\b(use|as|pub|export|extern|impl|route|routes)\\b",
+          "name": "keyword.other.vyrn"
+        },
+        {
+          "match": "\\b(strict|kernel|par|mut|own|move|ref|shared|weak|ptr)\\b",
+          "name": "storage.modifier.vyrn"
+        },
+        {
+          "match": "\\b(and|or|not)\\b",
+          "name": "keyword.operator.logical.vyrn"
+        },
+        {
+          "match": "\\b(true|false|none)\\b",
+          "name": "constant.language.vyrn"
+        },
+        {
+          "match": "\\bself\\b",
+          "name": "variable.language.self.vyrn"
+        }
+      ]
+    },
+    "type": {
+      "match": "\\b(int|float|bool|str|any|tensor|i8|i16|i32|i64|u8|u16|u32|u64|isize|usize|f16|bf16|f32|f64|q4|q8|vec2|vec3|vec4|mat3|mat4)\\b",
+      "name": "support.type.vyrn"
+    },
+    "builtin": {
+      "match": "\\b(print|len|range|enumerate|zip|sorted|min|max|sum|abs|round|sqrt|exp|tanh|relu|gelu|softmax|argmax|zeros|ones|rand|arange|eye|open|read_text|write_text|parse_json|to_json|sleep|channel|join|now|assert|Clock|load_weights|save_weights|load_tokenizer|memory|memory_used|set_memory_limit|fit|format_bytes|gpu|cpu)\\b(?=\\s*[(\\[])",
+      "name": "support.function.builtin.vyrn"
+    },
+    "call": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+      "captures": { "1": { "name": "entity.name.function.call.vyrn" } }
+    },
+    "operator": {
+      "patterns": [
+        { "match": "->|=>|\\|>|\\?\\?|\\?\\.", "name": "keyword.operator.vyrn" },
+        { "match": "\\*\\*=?|//=?|[-+*/%@&|^]=?|<<=?|>>=?", "name": "keyword.operator.arithmetic.vyrn" },
+        { "match": "==|!=|<=|>=|<|>", "name": "keyword.operator.comparison.vyrn" },
+        { "match": "=", "name": "keyword.operator.assignment.vyrn" }
+      ]
+    }
+  }
+}
