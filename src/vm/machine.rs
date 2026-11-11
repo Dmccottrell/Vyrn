@@ -799,7 +799,8 @@ impl Vm {
                     Value::Object(obj) => (self.type_name(obj.borrow().ty), self.display(&failure)),
                     other => ("Failure".to_string(), self.display(other)),
                 };
-                web::Response::error(web::status_for(&kind), &kind, &message)
+                let message = message.replace(&kind, web::short_kind(&kind));
+                web::Response::error(web::status_for(&kind), web::short_kind(&kind), &message)
             }
         }
     }

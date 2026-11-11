@@ -212,7 +212,8 @@ impl Response {
 
 /// The status for a failure of the given kind.
 pub fn status_for(kind: &str) -> u16 {
-    match kind {
+    // `app.storage.NotFound` is a `NotFound` declared in a module.
+    match short_kind(kind) {
         "BadRequest" | "ValueError" | "ParseError" => 400,
         "Unauthorized" => 401,
         "Forbidden" | "PermissionDenied" => 403,
@@ -222,6 +223,12 @@ pub fn status_for(kind: &str) -> u16 {
         "Unavailable" => 503,
         _ => 500,
     }
+}
+
+/// A failure's type without its module: `app.storage.NotFound` is
+/// `NotFound`.
+pub fn short_kind(kind: &str) -> &str {
+    kind.rsplit('.').next().unwrap_or(kind)
 }
 
 fn reason(status: u16) -> &'static str {
@@ -299,6 +306,7 @@ mod tests {
     fn failures_map_to_statuses() {
         assert_eq!(status_for("NotFound"), 404);
         assert_eq!(status_for("TypeError"), 500);
+        assert_eq!(status_for("app.storage.NotFound"), 404);
         let r = Response::error(404, "NotFound", "no user \"7\"");
         assert_eq!(
             r.body,

@@ -1,7 +1,7 @@
 # Example C (web dev): async routes returning JSON.
 
 use std.web
-use app.storage (Db)
+use app.storage (Db, NotFound)
 
 struct User:
     id: u64
@@ -37,5 +37,8 @@ routes "/admin":
 end
 
 main:
+    let db = Db()
+    await db.users.insert(User(1, "Ada", "ada@example.com"))
+    web.provide("db", db)
     web.serve(port = 8080)
 end

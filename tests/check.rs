@@ -292,3 +292,123 @@ fn pointer_passing_c_calls_need_unsafe() {
         "argument `x` of `cos` is float, but this is str"
     );
 }
+
+// ---- null safety ----------------------------------------------------------------
+
+const USERS: &str = "struct User:\n    name: str\n    email: str?\nend\nfn find(id: int) -> User?:\n    if id == 1: return User(\"Ada\", none)\n    return none\nend\n";
+
+#[test]
+fn optional_values_must_be_checked_before_use() {
+    assert_eq!(
+        one(&format!(
+            "{USERS}main:\n    let u = find(1)\n    print(u.name)\nend\n"
+        )),
+        "`u` may be none, so it cannot be used in `.name`"
+    );
+    assert_eq!(
+        one(&format!(
+            "{USERS}fn domain(u: User) -> str:\n    return u.email.split(\"@\")[1]\nend\n"
+        )),
+        "`u.email` may be none, so it cannot be used in `.split()`"
+    );
+    assert_eq!(
+        one("main:\n    let n: int? = none\n    print(n + 1)\nend\n"),
+        "`n` may be none, so it cannot be used in arithmetic"
+    );
+    assert_eq!(
+        one(&format!("{USERS}fn greet(name: str): print(name)\nmain:\n    let u = find(1)\n    greet(u?.name)\nend\n")),
+        "argument `name` of `greet` is str, but this may be none"
+    );
+    assert_eq!(
+        one(&format!(
+            "{USERS}fn first() -> User:\n    return find(1)\nend\n"
+        )),
+        "`first` returns User, but this may be none"
+    );
+}
+
+#[test]
+fn checks_narrow_optional_values() {
+    ok(&format!(
+        "{USERS}main:\n\
+         \x20   let u = find(1)\n\
+         \x20   if u != none: print(u.name)\n\
+         \x20   if u != none and u.name == \"Ada\": print(\"hi\")\n\
+         \x20   print(u?.name ?? \"nobody\")\n\
+         \x20   var v: User? = find(2)\n\
+         \x20   if v == none:\n\
+         \x20       return\n\
+         \x20   end\n\
+         \x20   print(v.name)\n\
+         end\n"
+    ));
+    ok(&format!(
+        "{USERS}fn name_of(u: User?) -> str:\n\
+         \x20   if u == none: return \"nobody\"\n\
+         \x20   return u.name\n\
+         end\n\
+         fn shout(u: User?) -> str:\n\
+         \x20   if u != none:\n\
+         \x20       return u.name\n\
+         \x20   else:\n\
+         \x20       return \"?\"\n\
+         \x20   end\n\
+         end\n"
+    ));
+    // Assigning `none` again ends the narrowing.
+    assert_eq!(
+        one(&format!("{USERS}main:\n    var v: User? = find(1)\n    if v != none:\n        v = none\n        print(v.name)\n    end\nend\n")),
+        "`v` may be none, so it cannot be used in `.name`"
+    );
+}
+
+// ---- exhaustive match -----------------------------------------------------------
+
+const SHAPE: &str =
+    "enum Shape:\n    Circle(r: float)\n    Rect(w: float, h: float)\n    Empty\nend\n";
+
+#[test]
+fn matches_handle_every_case() {
+    assert_eq!(
+        one(&format!("{SHAPE}fn area(s: Shape) -> float:\n    match s:\n        is Shape.Circle(r): return 3.14 * r * r\n        is Shape.Rect(w, h): return w * h\n    end\n    return 0.0\nend\n")),
+        "this `match` does not handle `Shape.Empty`"
+    );
+    // A partial pattern or a guard does not count.
+    assert_eq!(
+        one(&format!("{SHAPE}fn f(s: Shape):\n    match s:\n        is Shape.Circle(r) if r > 0.0: print(r)\n        is Shape.Rect(0.0, h): print(h)\n        is Shape.Empty: print(0)\n    end\nend\n")),
+        "this `match` does not handle `Shape.Circle`, `Shape.Rect`"
+    );
+    assert_eq!(
+        one("fn f(b: bool):\n    match b:\n        is true: print(1)\n    end\nend\n"),
+        "this `match` does not handle `false`"
+    );
+    ok(&format!("{SHAPE}fn f(s: Shape):\n    match s:\n        is Shape.Circle(r): print(r)\n        is Shape.Rect(_, _) or Shape.Empty: print(0)\n    end\nend\n"));
+    ok(&format!("{SHAPE}fn f(s: Shape):\n    match s:\n        is Shape.Circle(r): print(r)\n        else: print(0)\n    end\nend\n"));
+    ok(&format!("{SHAPE}fn f(s: Shape):\n    match s:\n        is Shape.Empty: print(0)\n        is other: print(other)\n    end\nend\n"));
+    // Unknown types are not checked.
+    ok("fn f(x):\n    match x:\n        is 1: print(1)\n    end\nend\n");
+}
+
+// ---- generics ---------------------------------------------------------------------
+
+#[test]
+fn generic_functions_infer_their_type_parameters() {
+    let src = "fn first[T](xs: [T]) -> T:\n    return xs[0]\nend\nfn pair[T](a: T, b: T) -> [T]:\n    return [a, b]\nend\n";
+    assert_eq!(
+        one(&format!(
+            "{src}main:\n    let n: str = first([1, 2])\nend\n"
+        )),
+        "`n` is str, but this is int"
+    );
+    assert_eq!(
+        one(&format!("{src}main:\n    print(pair(1, \"a\"))\nend\n")),
+        "`T` in `pair` stands for int from an earlier argument, but this is str"
+    );
+    assert_eq!(
+        one(&format!(
+            "{src}main:\n    let xs: [str] = pair(1, 2)\nend\n"
+        )),
+        "`xs` is [str], but this is [int]"
+    );
+    ok(&format!("{src}main:\n    let a: int = first([1, 2])\n    let b: [float] = pair(1, 2.5)\n    let c: str = first([\"x\"])\nend\n"));
+}

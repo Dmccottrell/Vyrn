@@ -76,5 +76,7 @@ cargo run --release --features gpu -- run program.vyrn
 | `src/project/` | Multi-file programs, the URL module resolver, `vyrn.lock`, single-file builds |
 | `src/vm/` | Bytecode compiler, register VM, tensor backends and builtins (see `docs/architecture.md` section 2.4) |
 
-Only `examples/grade.vyrn` runs as is: the other examples call functions
-from packages that do not exist yet (`load_level`, `load_model`, `app.storage`).
+`examples/grade.vyrn` and `examples/api.vyrn` (a web API on port 8080, with
+its database module in `examples/app/storage.vyrn`) run as they are. The game
+and inference examples call functions from packages that do not exist yet
+(`load_level`, `load_model`).

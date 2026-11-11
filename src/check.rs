@@ -69,6 +69,8 @@ pub enum Ty {
     Named(String),
     /// A pointer from C: an opaque handle.
     Ptr,
+    /// A generic function's type parameter, `T` in `fn first[T](xs: [T]) -> T`.
+    Var(String),
 }
 
 impl Ty {
@@ -91,6 +93,7 @@ impl Ty {
             Ty::Optional(t) => format!("{}?", t.name()),
             Ty::Named(n) => n.clone(),
             Ty::Ptr => "ptr".into(),
+            Ty::Var(n) => n.clone(),
         }
     }
 
@@ -129,6 +132,8 @@ struct Table {
     fns: HashMap<String, FnSig>,
     types: HashMap<String, TypeInfo>,
     enums: HashSet<String>,
+    /// Each enum's variants, as patterns name them: `Shape.Circle`.
+    variants: HashMap<String, Vec<String>>,
     consts: HashMap<String, Ty>,
     /// Type aliases and other names that are types the checker does not
     /// model.
@@ -148,6 +153,13 @@ impl Table {
                 }
                 ItemKind::Enum(e) => {
                     self.enums.insert(e.name.name.clone());
+                    self.variants.insert(
+                        e.name.name.clone(),
+                        e.variants
+                            .iter()
+                            .map(|v| format!("{}.{}", e.name.name, v.name.name))
+                            .collect(),
+                    );
                 }
                 ItemKind::TypeAlias(t) => {
                     self.opaque.insert(t.name.name.clone());
@@ -236,17 +248,21 @@ impl Table {
     }
 
     fn signature(&self, f: &FnDecl) -> FnSig {
+        let generics: Vec<String> = f.generics.iter().map(|g| g.name.name.clone()).collect();
         FnSig {
             params: f
                 .params
                 .iter()
                 .map(|p| ParamInfo {
                     name: p.name.name.clone(),
-                    ty: self.ty_opt(p.declared_ty.as_ref()),
+                    ty: p
+                        .declared_ty
+                        .as_ref()
+                        .map_or(Ty::Any, |t| self.ty_g(t, &generics)),
                     pass: p.pass,
                 })
                 .collect(),
-            ret: f.result.returns.as_ref().map(|t| self.ty(t)),
+            ret: f.result.returns.as_ref().map(|t| self.ty_g(t, &generics)),
         }
     }
 
@@ -257,6 +273,10 @@ impl Table {
     /// The checker's view of a written type. Types it does not model are
     /// `any`.
     fn ty(&self, t: &TypeExpr) -> Ty {
+        self.ty_g(t, &[])
+    }
+
+    fn ty_g(&self, t: &TypeExpr, generics: &[String]) -> Ty {
         match &t.kind {
             TypeExprKind::Any => Ty::Any,
             TypeExprKind::Named { path, .. } => {
@@ -264,6 +284,9 @@ impl Table {
                     return Ty::Any;
                 }
                 let name = path.segments[0].name.as_str();
+                if generics.iter().any(|g| g == name) {
+                    return Ty::Var(name.to_string());
+                }
                 match name {
                     "int" | "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
                     | "isize" | "usize" => Ty::Int,
@@ -279,14 +302,17 @@ impl Table {
                 }
             }
             TypeExprKind::Tensor(_) => Ty::Tensor,
-            TypeExprKind::List(inner) => Ty::List(Box::new(self.ty(inner))),
-            TypeExprKind::Array { element, .. } => Ty::List(Box::new(self.ty(element))),
-            TypeExprKind::Map { key, value } => {
-                Ty::Map(Box::new(self.ty(key)), Box::new(self.ty(value)))
-            }
+            TypeExprKind::List(inner) => Ty::List(Box::new(self.ty_g(inner, generics))),
+            TypeExprKind::Array { element, .. } => Ty::List(Box::new(self.ty_g(element, generics))),
+            TypeExprKind::Map { key, value } => Ty::Map(
+                Box::new(self.ty_g(key, generics)),
+                Box::new(self.ty_g(value, generics)),
+            ),
             TypeExprKind::Tuple(items) if items.is_empty() => Ty::None,
-            TypeExprKind::Tuple(items) => Ty::Tuple(items.iter().map(|t| self.ty(t)).collect()),
-            TypeExprKind::Optional(inner) => match self.ty(inner) {
+            TypeExprKind::Tuple(items) => {
+                Ty::Tuple(items.iter().map(|t| self.ty_g(t, generics)).collect())
+            }
+            TypeExprKind::Optional(inner) => match self.ty_g(inner, generics) {
                 Ty::Any => Ty::Any,
                 t => Ty::Optional(Box::new(t)),
             },
@@ -294,8 +320,8 @@ impl Table {
                 ownership: Ownership::Ptr,
                 ..
             } => Ty::Ptr,
-            TypeExprKind::Owned { inner, .. } => self.ty(inner),
-            TypeExprKind::Placed { inner, .. } => self.ty(inner),
+            TypeExprKind::Owned { inner, .. } => self.ty_g(inner, generics),
+            TypeExprKind::Placed { inner, .. } => self.ty_g(inner, generics),
             _ => Ty::Any,
         }
     }
@@ -358,6 +384,49 @@ impl Table {
         true
     }
 
+    /// Binds the type parameters in `param` to the parts of `arg` they
+    /// stand for. Fails with the parameter and both types when a parameter
+    /// is used for two types that do not fit each other.
+    fn unify(
+        &self,
+        param: &Ty,
+        arg: &Ty,
+        at: Span,
+        bindings: &mut HashMap<String, (Ty, Span)>,
+    ) -> Result<(), (String, Ty, Ty)> {
+        match (param, arg) {
+            (_, Ty::Any) => Ok(()),
+            (Ty::Var(v), a) => match bindings.get(v) {
+                None => {
+                    bindings.insert(v.clone(), (a.clone(), at));
+                    Ok(())
+                }
+                Some((bound, _)) if self.assignable(bound, a) => Ok(()),
+                // `T` was an int and now a float: it is a float.
+                Some((bound, _)) if self.assignable(a, bound) => {
+                    bindings.insert(v.clone(), (a.clone(), at));
+                    Ok(())
+                }
+                Some((bound, _)) => Err((v.clone(), bound.clone(), a.clone())),
+            },
+            (Ty::List(p), Ty::List(a)) | (Ty::Optional(p), Ty::Optional(a)) => {
+                self.unify(p, a, at, bindings)
+            }
+            (Ty::Optional(p), a) if *a != Ty::None => self.unify(p, a, at, bindings),
+            (Ty::Map(pk, pv), Ty::Map(ak, av)) => {
+                self.unify(pk, ak, at, bindings)?;
+                self.unify(pv, av, at, bindings)
+            }
+            (Ty::Tuple(ps), Ty::Tuple(as_)) if ps.len() == as_.len() => {
+                for (p, a) in ps.iter().zip(as_) {
+                    self.unify(p, a, at, bindings)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn is_subtype(&self, sub: &str, sup: &str) -> bool {
         let mut current = Some(sub.to_string());
         let mut hops = 0;
@@ -376,7 +445,7 @@ impl Table {
 
     fn assignable(&self, expected: &Ty, actual: &Ty) -> bool {
         match (expected, actual) {
-            (Ty::Any, _) | (_, Ty::Any) => true,
+            (Ty::Any, _) | (_, Ty::Any) | (Ty::Var(_), _) | (_, Ty::Var(_)) => true,
             (a, b) if a == b => true,
             (Ty::Float, Ty::Int) => true,
             (Ty::Optional(_), Ty::None) => true,
@@ -434,9 +503,20 @@ struct Moved {
 #[derive(Clone, Debug)]
 struct Var {
     name: String,
+    /// The declared type (or a `let`'s inferred one).
     ty: Ty,
+    /// A narrower type known at this point: `x: int?` after
+    /// `if x != none:` is `int`.
+    narrowed: Option<Ty>,
     kind: Kind,
     moved: Option<Moved>,
+}
+
+impl Var {
+    /// The type of the variable where it is read.
+    fn current(&self) -> Ty {
+        self.narrowed.clone().unwrap_or_else(|| self.ty.clone())
+    }
 }
 
 struct FnCtx {
@@ -492,6 +572,7 @@ impl Checker<'_> {
             scope.push(Var {
                 name: name.to_string(),
                 ty,
+                narrowed: None,
                 kind,
                 moved: None,
             });
@@ -743,6 +824,29 @@ impl Checker<'_> {
                 let name = self.fns.last().map(|f| f.name.clone()).unwrap_or_default();
                 if let Some(expected) = ret {
                     let span = value.as_ref().map_or(stmt.span, |v| v.span);
+                    let expected = match (&expected, &actual) {
+                        // A function returning `T?` may return `none`.
+                        (Ty::Optional(_), _) => expected.clone(),
+                        _ => expected,
+                    };
+                    if let (Ty::Optional(inner), false) =
+                        (&actual, matches!(expected, Ty::Optional(_)))
+                    {
+                        if self.table.assignable(&expected, inner) {
+                            self.error_hint(
+                                format!(
+                                    "`{name}` returns {}, but this may be none",
+                                    expected.name()
+                                ),
+                                span,
+                                format!(
+                                    "check it first, give a default with `??`, or declare `-> {}?`",
+                                    expected.name()
+                                ),
+                            );
+                            return;
+                        }
+                    }
                     if !self.table.assignable(&expected, &actual) {
                         self.error(
                             format!(
@@ -761,25 +865,53 @@ impl Checker<'_> {
             StmtKind::Stop | StmtKind::Skip => {}
             StmtKind::If(s) => {
                 let mut ends = Vec::new();
+                // Narrowing at the end of each path that falls through.
+                let mut narrow_ends = Vec::new();
+                let before = self.narrow_state();
                 for (condition, body) in &s.branches {
                     self.push();
                     self.condition(condition);
                     // The condition runs on every path through the rest.
                     let after_condition = self.move_state();
+                    let (when_true, when_false) = match condition {
+                        Condition::Expr(e) => self.facts(e),
+                        Condition::Let { .. } => (Vec::new(), Vec::new()),
+                    };
+                    let outside = self.narrow_state();
+                    self.narrow(&when_true);
                     self.block(body);
+                    if !block_always_exits(&body.stmts) {
+                        narrow_ends.push(self.narrow_state());
+                    }
                     ends.push(self.move_state());
                     self.pop();
                     self.set_move_state(&after_condition);
+                    // Later branches run only when this condition was false.
+                    let len = outside.len().min(self.scopes.len());
+                    self.set_narrow_state(&outside[..len]);
+                    self.narrow(&when_false);
                 }
                 match &s.else_body {
                     Some(body) => {
                         self.block(body);
+                        if !block_always_exits(&body.stmts) {
+                            narrow_ends.push(self.narrow_state());
+                        }
                         ends.push(self.move_state());
                     }
-                    None => ends.push(self.move_state()),
+                    None => {
+                        narrow_ends.push(self.narrow_state());
+                        ends.push(self.move_state());
+                    }
                 }
                 let joined = Self::join(&ends);
                 self.set_move_state(&joined);
+                let narrowed = if narrow_ends.is_empty() {
+                    before
+                } else {
+                    Self::join_narrow(&narrow_ends)
+                };
+                self.set_narrow_state(&narrowed);
             }
             StmtKind::While { condition, body } => {
                 self.push();
@@ -812,6 +944,8 @@ impl Checker<'_> {
                 self.set_move_state(&start);
                 if let Some(body) = &m.else_body {
                     self.block(body);
+                } else {
+                    self.exhaustive(m, &scrutinee);
                 }
                 ends.push(self.move_state());
                 let joined = Self::join(&ends);
@@ -968,6 +1102,9 @@ impl Checker<'_> {
 
     fn for_stmt(&mut self, f: &ForStmt) {
         let iter_ty = self.expr(&f.iter);
+        if matches!(iter_ty, Ty::Optional(_)) {
+            self.maybe_none(&f.iter, "a loop");
+        }
         let item_ty = match &iter_ty {
             Ty::List(t) => (**t).clone(),
             Ty::Range => Ty::Int,
@@ -1113,9 +1250,19 @@ impl Checker<'_> {
                         self.check_changeable(n, target.span, "assign to");
                         if op == AssignOp::Assign {
                             self.expect(&var.ty, &actual, value.span, || format!("`{}`", n.name));
-                            // Assigning gives a moved variable a value again.
+                            // Assigning gives a moved variable a value again,
+                            // and tells whether it is `none` now.
+                            let narrowed = match (&var.ty, &actual) {
+                                (Ty::Optional(inner), a)
+                                    if *a != Ty::None && self.table.assignable(inner, a) =>
+                                {
+                                    Some((**inner).clone())
+                                }
+                                _ => None,
+                            };
                             if let Some(v) = self.lookup_mut(&n.name) {
                                 v.moved = None;
+                                v.narrowed = narrowed;
                             }
                         }
                     }
@@ -1267,9 +1414,180 @@ impl Checker<'_> {
         }
     }
 
+    /// Reports the cases a `match` without `else` does not handle, for the
+    /// types whose cases are known: enums declared here, `bool`, and `T?`.
+    fn exhaustive(&mut self, m: &MatchStmt, ty: &Ty) {
+        let cases: Vec<String> = match ty {
+            Ty::Named(e) => match self.table.variants.get(e) {
+                Some(v) => v.clone(),
+                None => return,
+            },
+            Ty::Bool => vec!["true".into(), "false".into()],
+            Ty::Optional(_) => vec!["none".into(), "a value".into()],
+            _ => return,
+        };
+        let mut covered: HashSet<String> = HashSet::new();
+        for arm in m.arms.iter().filter(|a| a.guard.is_none()) {
+            if covers(&arm.pattern, ty, &cases, &mut covered) {
+                return;
+            }
+        }
+        let missing: Vec<&String> = cases.iter().filter(|c| !covered.contains(*c)).collect();
+        if missing.is_empty() {
+            return;
+        }
+        let list = missing
+            .iter()
+            .take(3)
+            .map(|c| format!("`{c}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = if missing.len() > 3 {
+            format!(" and {} more", missing.len() - 3)
+        } else {
+            String::new()
+        };
+        let example = match missing[0].as_str() {
+            "a value" => "is v: ...".to_string(),
+            c => format!("is {c}: ..."),
+        };
+        self.error_hint(
+            format!("this `match` does not handle {list}{more}"),
+            m.scrutinee.span,
+            format!("add `{example}` for each, or an `else:` arm"),
+        );
+    }
+
+    /// Reports a use of a value that may be `none`.
+    fn maybe_none(&mut self, e: &Expr, use_: &str) {
+        let text = match place_text(e) {
+            Some(t) => format!("`{t}`"),
+            None => "this value".to_string(),
+        };
+        let fix = match place_text(e) {
+            Some(t) => format!(
+                "check it first (`if {t} != none:`), use `{t}?.field` to get none through, or give a default with `{t} ?? ...`"
+            ),
+            None => "check it for none first, or give a default with `??`".to_string(),
+        };
+        self.error_hint(
+            format!("{text} may be none, so it cannot be used in {use_}"),
+            e.span,
+            fix,
+        );
+    }
+
+    /// What a condition establishes: the variables known not to be `none`
+    /// when it is true, and when it is false.
+    fn facts(&self, e: &Expr) -> (Vec<String>, Vec<String>) {
+        let optional = |n: &Ident| {
+            self.lookup(&n.name)
+                .is_some_and(|v| matches!(v.current(), Ty::Optional(_)))
+        };
+        match &e.kind {
+            ExprKind::Compare { operands, ops } if ops.len() == 1 => {
+                let name = match (&operands[0].kind, &operands[1].kind) {
+                    (ExprKind::Name(n), ExprKind::None) | (ExprKind::None, ExprKind::Name(n)) => n,
+                    _ => return (Vec::new(), Vec::new()),
+                };
+                if !optional(name) {
+                    return (Vec::new(), Vec::new());
+                }
+                match ops[0] {
+                    CompareOp::NotEq => (vec![name.name.clone()], Vec::new()),
+                    CompareOp::Eq => (Vec::new(), vec![name.name.clone()]),
+                    _ => (Vec::new(), Vec::new()),
+                }
+            }
+            ExprKind::Name(n) if optional(n) => (vec![n.name.clone()], Vec::new()),
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                operand,
+            } => {
+                let (t, f) = self.facts(operand);
+                (f, t)
+            }
+            ExprKind::Binary {
+                op: BinaryOp::And,
+                lhs,
+                rhs,
+            } => {
+                let (mut t, _) = self.facts(lhs);
+                t.extend(self.facts(rhs).0);
+                (t, Vec::new())
+            }
+            ExprKind::Binary {
+                op: BinaryOp::Or,
+                lhs,
+                rhs,
+            } => {
+                let (_, mut f) = self.facts(lhs);
+                f.extend(self.facts(rhs).1);
+                (Vec::new(), f)
+            }
+            _ => (Vec::new(), Vec::new()),
+        }
+    }
+
+    /// Marks variables as not `none` from here on.
+    fn narrow(&mut self, names: &[String]) {
+        for name in names {
+            if let Some(v) = self.lookup_mut(name) {
+                if let Ty::Optional(inner) = v.current() {
+                    v.narrowed = Some(*inner);
+                }
+            }
+        }
+    }
+
+    fn narrow_state(&self) -> Vec<Vec<Option<Ty>>> {
+        self.scopes
+            .iter()
+            .map(|s| s.iter().map(|v| v.narrowed.clone()).collect())
+            .collect()
+    }
+
+    fn set_narrow_state(&mut self, state: &[Vec<Option<Ty>>]) {
+        for (scope, saved) in self.scopes.iter_mut().zip(state) {
+            for (var, n) in scope.iter_mut().zip(saved) {
+                var.narrowed = n.clone();
+            }
+        }
+    }
+
+    /// After paths join, a variable stays narrowed only if it is on every
+    /// path that reaches the join.
+    fn join_narrow(states: &[Vec<Vec<Option<Ty>>>]) -> Vec<Vec<Option<Ty>>> {
+        let Some(first) = states.first() else {
+            return Vec::new();
+        };
+        let mut out = first.clone();
+        for (i, scope) in out.iter_mut().enumerate() {
+            for (j, slot) in scope.iter_mut().enumerate() {
+                let same = states
+                    .iter()
+                    .all(|s| s.get(i).and_then(|sc| sc.get(j)) == Some(&*slot));
+                if !same {
+                    *slot = None;
+                }
+            }
+        }
+        out
+    }
+
     fn expect(&mut self, expected: &Ty, actual: &Ty, span: Span, what: impl FnOnce() -> String) {
         if !self.table.assignable(expected, actual) {
             let what = what();
+            if let Ty::Optional(inner) = actual {
+                if self.table.assignable(expected, inner) {
+                    self.error_hint(
+                        format!("{what} is {}, but this may be none", expected.name()),
+                        span,
+                        "check it first (`if x != none:`), or give a default with `??`",
+                    );
+                    return;
+                }
+            }
             self.error(
                 format!(
                     "{what} is {}, but this is {}",
@@ -1318,7 +1636,7 @@ impl Checker<'_> {
             ExprKind::Name(n) => {
                 self.use_name(n, e.span);
                 if let Some(v) = self.lookup(&n.name) {
-                    return v.ty.clone();
+                    return v.current();
                 }
                 self.table.consts.get(&n.name).cloned().unwrap_or(Ty::Any)
             }
@@ -1376,9 +1694,34 @@ impl Checker<'_> {
                     },
                 }
             }
+            ExprKind::Binary {
+                op: op @ (BinaryOp::And | BinaryOp::Or),
+                lhs,
+                rhs,
+            } => {
+                // `x != none and x.f`: the right side knows what the left
+                // side established.
+                let a = self.expr(lhs);
+                let (when_true, when_false) = self.facts(lhs);
+                let saved = self.narrow_state();
+                self.narrow(if *op == BinaryOp::And {
+                    &when_true
+                } else {
+                    &when_false
+                });
+                let b = self.expr(rhs);
+                self.set_narrow_state(&saved);
+                self.binary(*op, &a, &b, e.span)
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let a = self.expr(lhs);
                 let b = self.expr(rhs);
+                for (side, t) in [(lhs, &a), (rhs, &b)] {
+                    if matches!(t, Ty::Optional(_)) {
+                        self.maybe_none(side, "arithmetic");
+                        return Ty::Any;
+                    }
+                }
                 self.binary(*op, &a, &b, e.span)
             }
             ExprKind::Compare { operands, .. } => {
@@ -1423,6 +1766,10 @@ impl Checker<'_> {
             ExprKind::Index { base, subscripts } => {
                 let t = self.expr(base);
                 self.subscripts(subscripts);
+                if matches!(t, Ty::Optional(_)) {
+                    self.maybe_none(base, "indexing");
+                    return Ty::Any;
+                }
                 let is_slice = subscripts
                     .iter()
                     .any(|s| matches!(s, Subscript::Slice { .. }));
@@ -1444,7 +1791,11 @@ impl Checker<'_> {
                     _ => Ty::Any,
                 }
             }
-            ExprKind::Field { base, name, .. } => {
+            ExprKind::Field {
+                base,
+                name,
+                optional,
+            } => {
                 // `Enum.Variant` and module members are not values here.
                 if let ExprKind::Name(n) = &base.kind {
                     if self.lookup(&n.name).is_none() {
@@ -1452,7 +1803,18 @@ impl Checker<'_> {
                     }
                 }
                 let t = self.expr(base);
-                self.field(&t, name)
+                match t {
+                    Ty::Optional(inner) if *optional => match self.field(&inner, name) {
+                        Ty::Any => Ty::Any,
+                        Ty::Optional(t) => Ty::Optional(t),
+                        t => Ty::Optional(Box::new(t)),
+                    },
+                    Ty::Optional(_) => {
+                        self.maybe_none(base, &format!("`.{}`", name.name));
+                        Ty::Any
+                    }
+                    t => self.field(&t, name),
+                }
             }
             ExprKind::Call { callee, args } => self.call(callee, args),
             ExprKind::Await(inner) | ExprKind::Spawn(inner) | ExprKind::Try(inner) => {
@@ -1631,14 +1993,24 @@ impl Checker<'_> {
                     result = builtin_result(&n.name);
                 }
             }
-            ExprKind::Field { base, name: m, .. } => {
+            ExprKind::Field {
+                base,
+                name: m,
+                optional,
+            } => {
                 let is_value = match &base.kind {
                     ExprKind::Name(n) => self.lookup(&n.name).is_some(),
                     _ => true,
                 };
                 if is_value {
-                    let t = self.expr(base);
+                    let mut t = self.expr(base);
                     name = m.name.clone();
+                    if let Ty::Optional(inner) = &t {
+                        if !*optional {
+                            self.maybe_none(base, &format!("`.{}()`", m.name));
+                        }
+                        t = (**inner).clone();
+                    }
                     if let Ty::Named(ty) = &t {
                         if let Some(s) = self.table.method(ty, &m.name) {
                             result = s.ret.clone().unwrap_or(Ty::Any);
@@ -1692,6 +2064,8 @@ impl Checker<'_> {
             }
         }
         let mut positional = 0;
+        // What each type parameter stands for in this call.
+        let mut bindings: HashMap<String, (Ty, Span)> = HashMap::new();
         for arg in args {
             let t = self.expr(&arg.value);
             let param = match &arg.name {
@@ -1711,9 +2085,25 @@ impl Checker<'_> {
                 other_roots.push(r.name.clone());
             }
             if let Some(p) = param {
-                self.expect(&p.ty, &t, arg.value.span, || {
-                    format!("argument `{}` of `{name}`", p.name)
-                });
+                if let Err((var, earlier, now)) =
+                    self.table.unify(&p.ty, &t, arg.value.span, &mut bindings)
+                {
+                    self.error_hint(
+                        format!(
+                            "`{var}` in `{name}` stands for {} from an earlier argument, but this is {}",
+                            earlier.name(),
+                            now.name()
+                        ),
+                        arg.value.span,
+                        format!("every `{var}` in one call must be the same type"),
+                    );
+                    // One error is enough for this argument.
+                } else {
+                    let expected = subst(&p.ty, &bindings);
+                    self.expect(&expected, &t, arg.value.span, || {
+                        format!("argument `{}` of `{name}`", p.name)
+                    });
+                }
                 let is_place = root.is_some()
                     && matches!(
                         arg.value.kind,
@@ -1743,7 +2133,7 @@ impl Checker<'_> {
                 );
             }
         }
-        result
+        subst(&result, &bindings)
     }
 }
 
@@ -1837,4 +2227,86 @@ fn contains_stop(stmts: &[Stmt]) -> bool {
         // A nested loop's `stop` leaves that loop.
         _ => false,
     })
+}
+
+/// Adds the cases `pattern` handles to `covered`. Returns true when it
+/// handles everything, as a name or `_` does.
+fn covers(pattern: &Pattern, ty: &Ty, cases: &[String], covered: &mut HashSet<String>) -> bool {
+    let irrefutable =
+        |p: &Pattern| matches!(p.kind, PatternKind::Wildcard | PatternKind::Binding(_));
+    match &pattern.kind {
+        PatternKind::Wildcard | PatternKind::Binding(_) => {
+            if matches!(ty, Ty::Optional(_)) {
+                // A name matches `none` too.
+                covered.insert("none".into());
+                covered.insert("a value".into());
+            }
+            true
+        }
+        PatternKind::As { pattern, .. } => covers(pattern, ty, cases, covered),
+        PatternKind::Or(alternatives) => {
+            let mut all = false;
+            for p in alternatives {
+                all |= covers(p, ty, cases, covered);
+            }
+            all
+        }
+        PatternKind::Literal(LiteralPattern::Bool(b)) => {
+            covered.insert(b.to_string());
+            false
+        }
+        PatternKind::Literal(LiteralPattern::None) => {
+            covered.insert("none".into());
+            false
+        }
+        PatternKind::Value(path) => {
+            let name = path_text(path);
+            if cases.contains(&name) {
+                covered.insert(name);
+            }
+            false
+        }
+        PatternKind::Destructure { path, args } => {
+            let name = path_text(path);
+            // `Shape.Rect(w, h)` handles every Rect; `Shape.Rect(0, h)` does not.
+            if cases.contains(&name) && args.iter().all(|a| irrefutable(&a.pattern)) {
+                covered.insert(name);
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+fn path_text(path: &Path) -> String {
+    path.segments
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// `u.email` for a place expression, for messages.
+fn place_text(e: &Expr) -> Option<String> {
+    match &e.kind {
+        ExprKind::Name(n) => Some(n.name.clone()),
+        ExprKind::Field { base, name, .. } => Some(format!("{}.{}", place_text(base)?, name.name)),
+        _ => None,
+    }
+}
+
+/// `t` with each type parameter replaced by what it stands for; unknown
+/// ones become `any`.
+fn subst(t: &Ty, bindings: &HashMap<String, (Ty, Span)>) -> Ty {
+    match t {
+        Ty::Var(v) => bindings.get(v).map_or(Ty::Any, |(t, _)| t.clone()),
+        Ty::List(i) => Ty::List(Box::new(subst(i, bindings))),
+        Ty::Optional(i) => match subst(i, bindings) {
+            Ty::Any => Ty::Any,
+            t => Ty::Optional(Box::new(t)),
+        },
+        Ty::Map(k, v) => Ty::Map(Box::new(subst(k, bindings)), Box::new(subst(v, bindings))),
+        Ty::Tuple(items) => Ty::Tuple(items.iter().map(|i| subst(i, bindings)).collect()),
+        other => other.clone(),
+    }
 }

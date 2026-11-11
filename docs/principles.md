@@ -73,7 +73,7 @@ one program, so the ecosystem never splits the way Python 2 and 3 did.
 | Slow | Bytecode interpreter today; native compilation of typed code; `kernel` code to SIMD and GPU | Interpreter done, native code planned |
 | No real multi-core (the GIL) | Green threads for waiting work; `task.Pool` OS threads for heavy work, with values crossing threads only by `own` | Green threads done |
 | Type errors at run time | Gradual types checked before running (`vyrn check`) | Done |
-| `None` errors | `T?` must be checked (`if x != none`, `??`, `?.`) before it is used as a `T` | In progress |
+| `None` errors | `T?` must be checked (`if x != none`, `??`, `?.`) before it is used as a `T` | Done |
 | pip, venv, conda, poetry | One tool: `vyrn new`, `vyrn add`, `vyrn fmt`, `vyrn test`, `vyrn build`; dependencies locked by hash | Done |
 | Hard to ship | `vyrn build` makes one executable file | Done |
 | Indentation changes meaning | Blocks end with `end` | Done |

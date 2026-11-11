@@ -1,0 +1,33 @@
+# An in-memory database for examples/api.vyrn. A real application would put
+# a database driver behind the same methods.
+
+struct NotFound:
+    id: int
+end
+
+class Table:
+    rows: {int: any} = {}
+
+    async fn find(self, id: int):
+        if id not in self.rows: fail NotFound(id)
+        return self.rows[id]
+    end
+
+    async fn insert(self, row):
+        self.rows[row.id] = row
+        return row
+    end
+
+    async fn count(self, user_id: int) -> int:
+        var n = 0
+        for row in self.rows.values():
+            if row.user_id == user_id: n += 1
+        end
+        return n
+    end
+end
+
+class Db:
+    users: Table = Table()
+    orders: Table = Table()
+end

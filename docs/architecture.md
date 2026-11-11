@@ -606,11 +606,15 @@ Python and annotations buy static errors where they are written.
 | An argument for a `mut` parameter says `mut` | `reset(xs)` where `reset(mut xs)` |
 | The list a `for mut` loop changes is not used inside it | `for mut x in xs: x += len(xs)` |
 | Changing a field of a plain `for` loop's struct copy, which is lost | `for e in es: e.hp = 10` |
+| A `T?` is checked before it is used as a `T`: narrowed by `if x != none:`, an early `return`, `and`, `??`, `?.` or `if let` | `u.name` where `u: User?` |
+| A `match` over an enum declared here, a `bool` or a `T?` handles every case or has `else:` | a `match` on `Shape` without `Shape.Empty` |
+| Generic functions infer their type parameters at each call | `pair(1, "a")` for `fn pair[T](a: T, b: T)` |
+| C functions that pass or return pointers are called in `unsafe:` | `accel_add(h, x, n)` outside `unsafe:` |
 
 The `for mut` rule is what makes the interpreter's in-place loop sound: the
 loop moves each element out of the list while the body runs, so any other
 use of the list inside could see the gap. What is not checked yet: generic
-types, trait conformance, borrows through aliases (`ys = xs` then a use of
+structs, trait conformance, borrows through aliases (`ys = xs` then a use of
 `ys` inside `for mut x in xs`), and references stored in other values.
 
 ## 7. Build order
