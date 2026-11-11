@@ -1922,7 +1922,15 @@ impl Parser {
     fn match_arm(&mut self) -> PResult<MatchArm> {
         let start = self.start();
         self.bump();
-        let pattern = self.pattern()?;
+        let mut pattern = self.pattern()?;
+        // `is "yes", "y":` is the same as `is "yes" or "y":`.
+        if self.at_p(P::Comma) {
+            let mut alternatives = vec![pattern];
+            while self.eat_p(P::Comma) {
+                alternatives.push(self.pattern()?);
+            }
+            pattern = self.mk_pat(PatternKind::Or(alternatives), start);
+        }
         let guard = if self.eat_kw(K::If) {
             Some(self.expression()?)
         } else {

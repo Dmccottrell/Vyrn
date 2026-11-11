@@ -232,6 +232,9 @@ struct Compiler {
     decorated: Vec<(u16, Vec<Decorator>)>,
     /// The type whose method is being compiled.
     owner: Option<u16>,
+    /// Functions the Prelude defines (`map`, `filter`, ...): a program may
+    /// use these names for its own variables.
+    prelude_names: HashSet<String>,
     /// Constants with a literal number value, which kernels may read.
     numeric_consts: HashMap<String, f32>,
     symbols: Interner,
@@ -359,6 +362,7 @@ impl Compiler {
             foreign_inits: Vec::new(),
             decorated: Vec::new(),
             owner: None,
+            prelude_names: HashSet::new(),
             numeric_consts: HashMap::new(),
             symbols: Interner::default(),
             routes: Vec::new(),
@@ -734,6 +738,9 @@ impl Compiler {
                 }
             }
             ItemKind::Fn(f) => {
+                if crate::prelude::is_prelude_offset(item.span.start.offset) {
+                    self.prelude_names.insert(f.name.name.clone());
+                }
                 let proto = self.reserve_proto();
                 if let Some(slot) =
                     self.add_global(&f.name.name, GlobalInit::Function(proto), item.span)
@@ -2076,7 +2083,7 @@ impl Compiler {
                         target.span,
                         "a loop variable is new in each iteration, so a closure keeps its own copy",
                     )),
-                    Some(Resolved::Global(_)) => {
+                    Some(Resolved::Global(_)) if !self.prelude_names.contains(&ident.name) => {
                         return Err(self.error(
                             format!(
                                 "cannot assign to `{}`: it is a top-level constant or declaration",

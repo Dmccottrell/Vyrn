@@ -39,6 +39,14 @@ use std::path::{Path, PathBuf};
 pub const DAYS: &[(&str, &str)] = &[
     ("day01", include_str!("../docs/course/day01.md")),
     ("day02", include_str!("../docs/course/day02.md")),
+    ("day03", include_str!("../docs/course/day03.md")),
+    ("day04", include_str!("../docs/course/day04.md")),
+    ("day05", include_str!("../docs/course/day05.md")),
+    ("day06", include_str!("../docs/course/day06.md")),
+    ("day07", include_str!("../docs/course/day07.md")),
+    ("day08", include_str!("../docs/course/day08.md")),
+    ("day09", include_str!("../docs/course/day09.md")),
+    ("day10", include_str!("../docs/course/day10.md")),
 ];
 
 /// One fenced block: its tag (`vyrn`, `vyrn starter`, `text expect`, ...),
