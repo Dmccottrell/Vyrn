@@ -223,6 +223,8 @@ pub static NATIVES: &[Native] = &[
     fixed("csv.read", &["path", "header", "sep"], 1, S::csv_read),
     fixed("csv.format", &["rows", "sep"], 1, S::csv_format),
     fixed("csv.write", &["path", "rows", "sep"], 2, S::csv_write),
+    // ---- std.db ----
+    fixed("db.open", &["path"], 1, super::lib_db::db_open),
     // ---- std.task ----
     variadic("task.select", S::task_select),
     fixed("task.timeout", &["seconds", "work"], 2, S::task_timeout),
@@ -254,6 +256,7 @@ pub fn std_module(name: &str) -> Option<&'static str> {
         "re" => Some("re"),
         "csv" => Some("csv"),
         "task" => Some("task"),
+        "db" => Some("db"),
         _ => None,
     }
 }

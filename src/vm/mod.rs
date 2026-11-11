@@ -18,6 +18,7 @@ pub mod foreign;
 pub mod gpu;
 pub mod json;
 pub mod kernel;
+pub mod lib_db;
 pub mod machine;
 pub mod native_abi;
 pub mod op;
