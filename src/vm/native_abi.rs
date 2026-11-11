@@ -13,6 +13,16 @@ pub enum NTy {
     Bool,
     /// No value: a function without `-> T`. Returns `none`.
     Unit,
+    /// `[int]` and `[float]`: a list, passed as a pointer to its contents.
+    /// Every item is checked to have the type when the call starts.
+    ListInt,
+    ListFloat,
+}
+
+impl NTy {
+    pub fn is_list(self) -> bool {
+        matches!(self, NTy::ListInt | NTy::ListFloat)
+    }
 }
 
 /// Filled in by native code when it fails, and read by the VM.
@@ -27,8 +37,10 @@ pub struct ErrState {
     pub line: u32,
     /// Native calls in progress, counted from the VM's own depth.
     pub depth: u32,
-    /// A value the message names, such as a shift amount.
+    /// A value the message names, such as a shift amount or an index.
     pub value: i64,
+    /// A second one: the length of the list an index was out of range for.
+    pub extra: i64,
 }
 
 pub const ERR_OVERFLOW: u32 = 1;
@@ -37,6 +49,7 @@ pub const ERR_STACK: u32 = 3;
 pub const ERR_FLOAT_TO_INT: u32 = 4;
 pub const ERR_SHIFT: u32 = 5;
 pub const ERR_NO_RETURN: u32 = 6;
+pub const ERR_INDEX: u32 = 7;
 
 /// Operators named in overflow messages, by `ErrState::detail`.
 pub const OPERATORS: &[&str] = &["+", "-", "*", "**", "//", "%", "<<", "abs", "neg"];
@@ -87,6 +100,13 @@ impl ErrState {
             ),
             ERR_FLOAT_TO_INT => ("TypeError", format!("cannot convert float to int{place}")),
             ERR_SHIFT => ("ValueError", format!("cannot shift by {}{place}", self.value)),
+            ERR_INDEX => (
+                "IndexError",
+                format!(
+                    "index {} is out of range for a list of length {}{place}",
+                    self.value, self.extra
+                ),
+            ),
             ERR_NO_RETURN => ("TypeError", format!("the function ended without returning a value{place}")),
             _ => ("InternalError", format!("native code failed with code {}{place}", self.code)),
         }

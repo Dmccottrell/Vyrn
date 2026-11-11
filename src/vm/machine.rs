@@ -579,8 +579,28 @@ impl Vm {
                 (NTy::Int, Value::Int(v)) => *v as u64,
                 (NTy::Float, Value::Float(v)) => v.to_bits(),
                 (NTy::Bool, Value::Bool(v)) => u64::from(*v),
+                (NTy::ListInt, Value::List(items))
+                    if items.borrow().iter().all(|v| matches!(v, Value::Int(_))) =>
+                {
+                    Rc::as_ptr(items) as u64
+                }
+                (NTy::ListFloat, Value::List(items))
+                    if items.borrow().iter().all(|v| matches!(v, Value::Float(_))) =>
+                {
+                    Rc::as_ptr(items) as u64
+                }
                 _ => return None,
             };
+        }
+        // One list given as both `[int]` and `[float]` (possible only while
+        // it is empty) could end up holding both: leave that to the
+        // interpreter.
+        for (i, a) in native.params.iter().enumerate() {
+            for (j, b) in native.params.iter().enumerate().skip(i + 1) {
+                if a.is_list() && b.is_list() && a != b && words[i] == words[j] {
+                    return None;
+                }
+            }
         }
         let mut err = ErrState {
             depth: self.frames.len() as u32,
@@ -597,7 +617,7 @@ impl Vm {
             NTy::Int => Value::Int(word as i64),
             NTy::Float => Value::Float(f64::from_bits(word)),
             NTy::Bool => Value::Bool(word != 0),
-            NTy::Unit => Value::None,
+            NTy::Unit | NTy::ListInt | NTy::ListFloat => Value::None,
         }))
     }
 

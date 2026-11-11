@@ -334,3 +334,52 @@ fn random_programs_agree() {
         "only {compiled} of {total} compiled"
     );
 }
+
+#[test]
+fn lists_of_numbers() {
+    let out = both(
+        "create mean(xs: [float]) -> float:\n    var total = 0.0\n    each x in xs: total += x\n    return total / len(xs)\nend\n\
+         create dot(a: [float], b: [float]) -> float:\n    var s = 0.0\n    each i in 0 until len(a): s += a[i] * b[i]\n    return s\nend\n\
+         create bubble(xs: [int]):\n    let n = len(xs)\n    each i in 0 until n:\n        each j in 0 until n - i - 1:\n            if xs[j] > xs[j + 1]:\n                let t = xs[j]\n                xs[j] = xs[j + 1]\n                xs[j + 1] = t\n            end\n        end\n    end\nend\n\
+         create prefix(xs: [int], out: [int]):\n    var run = 0\n    each x in xs:\n        run += x\n        out.append(run)\n    end\n    out[-1] *= 10\nend\n\
+         create last(xs: [int]) -> int: return xs[-1] + xs[len(xs) - 2]\n\
+         create grow(xs: [int]) -> int:\n    var seen = 0\n    each x in xs:\n        seen += 1\n        if x < 5: xs.append(x + 1)\n    end\n    return seen\nend\n\
+         main:\n\
+         \x20   print(mean([1.0, 2.0, 4.5]), dot([1.0, 2.0], [3.0, 4.0]))\n\
+         \x20   let xs = [5, 3, 9, 1, 7]\n    bubble(xs)\n    print(xs)\n\
+         \x20   let out = []\n    prefix([1, 2, 3], out)\n    print(out, last(xs))\n\
+         \x20   let g = [1]\n    print(grow(g), g)\n\
+         \x20   print(mean([1, 2]))\n\
+         end\n",
+        &["mean", "dot", "bubble", "prefix", "last", "grow"],
+    );
+    assert_eq!(
+        out,
+        "2.5 11.0\n[1, 3, 5, 7, 9]\n[1, 3, 60] 16\n5 [1, 2, 3, 4, 5]\n1.5\n"
+    );
+}
+
+#[test]
+fn list_failures_are_the_same() {
+    for (src, kind) in [
+        (
+            "create f(xs: [int]) -> int: return xs[3]\nmain: print(f([1, 2]))\n",
+            "IndexError",
+        ),
+        (
+            "create f(xs: [int]) -> int: return xs[-3]\nmain: print(f([1, 2]))\n",
+            "IndexError",
+        ),
+        (
+            "create f(xs: [float]):\n    xs[2] = 1.0\nend\nmain: f([1.0])\n",
+            "IndexError",
+        ),
+        (
+            "create f(xs: [float]) -> float: return xs[0] / len(xs)\nmain: print(f([]))\n",
+            "IndexError",
+        ),
+    ] {
+        let out = both(src, &["f"]);
+        assert!(out.contains(&format!("<error {kind}")), "{src}\n{out}");
+    }
+}

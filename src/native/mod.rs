@@ -158,6 +158,81 @@ extern "C" fn rt_nearestf(x: f32) -> f32 {
     x.round_ties_even()
 }
 
+// Lists of numbers. The VM passed a pointer to the list's contents (it
+// keeps the list alive for the call) after checking every item's type, and
+// native code keeps the types right, so the items read here are the
+// declared type.
+
+type ListPtr = *const std::cell::RefCell<Vec<crate::vm::value::Value>>;
+
+fn list_index(list: &[crate::vm::value::Value], i: i64, err: *mut ErrState) -> Option<usize> {
+    match crate::vm::tensor::normalize_index(i, list.len()) {
+        Some(at) => Some(at),
+        None => {
+            // SAFETY: `err` is the state the VM passed to the entry point.
+            unsafe {
+                (*err).code = crate::vm::native_abi::ERR_INDEX;
+                (*err).value = i;
+                (*err).extra = list.len() as i64;
+            }
+            None
+        }
+    }
+}
+
+extern "C" fn rt_list_len(list: ListPtr) -> i64 {
+    // SAFETY: a live list, see above.
+    unsafe { (*list).borrow().len() as i64 }
+}
+
+extern "C" fn rt_list_get_i(list: ListPtr, i: i64, err: *mut ErrState) -> i64 {
+    // SAFETY: as above.
+    let items = unsafe { (*list).borrow() };
+    match list_index(&items, i, err).map(|at| &items[at]) {
+        Some(crate::vm::value::Value::Int(v)) => *v,
+        _ => 0,
+    }
+}
+
+extern "C" fn rt_list_get_f(list: ListPtr, i: i64, err: *mut ErrState) -> f64 {
+    // SAFETY: as above.
+    let items = unsafe { (*list).borrow() };
+    match list_index(&items, i, err).map(|at| &items[at]) {
+        Some(crate::vm::value::Value::Float(v)) => *v,
+        _ => 0.0,
+    }
+}
+
+extern "C" fn rt_list_set_i(list: ListPtr, i: i64, v: i64, err: *mut ErrState) -> i64 {
+    // SAFETY: as above.
+    let mut items = unsafe { (*list).borrow_mut() };
+    if let Some(at) = list_index(&items, i, err) {
+        items[at] = crate::vm::value::Value::Int(v);
+    }
+    0
+}
+
+extern "C" fn rt_list_set_f(list: ListPtr, i: i64, v: f64, err: *mut ErrState) -> i64 {
+    // SAFETY: as above.
+    let mut items = unsafe { (*list).borrow_mut() };
+    if let Some(at) = list_index(&items, i, err) {
+        items[at] = crate::vm::value::Value::Float(v);
+    }
+    0
+}
+
+extern "C" fn rt_list_push_i(list: ListPtr, v: i64) -> i64 {
+    // SAFETY: as above.
+    unsafe { (*list).borrow_mut().push(crate::vm::value::Value::Int(v)) };
+    0
+}
+
+extern "C" fn rt_list_push_f(list: ListPtr, v: f64) -> i64 {
+    // SAFETY: as above.
+    unsafe { (*list).borrow_mut().push(crate::vm::value::Value::Float(v)) };
+    0
+}
+
 /// Float functions of one argument, by their Vyrn name.
 const FLOAT1: &[(&str, &str)] = &[
     ("exp", "vyrn_exp"),
@@ -174,6 +249,13 @@ const FLOAT1: &[(&str, &str)] = &[
 fn helper_symbols() -> Vec<(&'static str, *const u8)> {
     vec![
         ("vyrn_ipow", rt_ipow as *const u8),
+        ("vyrn_list_len", rt_list_len as *const u8),
+        ("vyrn_list_get_i", rt_list_get_i as *const u8),
+        ("vyrn_list_get_f", rt_list_get_f as *const u8),
+        ("vyrn_list_set_i", rt_list_set_i as *const u8),
+        ("vyrn_list_set_f", rt_list_set_f as *const u8),
+        ("vyrn_list_push_i", rt_list_push_i as *const u8),
+        ("vyrn_list_push_f", rt_list_push_f as *const u8),
         ("vyrn_ishl", rt_ishl as *const u8),
         ("vyrn_powf", rt_powf as *const u8),
         ("vyrn_exp", rt_exp as *const u8),
@@ -215,6 +297,18 @@ fn scalar_type(t: &TypeExpr) -> Option<NTy> {
     }
 }
 
+/// A parameter's type: a scalar, or a list of `int` or `float`.
+fn param_type(t: &TypeExpr) -> Option<NTy> {
+    if let TypeExprKind::List(inner) = &t.kind {
+        return match scalar_type(inner)? {
+            NTy::Int => Some(NTy::ListInt),
+            NTy::Float => Some(NTy::ListFloat),
+            _ => None,
+        };
+    }
+    scalar_type(t)
+}
+
 /// A candidate's signature, or why it cannot be one.
 fn signature(f: &FnDecl) -> Res<(Vec<NTy>, NTy)> {
     let m = &f.modifiers;
@@ -232,16 +326,12 @@ fn signature(f: &FnDecl) -> Res<(Vec<NTy>, NTy)> {
                 p.name.name
             ));
         }
-        let ty = p
-            .declared_ty
-            .as_ref()
-            .and_then(scalar_type)
-            .ok_or_else(|| {
-                format!(
-                    "parameter `{}` is not declared int, float or bool",
-                    p.name.name
-                )
-            })?;
+        let ty = p.declared_ty.as_ref().and_then(param_type).ok_or_else(|| {
+            format!(
+                "parameter `{}` is not declared int, float, bool, [int] or [float]",
+                p.name.name
+            )
+        })?;
         params.push(ty);
     }
     let ret = match &f.result.returns {
@@ -430,7 +520,7 @@ struct Jit {
 
 fn cl_type(t: NTy) -> Type {
     match t {
-        NTy::Int | NTy::Unit => types::I64,
+        NTy::Int | NTy::Unit | NTy::ListInt | NTy::ListFloat => types::I64,
         NTy::Float => types::F64,
         NTy::Bool => types::I8,
     }
@@ -468,6 +558,21 @@ impl Jit {
             Ok(())
         };
         declare("vyrn_ipow", &[types::I64, types::I64, ptr], types::I64)?;
+        declare("vyrn_list_len", &[ptr], types::I64)?;
+        declare("vyrn_list_get_i", &[ptr, types::I64, ptr], types::I64)?;
+        declare("vyrn_list_get_f", &[ptr, types::I64, ptr], types::F64)?;
+        declare(
+            "vyrn_list_set_i",
+            &[ptr, types::I64, types::I64, ptr],
+            types::I64,
+        )?;
+        declare(
+            "vyrn_list_set_f",
+            &[ptr, types::I64, types::F64, ptr],
+            types::I64,
+        )?;
+        declare("vyrn_list_push_i", &[ptr, types::I64], types::I64)?;
+        declare("vyrn_list_push_f", &[ptr, types::F64], types::I64)?;
         declare("vyrn_ishl", &[types::I64, types::I64, ptr], types::I64)?;
         declare("vyrn_powf", &[types::F64, types::F64], types::F64)?;
         declare("vyrn_atan2", &[types::F64, types::F64], types::F64)?;
@@ -755,7 +860,7 @@ impl Lower<'_, '_> {
                 let z = self.b.ins().f64const(0.0);
                 self.b.ins().fcmp(FloatCC::NotEqual, v, z)
             }
-            NTy::Unit => return Err("`none` used as a condition".into()),
+            _ => return Err("this value used as a condition".into()),
         })
     }
 
@@ -807,7 +912,7 @@ impl Lower<'_, '_> {
                 let value = binding.value.as_ref().ok_or("a binding without a value")?;
                 let (v, t) = self.expr(value)?;
                 if let Some(declared) = &binding.declared_ty {
-                    if scalar_type(declared) != Some(t) {
+                    if param_type(declared) != Some(t) {
                         return Err(format!(
                             "`{}`'s declared type differs from its value",
                             name.name
@@ -820,8 +925,11 @@ impl Lower<'_, '_> {
                 self.declare(&name.name, v, t);
             }
             StmtKind::Assign { target, op, value } => {
+                if let ExprKind::Index { base, subscripts } = &target.kind {
+                    return self.assign_item(base, subscripts, *op, value);
+                }
                 let ExprKind::Name(name) = &target.kind else {
-                    return Err("only variables can be assigned".into());
+                    return Err("only variables and list items can be assigned".into());
                 };
                 let (v, t) = match op {
                     AssignOp::Assign => self.expr(value)?,
@@ -965,7 +1073,13 @@ impl Lower<'_, '_> {
             {
                 return self.each_range_call(var_name, args, &f.body);
             }
-            _ => return Err("loops over anything but a range of integers".into()),
+            _ => {
+                let (list, lt) = self.expr(&f.iter)?;
+                if !lt.is_list() {
+                    return Err("loops over anything but a range or a list of numbers".into());
+                }
+                return self.each_item(&var_name.name, list, lt, &f.body);
+            }
         };
         let step = step.unwrap_or(1);
         if step == 0 {
@@ -1053,6 +1167,160 @@ impl Lower<'_, '_> {
         self.b.def_var(counter, n);
         // Past the largest integer: the range has ended.
         self.b.ins().brif(overflow, exit, &[], header, &[]);
+        self.b.switch_to_block(exit);
+        Ok(())
+    }
+
+    // ---- lists ----
+
+    fn list_and_index(
+        &mut self,
+        base: &Expr,
+        subscripts: &[crate::ast::Subscript],
+    ) -> Res<(Value, NTy, Value)> {
+        let [crate::ast::Subscript::Index(index)] = subscripts else {
+            return Err("slices and multi-dimensional indexing".into());
+        };
+        let (list, lt) = self.expr(base)?;
+        if !lt.is_list() {
+            return Err("indexing something that is not a list of numbers".into());
+        }
+        let (i, it) = self.expr(index)?;
+        if it != NTy::Int {
+            return Err("a list index that is not an int".into());
+        }
+        Ok((list, lt, i))
+    }
+
+    fn assign_item(
+        &mut self,
+        base: &Expr,
+        subscripts: &[crate::ast::Subscript],
+        op: AssignOp,
+        value: &Expr,
+    ) -> Res<()> {
+        let (list, lt, i) = self.list_and_index(base, subscripts)?;
+        let elem = if lt == NTy::ListInt {
+            NTy::Int
+        } else {
+            NTy::Float
+        };
+        let (v, t) = match op {
+            AssignOp::Assign => self.expr(value)?,
+            op => {
+                let get = if elem == NTy::Int {
+                    "vyrn_list_get_i"
+                } else {
+                    "vyrn_list_get_f"
+                };
+                let f = self.func_ref(self.helpers[get]);
+                let call = self.b.ins().call(f, &[list, i, self.err]);
+                let current = self.b.inst_results(call)[0];
+                self.check_err_with_line();
+                let (rhs, rt) = self.expr(value)?;
+                let bop = assign_op(op).ok_or("this compound assignment")?;
+                if bop == BinaryOp::Pow
+                    && rt == NTy::Int
+                    && !matches!(value.kind, ExprKind::Int { .. })
+                {
+                    return Err("`**=` with an exponent that is not a literal".into());
+                }
+                self.binary(bop, current, elem, rhs, rt)?
+            }
+        };
+        if t != elem {
+            return Err(format!(
+                "putting {} into a list of {}",
+                ty_name(t),
+                ty_name(elem)
+            ));
+        }
+        let set = if elem == NTy::Int {
+            "vyrn_list_set_i"
+        } else {
+            "vyrn_list_set_f"
+        };
+        let f = self.func_ref(self.helpers[set]);
+        self.b.ins().call(f, &[list, i, v, self.err]);
+        self.check_err_with_line();
+        Ok(())
+    }
+
+    /// `xs.append(x)`, and `len` as a method.
+    fn method(&mut self, base: &Expr, name: &str, args: &[crate::ast::Arg]) -> Res<(Value, NTy)> {
+        let (list, lt) = self.expr(base)?;
+        if !lt.is_list() {
+            return Err("method calls on values that are not lists of numbers".into());
+        }
+        let elem = if lt == NTy::ListInt {
+            NTy::Int
+        } else {
+            NTy::Float
+        };
+        match name {
+            "append" => {
+                let a = self.args(args, 1)?;
+                if a[0].1 != elem {
+                    return Err(format!(
+                        "appending {} to a list of {}",
+                        ty_name(a[0].1),
+                        ty_name(elem)
+                    ));
+                }
+                let push = if elem == NTy::Int {
+                    "vyrn_list_push_i"
+                } else {
+                    "vyrn_list_push_f"
+                };
+                let f = self.func_ref(self.helpers[push]);
+                self.b.ins().call(f, &[list, a[0].0]);
+                Ok((self.b.ins().iconst(types::I64, 0), NTy::Unit))
+            }
+            _ => Err(format!("the list method `{name}`")),
+        }
+    }
+
+    /// `each x in xs`: by position, reading the length each time round, as
+    /// the interpreter does, so items appended in the loop are visited.
+    fn each_item(&mut self, name: &str, list: Value, lt: NTy, body: &AstBlock) -> Res<()> {
+        let (elem, get) = if lt == NTy::ListInt {
+            (NTy::Int, "vyrn_list_get_i")
+        } else {
+            (NTy::Float, "vyrn_list_get_f")
+        };
+        let counter = self.b.declare_var(types::I64);
+        let zero = self.b.ins().iconst(types::I64, 0);
+        self.b.def_var(counter, zero);
+        let header = self.b.create_block();
+        let inside = self.b.create_block();
+        let next = self.b.create_block();
+        let exit = self.b.create_block();
+        self.b.ins().jump(header, &[]);
+        self.b.switch_to_block(header);
+        let i = self.b.use_var(counter);
+        let len_f = self.func_ref(self.helpers["vyrn_list_len"]);
+        let call = self.b.ins().call(len_f, &[list]);
+        let len = self.b.inst_results(call)[0];
+        let go = self.b.ins().icmp(IntCC::SignedLessThan, i, len);
+        self.b.ins().brif(go, inside, &[], exit, &[]);
+        self.b.switch_to_block(inside);
+        let get_f = self.func_ref(self.helpers[get]);
+        let call = self.b.ins().call(get_f, &[list, i, self.err]);
+        let item = self.b.inst_results(call)[0];
+        self.scopes.push(Vec::new());
+        self.declare(name, item, elem);
+        self.loops.push((next, exit));
+        for stmt in &body.stmts {
+            self.stmt(stmt)?;
+        }
+        self.loops.pop();
+        self.scopes.pop();
+        self.b.ins().jump(next, &[]);
+        self.b.switch_to_block(next);
+        let i = self.b.use_var(counter);
+        let n = self.b.ins().iadd_imm_s(i, 1);
+        self.b.def_var(counter, n);
+        self.b.ins().jump(header, &[]);
         self.b.switch_to_block(exit);
         Ok(())
     }
@@ -1174,6 +1442,19 @@ impl Lower<'_, '_> {
                 (self.b.block_params(done)[0], at)
             }
             ExprKind::Call { callee, args } => self.call(callee, args)?,
+            ExprKind::Index { base, subscripts } => {
+                let (list, lt, i) = self.list_and_index(base, subscripts)?;
+                let (helper, t) = if lt == NTy::ListInt {
+                    ("vyrn_list_get_i", NTy::Int)
+                } else {
+                    ("vyrn_list_get_f", NTy::Float)
+                };
+                let f = self.func_ref(self.helpers[helper]);
+                let call = self.b.ins().call(f, &[list, i, self.err]);
+                let v = self.b.inst_results(call)[0];
+                self.check_err_with_line();
+                (v, t)
+            }
             _ => return Err("this kind of expression".into()),
         })
     }
@@ -1420,7 +1701,7 @@ impl Lower<'_, '_> {
                 {
                     return self.math_call(&name.name, args);
                 }
-                _ => return Err("method calls".into()),
+                _ => return self.method(base, &name.name, args),
             },
             _ => return Err("this kind of call".into()),
         };
@@ -1462,6 +1743,15 @@ impl Lower<'_, '_> {
 
     fn builtin(&mut self, name: &str, args: &[crate::ast::Arg]) -> Res<(Value, NTy)> {
         Ok(match name {
+            "len" => {
+                let a = self.args(args, 1)?;
+                if !a[0].1.is_list() {
+                    return Err("`len` of something that is not a list".into());
+                }
+                let f = self.func_ref(self.helpers["vyrn_list_len"]);
+                let call = self.b.ins().call(f, &[a[0].0]);
+                (self.b.inst_results(call)[0], NTy::Int)
+            }
             "abs" => {
                 let a = self.args(args, 1)?;
                 let (v, t) = a[0];
@@ -1620,5 +1910,7 @@ fn ty_name(t: NTy) -> &'static str {
         NTy::Float => "float",
         NTy::Bool => "bool",
         NTy::Unit => "none",
+        NTy::ListInt => "[int]",
+        NTy::ListFloat => "[float]",
     }
 }

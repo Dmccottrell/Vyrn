@@ -140,8 +140,10 @@ end
 ```
 
 **What compiles.** A top-level function whose parameters are all `int`,
-`float` or `bool` (and whose result is one of those, or nothing), when its
-body stays within: those three types for every variable; arithmetic,
+`float`, `bool`, `[int]` or `[float]` (and whose result is a number, a
+`bool`, or nothing), when its body stays within: those types for every
+variable; for lists, `len(xs)`, `xs[i]` (negative too), `xs[i] = v`,
+`xs[i] += v`, `xs.append(v)` and `each x in xs`; arithmetic,
 comparisons (chained too), `and`/`or`/`not` and `a if c else b`; `if`,
 `else if`, `else`, `loop`, `loop cond`, `each i in a until b` / `a to b` /
 `range(...)` with a literal `by`, `stop`, `skip`, `return`; calls to other
@@ -149,7 +151,11 @@ compiled functions, recursion included; and `abs`, `min`, `max`, `sqrt`,
 `floor`, `ceil`, `int`, `float`, `exp`, `tanh` and the `std.math`
 functions. Anything else (strings, lists, `print`, a variable that
 changes from `int` to `float`, `int ** n` with a non-literal `n`, whose
-type depends on `n`'s sign) leaves the function to the interpreter. A
+type depends on `n`'s sign, making or returning a list) leaves the
+function to the interpreter. A list argument is checked item by item when
+the call starts: a list of `int` given where `[float]` is declared runs on
+the interpreter, as does the same empty list given as both an `[int]` and
+a `[float]`. A
 call to a function that stays interpreted keeps its caller interpreted too.
 
 **Nothing changes but speed.** The interpreter calls the machine code
@@ -169,8 +175,13 @@ the largest and smallest integers.
 | 5M-step integer loop | 0.206 s | 0.008 s | 0.203 s | 0.005 s |
 | Mandelbrot 300×200, floats | 0.374 s | 0.010 s | 0.224 s | 0.008 s |
 | Collatz up to 300,000 | 2.380 s | 0.134 s | 2.144 s | 0.039 s |
+| Bubble sort, 3,000 `[int]` | 0.453 s | 0.041 s | 0.239 s | |
+| Sieve of primes to 2M, `[int]` | 0.413 s | 0.059 s | 0.103 s | |
 
-The gap to C is mostly the overflow checks, which C does not make.
+The gap to C is mostly the overflow checks, which C does not make. List
+items are read and written through small runtime calls, so list code gains
+less than arithmetic; Python's sieve also uses whole-list operations
+(`[1] * n`, slices) that run in C.
 
 **Seeing it.** `VYRN_NATIVE=verbose vyrn run file.vyrn` lists each
 function and why it was or was not compiled; `vyrn bytecode` marks
@@ -297,9 +308,10 @@ checked). The trade-off is visible in the source, as rule 4 asks.
 
 ### 4.3 Order of work
 
-1. Done for numbers: Cranelift code from the checked tree (section 3),
-   validated against the bytecode VM. Next: lists of numbers (`[int]`,
-   `[float]`) through runtime calls, then structs, then strings.
+1. Done for numbers and lists of numbers: Cranelift code from the checked
+   tree (section 3), validated against the bytecode VM. Next: making and
+   returning lists, reading items without a runtime call, then structs,
+   then strings.
 2. VIR, so the Cranelift and LLVM tiers share one lowering.
 3. LLVM codegen from the same VIR (through `inkwell`), for release builds:
    `vyrn build --target=linux-musl --release` links statically against
