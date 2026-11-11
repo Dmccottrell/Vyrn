@@ -26,12 +26,15 @@ use super::foreign::Foreign;
 use super::ops::{err, type_error, Ctx, VmResult};
 use super::value::{Key, Map, Value};
 
+/// A shared foreign value: a fake's methods are fakes too.
+type Shared = Rc<Box<dyn Foreign>>;
+
 pub struct Fake {
     returns: Value,
     each: RefCell<Option<VecDeque<Value>>>,
     fails: Option<Value>,
     calls: RefCell<Vec<Value>>,
-    methods: RefCell<Vec<(String, Rc<Box<dyn Foreign>>)>>,
+    methods: RefCell<Vec<(String, Shared)>>,
 }
 
 fn wrap(f: Fake) -> Value {
