@@ -223,6 +223,43 @@ pub static NATIVES: &[Native] = &[
     fixed("csv.read", &["path", "header", "sep"], 1, S::csv_read),
     fixed("csv.format", &["rows", "sep"], 1, S::csv_format),
     fixed("csv.write", &["path", "rows", "sep"], 2, S::csv_write),
+    // ---- std.draw ----
+    fixed(
+        "draw.canvas",
+        &["width", "height"],
+        0,
+        super::lib_draw::canvas,
+    ),
+    fixed(
+        "draw.window",
+        &["width", "height", "title"],
+        0,
+        super::lib_draw::window,
+    ),
+    fixed("draw.turtle", &["surface"], 1, super::lib_draw::turtle),
+    fixed("draw.image", &["path"], 1, super::lib_draw::image),
+    fixed("draw.camera", &["x", "y", "z"], 0, super::lib_draw::camera),
+    fixed(
+        "draw.mesh",
+        &["points", "triangles"],
+        2,
+        super::lib_draw::mesh,
+    ),
+    fixed("draw.cube_mesh", &[], 0, super::lib_draw::cube_mesh_fn),
+    fixed(
+        "draw.sphere_mesh",
+        &["detail"],
+        0,
+        super::lib_draw::sphere_mesh_fn,
+    ),
+    variadic("draw.overlaps", super::lib_draw::overlaps),
+    fixed("draw.rgb", &["r", "g", "b"], 3, super::lib_draw::rgb),
+    fixed(
+        "draw.text_width",
+        &["text", "size"],
+        1,
+        super::lib_draw::text_width,
+    ),
     // ---- std.db ----
     fixed("db.open", &["path"], 1, super::lib_db::db_open),
     // ---- std.task ----
@@ -257,6 +294,7 @@ pub fn std_module(name: &str) -> Option<&'static str> {
         "csv" => Some("csv"),
         "task" => Some("task"),
         "db" => Some("db"),
+        "draw" => Some("draw"),
         _ => None,
     }
 }

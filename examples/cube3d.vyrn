@@ -1,0 +1,23 @@
+# A spinning cube and sphere in 3D. Arrow keys move the camera, W/S zoom.
+use std.draw
+
+main:
+    let win = draw.window(800, 600, "3D")
+    let cam = draw.camera(0, 2, -8)
+    var angle = 0.0
+    loop win.open():
+        if win.key_down("left"): cam.turn(-2, 0)
+        if win.key_down("right"): cam.turn(2, 0)
+        if win.key_down("up"): cam.turn(0, 1)
+        if win.key_down("down"): cam.turn(0, -1)
+        if win.key_down("w"): cam.forward(0.2)
+        if win.key_down("s"): cam.forward(-0.2)
+
+        win.clear("#0b1020")
+        win.plane(cam, 0, -1, 0, size = 12, color = "darkgreen")
+        win.cube(cam, -1.5, 0, 0, size = 1.5, color = "orange", rotation = [angle, angle * 1.3, 0])
+        win.sphere(cam, 1.8, 0, 0, size = 1.8, color = "sky", detail = 16)
+        win.text("arrows: look   W/S: move", 10, 10, "white")
+        angle += win.show() * 60
+    end
+end

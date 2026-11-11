@@ -19,12 +19,13 @@
 //! are always passed separately from the SQL, so text from users cannot
 //! change what a statement does.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
+#[cfg_attr(not(feature = "db"), allow(unused_imports))]
 use super::builtins::opt;
+#[cfg_attr(not(feature = "db"), allow(unused_imports))]
 use super::foreign::Foreign;
+#[cfg_attr(not(feature = "db"), allow(unused_imports))]
 use super::ops::{self, err, type_error, Ctx, VmResult};
+#[cfg_attr(not(feature = "db"), allow(unused_imports))]
 use super::value::{Key, Map, Value};
 
 fn text_arg<'a>(args: &'a [Value], i: usize, what: &str) -> VmResult<&'a str> {
@@ -41,6 +42,8 @@ fn text_arg<'a>(args: &'a [Value], i: usize, what: &str) -> VmResult<&'a str> {
 #[cfg(feature = "db")]
 mod imp {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
     use rusqlite::types::{Value as Sql, ValueRef};
 
     pub struct Database {

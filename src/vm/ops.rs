@@ -256,7 +256,7 @@ pub fn arith(ctx: &mut Ctx, op: Arith, a: &Value, b: &Value) -> VmResult<Value> 
         (Value::List(x), Value::Int(n)) | (Value::Int(n), Value::List(x)) if op == Arith::Mul => {
             let x = x.borrow();
             let times = (*n).max(0) as usize;
-            if x.len().saturating_mul(times) > (1 << 32) {
+            if (x.len() as u64).saturating_mul(times as u64) > (1u64 << 32) {
                 return Err(err("MemoryError", "the list would be too large"));
             }
             let mut items = Vec::with_capacity(x.len() * times);

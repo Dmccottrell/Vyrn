@@ -30,7 +30,10 @@ libloading = { version = "0.9", optional = true }
 libffi = { version = "5", optional = true }
 
 [features]
-default = ["net", "native", "db"]
+default = ["net", "native", "db", "draw"]
+# `use std.draw`: 2D and 3D drawing, images, and windows with keyboard and
+# mouse input (not on WebAssembly).
+draw = ["dep:minifb", "dep:png", "dep:font8x8"]
 # `use std.db`: SQLite databases (not on WebAssembly).
 db = ["dep:rusqlite"]
 # Compiles typed functions to machine code with Cranelift (not on WebAssembly).
@@ -47,6 +50,10 @@ ffi = ["dep:libloading", "dep:libffi"]
 # The interactive prompt: line editing and history. Not needed on the web.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rustyline = { version = "15", default-features = false, features = ["with-file-history"] }
+# `use std.draw`: windows (minifb), PNG images, and a bitmap font.
+minifb = { version = "0.29", optional = true, default-features = false, features = ["x11"] }
+png = { version = "0.18", optional = true }
+font8x8 = { version = "0.3", optional = true }
 # `use std.db`: SQLite, compiled in.
 rusqlite = { version = "0.42", optional = true, features = ["bundled"] }
 # The native tier: typed functions compiled to machine code at load time.

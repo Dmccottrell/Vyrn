@@ -19,6 +19,11 @@ pub mod gpu;
 pub mod json;
 pub mod kernel;
 pub mod lib_db;
+#[cfg(feature = "draw")]
+pub mod lib_draw;
+#[cfg(not(feature = "draw"))]
+#[path = "lib_draw_off.rs"]
+pub mod lib_draw;
 pub mod machine;
 pub mod native_abi;
 pub mod op;
