@@ -42,6 +42,7 @@ usage: vyrn <command> [arguments]
                          make one executable file; T is native (default),
                          linux-gnu, linux-musl, linux-arm64, macos, windows,
                          or wasm32-edge for Vercel, Cloudflare and Deno
+  lsp                    run the language server (for editors)
   bytecode <file>        show the compiled bytecode
   parse <file>           show the syntax tree
   lex <file>             show the tokens";
@@ -59,6 +60,10 @@ fn main() -> ExitCode {
     };
     match command.as_str() {
         "repl" => repl(),
+        "lsp" => {
+            vyrn::lsp::run_stdio();
+            ExitCode::SUCCESS
+        }
         "--version" | "-V" | "version" => {
             println!("vyrn {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS

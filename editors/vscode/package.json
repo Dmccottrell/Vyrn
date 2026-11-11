@@ -1,8 +1,8 @@
 {
   "name": "vyrn",
   "displayName": "Vyrn",
-  "description": "Vyrn language support: highlighting, errors as you type from vyrn check, formatting and running",
-  "version": "0.3.0",
+  "description": "Vyrn language support: completion, hover, go to definition, errors as you type, formatting, and running",
+  "version": "0.4.0",
   "publisher": "vyrn",
   "license": "MIT",
   "engines": {
@@ -46,6 +46,10 @@
       {
         "command": "vyrn.test",
         "title": "Vyrn: Run Tests"
+      },
+      {
+        "command": "vyrn.repl",
+        "title": "Vyrn: Open Interactive Prompt"
       }
     ],
     "configuration": {
@@ -60,6 +64,11 @@
           "type": "boolean",
           "default": true,
           "description": "Check the file as you type (after a short pause), not only on save."
+        },
+        "vyrn.languageServer": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use the Vyrn language server (`vyrn lsp`) for completion, hover, definitions and errors."
         }
       }
     }
@@ -67,5 +76,8 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/dmccottrell/vyrn"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
   }
 }

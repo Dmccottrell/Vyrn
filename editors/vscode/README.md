@@ -2,14 +2,19 @@
 
 - **Highlighting** for `.vyrn` files: keywords, types, string interpolation,
   numbers with suffixes, decorators, `route` lines and doc comments.
-- **Errors as you work**, from `vyrn check`: types, `let`, null safety,
-  exhaustive `when`, borrows. They appear as you type (after a short
-  pause) and on save, with the compiler's hint.
-- **Formatting** with `vyrn fmt` (Format Document).
+- **The Vyrn language server** (`vyrn lsp`): errors as you type (types,
+  `let`, null safety, exhaustive `when`, borrows, with the compiler's
+  hint), **completion** of keywords, builtins, your declarations and
+  variables, `std` module members after `math.` and methods after `.`,
+  **hover** documentation, **go to definition** (across your project's
+  files), **signature help**, the **outline**, and **formatting**.
+- Without the language client library installed, it falls back to running
+  `vyrn check` and `vyrn fmt`.
 - **Indentation** that follows Vyrn's blocks: a line ending in `:` indents
   the next, and `end`, `else if`, `else`, `catch`, `always` and `is` lines
   dedent. Blocks fold.
-- **Commands**: *Vyrn: Run File* and *Vyrn: Run Tests*.
+- **Commands**: *Vyrn: Run File*, *Vyrn: Run Tests* and *Vyrn: Open
+  Interactive Prompt*.
 
 It needs the `vyrn` command on the `PATH` (or set `vyrn.path`):
 
@@ -17,15 +22,24 @@ It needs the `vyrn` command on the `PATH` (or set `vyrn.path`):
 cargo install --path .
 ```
 
-To package and install the extension from this directory:
+To package and install the extension from this directory, first fetch
+the language client library:
+
+```bash
+npm install
+```
 
 ```bash
 npx @vscode/vsce package
 ```
 
 ```bash
-code --install-extension vyrn-0.3.0.vsix
+code --install-extension vyrn-0.4.0.vsix
 ```
 
+Other editors (Neovim, Helix, Zed, Sublime, Emacs) can use the same server:
+point their LSP client at the command `vyrn lsp` for `.vyrn` files.
+
 `node test.js` tests the parts that do not need VS Code: reading
-`vyrn check` output, the grammar, and the indentation rules.
+`vyrn check` output, the grammar, the indentation rules, and the language
+server answering `initialize`, diagnostics and hover.

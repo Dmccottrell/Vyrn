@@ -46,5 +46,43 @@ const increase = new RegExp(config.indentationRules.increaseIndentPattern);
 const decrease = new RegExp(config.indentationRules.decreaseIndentPattern);
 assert.ok(increase.test("create f(x):") && increase.test("    if x > 1:  # big") && !increase.test("    x = 1"));
 assert.ok(decrease.test("end") && decrease.test("    else:") && decrease.test("    is Shape.Circle(r):") && !decrease.test("    ending = 1"));
-fs.rmSync(dir, { recursive: true, force: true });
+
 console.log(`ok: diagnostics parsed, ${patterns} grammar patterns compile`);
+
+// The language server answers `initialize` and reports errors on open.
+const { spawn } = require("child_process");
+const lsp = spawn(vyrn, ["lsp"]);
+let buffer = Buffer.alloc(0);
+const replies = [];
+lsp.stdout.on("data", (chunk) => {
+  buffer = Buffer.concat([buffer, chunk]);
+  for (;;) {
+    const head = buffer.indexOf("\r\n\r\n");
+    if (head < 0) break;
+    const length = Number(/Content-Length: (\d+)/.exec(buffer.slice(0, head).toString())[1]);
+    if (buffer.length < head + 4 + length) break;
+    replies.push(JSON.parse(buffer.slice(head + 4, head + 4 + length).toString()));
+    buffer = buffer.slice(head + 4 + length);
+  }
+});
+const send = (message) => {
+  const body = JSON.stringify({ jsonrpc: "2.0", ...message });
+  lsp.stdin.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+};
+send({ id: 1, method: "initialize", params: {} });
+send({
+  method: "textDocument/didOpen",
+  params: { textDocument: { uri: "file://" + file, text: "main:\n    print(nope)\nend\n" } },
+});
+send({ id: 2, method: "textDocument/hover", params: { textDocument: { uri: "file://" + file }, position: { line: 1, character: 5 } } });
+setTimeout(() => {
+  lsp.kill();
+  const init = replies.find((r) => r.id === 1);
+  assert.ok(init.result.capabilities.completionProvider, "the server offers completion");
+  const diagnostics = replies.find((r) => r.method === "textDocument/publishDiagnostics");
+  assert.ok(diagnostics.params.diagnostics[0].message.startsWith("`nope` is not defined"));
+  const hover = replies.find((r) => r.id === 2);
+  assert.ok(hover.result.contents.value.includes("print"), "hover documents print");
+  fs.rmSync(dir, { recursive: true, force: true });
+  console.log("ok: language server answers initialize, diagnostics and hover");
+}, 1500);

@@ -1,6 +1,9 @@
-// Vyrn for VS Code: errors from `vyrn check` as you work, formatting with
-// `vyrn fmt`, and commands to run a file or the tests. Everything comes
-// from the `vyrn` command, so the editor and the compiler always agree.
+// Vyrn for VS Code. The language server (`vyrn lsp`) gives errors as you
+// type, completion, hover, go to definition, signature help, the outline
+// and formatting. Without the `vscode-languageclient` package (run
+// `npm install` here), the extension falls back to running `vyrn check`
+// and `vyrn fmt`. Everything comes from the `vyrn` command, so the editor
+// and the compiler always agree.
 
 const vscode = require("vscode");
 const { execFile } = require("child_process");
@@ -74,7 +77,42 @@ function terminal(command) {
   t.sendText(command);
 }
 
+// Starts `vyrn lsp`. Returns false when the client library is missing or
+// the server is turned off, so the fallback below takes over.
+function startLanguageServer(context) {
+  if (!vscode.workspace.getConfiguration("vyrn").get("languageServer")) return false;
+  let lc;
+  try {
+    lc = require("vscode-languageclient/node");
+  } catch (_) {
+    return false;
+  }
+  const server = { command: vyrnPath(), args: ["lsp"] };
+  const client = new lc.LanguageClient(
+    "vyrn",
+    "Vyrn",
+    { run: server, debug: server },
+    { documentSelector: [{ scheme: "file", language: "vyrn" }] },
+  );
+  client.start();
+  context.subscriptions.push({ dispose: () => client.stop() });
+  return true;
+}
+
+function registerCommands(context) {
+  context.subscriptions.push(
+    vscode.commands.registerCommand("vyrn.run", () => {
+      const editor = vscode.window.activeTextEditor;
+      if (editor) terminal(`${vyrnPath()} run "${editor.document.uri.fsPath}"`);
+    }),
+    vscode.commands.registerCommand("vyrn.test", () => terminal(`${vyrnPath()} test`)),
+    vscode.commands.registerCommand("vyrn.repl", () => terminal(vyrnPath())),
+  );
+}
+
 function activate(context) {
+  registerCommands(context);
+  if (startLanguageServer(context)) return;
   const collection = vscode.languages.createDiagnosticCollection("vyrn");
   context.subscriptions.push(collection);
   let timer = null;
@@ -89,11 +127,6 @@ function activate(context) {
     }),
     vscode.workspace.onDidCloseTextDocument((d) => collection.delete(d.uri)),
     vscode.languages.registerDocumentFormattingEditProvider("vyrn", { provideDocumentFormattingEdits: format }),
-    vscode.commands.registerCommand("vyrn.run", () => {
-      const editor = vscode.window.activeTextEditor;
-      if (editor) terminal(`${vyrnPath()} run "${editor.document.uri.fsPath}"`);
-    }),
-    vscode.commands.registerCommand("vyrn.test", () => terminal(`${vyrnPath()} test`)),
   );
   vscode.workspace.textDocuments.forEach((d) => check(d, collection));
 }
