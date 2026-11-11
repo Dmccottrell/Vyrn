@@ -223,6 +223,13 @@ pub static NATIVES: &[Native] = &[
     fixed("csv.read", &["path", "header", "sep"], 1, S::csv_read),
     fixed("csv.format", &["rows", "sep"], 1, S::csv_format),
     fixed("csv.write", &["path", "rows", "sep"], 2, S::csv_write),
+    // ---- std.task ----
+    variadic("task.select", S::task_select),
+    fixed("task.timeout", &["seconds", "work"], 2, S::task_timeout),
+    fixed("task.group", &[], 0, S::task_group),
+    fixed("task.done", &["task"], 1, S::task_done),
+    fixed("task.cancel", &["task"], 1, S::task_cancel),
+    fixed("task.sleep", &["seconds"], 1, sleep),
     // ---- std.http client ----
     fixed("web.get", &["url", "headers"], 1, S::http_get),
     fixed("web.post", &["url", "body", "headers"], 1, S::http_post),
@@ -246,6 +253,7 @@ pub fn std_module(name: &str) -> Option<&'static str> {
         "json" => Some("json"),
         "re" => Some("re"),
         "csv" => Some("csv"),
+        "task" => Some("task"),
         _ => None,
     }
 }
@@ -536,10 +544,15 @@ fn join(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 /// `sleep(seconds)`: a task that finishes after the time has passed.
 /// `await sleep(0.5)` pauses the current task and lets others run.
 fn sleep(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let seconds = number(&args[0], "the number of seconds")?;
+    sleep_task(ctx, seconds)
+}
+
+/// A task that finishes after `seconds`.
+pub(crate) fn sleep_task(ctx: &mut Ctx, seconds: f64) -> VmResult<Value> {
     if cfg!(target_arch = "wasm32") {
         return Err(no_clock());
     }
-    let seconds = number(&args[0], "the number of seconds")?;
     if !(seconds >= 0.0 && seconds.is_finite()) {
         return Err(err(
             "ValueError",

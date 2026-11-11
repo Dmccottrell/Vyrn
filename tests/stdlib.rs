@@ -159,3 +159,38 @@ fn errors_name_what_went_wrong() {
     assert!(error("use std.random\nmain: random.int(5, 1)\n").contains("below the low end"));
     assert!(error("main: print([].reduce((a, b) => a + b))\n").contains("empty list"));
 }
+
+#[test]
+fn tasks_select_timeout_and_groups() {
+    let out = run("use std.task\n\
+        async create fetch(name: str, seconds: float) -> str:\n    await sleep(seconds)\n    return \"{name} done\"\nend\n\
+        main:\n\
+        \x20   print(await task.select(fetch(\"slow\", 0.2), fetch(\"fast\", 0.01)))\n\
+        \x20   print(await task.timeout(1.0, fetch(\"quick\", 0.01)))\n\
+        \x20   attempt:\n\
+        \x20       print(await task.timeout(0.02, fetch(\"stuck\", 5.0)))\n\
+        \x20   catch Timeout:\n\
+        \x20       print(\"timed out\")\n\
+        \x20   end\n\
+        \x20   using task.group() as g:\n\
+        \x20       each n in 1 to 3: g.spawn(fetch(\"job{n}\", 0.01 * n))\n\
+        \x20       print(await g.wait())\n\
+        \x20   end\n\
+        \x20   let g = task.group()\n\
+        \x20   let t = g.spawn(fetch(\"never\", 10.0))\n\
+        \x20   g.cancel()\n\
+        \x20   attempt:\n\
+        \x20       await t\n\
+        \x20   catch Cancelled:\n\
+        \x20       print(\"cancelled\", task.done(t))\n\
+        \x20   end\n\
+        \x20   let ch = channel()\n\
+        \x20   let picked = task.select(ch, fetch(\"x\", 0.05))\n\
+        \x20   ch.send(42)\n\
+        \x20   print(await picked)\n\
+        end\n");
+    assert_eq!(
+        out,
+        "(1, \"fast done\")\nquick done\ntimed out\n[\"job1 done\", \"job2 done\", \"job3 done\"]\ncancelled true\n(0, 42)\n"
+    );
+}

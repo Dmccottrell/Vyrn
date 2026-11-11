@@ -248,6 +248,7 @@ impl Vm {
             providers: HashMap::new(),
             block_on: None,
             hosted: false,
+            cancels: Vec::new(),
         };
         Vm {
             program,
@@ -333,6 +334,7 @@ impl Vm {
     /// hosts that keep a program alive between requests.
     pub fn run_pending(&mut self) -> Result<(), RuntimeError> {
         loop {
+            self.apply_cancels();
             self.ready.extend(self.ctx.wakeups.drain(..));
             self.fire_timers();
             if self.ready.is_empty() {
@@ -836,6 +838,7 @@ impl Vm {
     /// finished.
     fn resume_next(&mut self) -> Result<(), RuntimeError> {
         loop {
+            self.apply_cancels();
             self.ready.extend(self.ctx.wakeups.drain(..));
             self.fire_timers();
             if !self.ctx.servers.is_empty() {
@@ -1090,7 +1093,90 @@ impl Vm {
                     Err(e) => Awaited::Failed(e),
                 }
             }
+            Value::Foreign(f) if f.as_any().is::<super::stdlib::Race>() => {
+                let race = f
+                    .as_any()
+                    .downcast_ref::<super::stdlib::Race>()
+                    .expect("checked above");
+                self.await_race(race)
+            }
+            Value::Foreign(f) if f.as_any().is::<super::stdlib::Group>() => {
+                match self.await_all(&ops::collect(value).unwrap_or_default()) {
+                    Ok(Some(values)) => Awaited::Ready(Value::list(values)),
+                    Ok(None) => Awaited::Blocked,
+                    Err(e) => Awaited::Failed(e),
+                }
+            }
             other => Awaited::Ready(other.clone()),
+        }
+    }
+
+    /// The first ready item of a `task.select` or `task.timeout`; otherwise
+    /// waits on all of them. A task woken by a loser later just finds its
+    /// `await` still blocked and waits again.
+    fn await_race(&mut self, race: &super::stdlib::Race) -> Awaited {
+        for (i, item) in race.items.iter().enumerate() {
+            let ready = match item {
+                Value::Task(h) => h.is_done(),
+                Value::Channel(ch) => {
+                    let ch = ch.borrow();
+                    !ch.queue.is_empty() || ch.closed
+                }
+                _ => true,
+            };
+            if !ready {
+                continue;
+            }
+            return match self.await_value(item) {
+                Awaited::Ready(v) => {
+                    if race.timer == Some(i) {
+                        // The work lost: stop it.
+                        for (j, other) in race.items.iter().enumerate() {
+                            if let (true, Value::Task(h)) = (j != i, other) {
+                                if !h.is_done() {
+                                    self.ctx.cancels.push(h.clone());
+                                }
+                            }
+                        }
+                        Awaited::Failed(err(
+                            "Timeout",
+                            format!("the work took longer than {} seconds", race.seconds),
+                        ))
+                    } else if race.timer.is_some() {
+                        Awaited::Ready(v)
+                    } else {
+                        Awaited::Ready(Value::tuple(vec![Value::Int(i as i64), v]))
+                    }
+                }
+                other => other,
+            };
+        }
+        for item in &race.items {
+            match item {
+                Value::Task(h) => h.waiters.borrow_mut().push(self.current),
+                Value::Channel(ch) => ch.borrow_mut().waiters.push(self.current),
+                _ => {}
+            }
+        }
+        Awaited::Blocked
+    }
+
+    /// Stops the tasks builtins asked to cancel: they never run again, and
+    /// awaiting them fails with `Cancelled`.
+    fn apply_cancels(&mut self) {
+        for handle in std::mem::take(&mut self.ctx.cancels) {
+            if handle.is_done() || handle.id == self.current {
+                continue;
+            }
+            self.suspended.remove(&handle.id);
+            self.ready.retain(|id| *id != handle.id);
+            let waiters = handle.finish(Err(err(
+                "Cancelled",
+                format!("the task `{}` was cancelled", handle.name),
+            )));
+            // Nobody has to look at a cancellation.
+            handle.observed.set(true);
+            self.ready.extend(waiters);
         }
     }
 

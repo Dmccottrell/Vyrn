@@ -2313,6 +2313,168 @@ fn http_request(
     ))
 }
 
+// ==== std.task ==============================================================
+
+/// What `task.select(...)` and `task.timeout(...)` return: awaiting it waits
+/// for the first of several tasks or channels to be ready.
+pub struct Race {
+    pub items: Vec<Value>,
+    /// For `task.timeout`: the position of the timer. Winning it fails with
+    /// `Timeout`; any other winner gives just its value.
+    pub timer: Option<usize>,
+    pub seconds: f64,
+}
+
+impl Foreign for Race {
+    fn type_name(&self) -> &'static str {
+        "Race"
+    }
+
+    fn display(&self) -> String {
+        if self.timer.is_some() {
+            format!("<timeout after {}s>", self.seconds)
+        } else {
+            format!("<select of {}>", self.items.len())
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// `task.select(a, b, ...)`: `await` it to get `(index, value)` of the first
+/// task or channel that is ready.
+pub fn task_select(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let items = match args {
+        [Value::List(items)] => items.borrow().clone(),
+        _ => args.to_vec(),
+    };
+    if items.is_empty() {
+        return Err(err("ValueError", "`task.select` needs at least one task"));
+    }
+    Ok(Value::Foreign(Rc::new(Box::new(Race {
+        items,
+        timer: None,
+        seconds: 0.0,
+    }))))
+}
+
+/// `task.timeout(seconds, work)`: `await` it for `work`'s value, or a
+/// `Timeout` failure if `seconds` pass first.
+pub fn task_timeout(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let seconds = number(&args[0], "the number of seconds")?;
+    let timer = super::builtins::sleep_task(ctx, seconds)?;
+    Ok(Value::Foreign(Rc::new(Box::new(Race {
+        items: vec![args[1].clone(), timer],
+        timer: Some(1),
+        seconds,
+    }))))
+}
+
+/// `task.group()`: tasks started together. `g.spawn(work)` adds one,
+/// `await g.wait()` waits for all and gives their results, `g.cancel()`
+/// stops the unfinished ones. Used with `using`, the tasks never outlive
+/// the block: any still running at its `end` are cancelled.
+pub struct Group {
+    tasks: RefCell<Vec<Value>>,
+}
+
+pub fn task_group(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
+    Ok(Value::Foreign(Rc::new(Box::new(Group {
+        tasks: RefCell::new(Vec::new()),
+    }))))
+}
+
+impl Group {
+    fn cancel_all(&self, ctx: &mut Ctx) {
+        for t in self.tasks.borrow().iter() {
+            if let Value::Task(h) = t {
+                if !h.is_done() {
+                    ctx.cancels.push(h.clone());
+                }
+            }
+        }
+    }
+}
+
+impl Foreign for Group {
+    fn type_name(&self) -> &'static str {
+        "TaskGroup"
+    }
+
+    fn display(&self) -> String {
+        format!("<task group of {}>", self.tasks.borrow().len())
+    }
+
+    fn call_method(
+        &self,
+        ctx: &mut Ctx,
+        name: &str,
+        args: &[Value],
+        _: &[(String, Value)],
+    ) -> VmResult<Value> {
+        match name {
+            "spawn" | "add" => {
+                let task = args.first().ok_or_else(|| {
+                    err(
+                        "CallError",
+                        "`g.spawn` takes a task, as in `g.spawn(fetch(url))`",
+                    )
+                })?;
+                if !matches!(task, Value::Task(_)) {
+                    return Err(type_error(format!(
+                        "`g.spawn` takes a task (the call of an `async` function), not {}",
+                        task.type_name()
+                    )));
+                }
+                self.tasks.borrow_mut().push(task.clone());
+                Ok(task.clone())
+            }
+            "wait" => Ok(Value::list(self.tasks.borrow().clone())),
+            "tasks" => Ok(Value::list(self.tasks.borrow().clone())),
+            "cancel" | "close" => {
+                self.cancel_all(ctx);
+                Ok(Value::None)
+            }
+            _ => Err(err(
+                "FieldError",
+                format!("a task group has no method `{name}`"),
+            )),
+        }
+    }
+
+    fn len(&self) -> VmResult<usize> {
+        Ok(self.tasks.borrow().len())
+    }
+
+    fn items(&self) -> VmResult<Vec<Value>> {
+        Ok(self.tasks.borrow().clone())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// `task.done(t)`: whether a task has finished.
+pub fn task_done(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    Ok(Value::Bool(match &args[0] {
+        Value::Task(h) => h.is_done(),
+        _ => true,
+    }))
+}
+
+/// `task.cancel(t)`: stops a task; awaiting it then fails with `Cancelled`.
+pub fn task_cancel(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    if let Value::Task(h) = &args[0] {
+        if !h.is_done() {
+            ctx.cancels.push(h.clone());
+        }
+    }
+    Ok(Value::None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

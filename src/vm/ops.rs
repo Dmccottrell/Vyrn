@@ -59,6 +59,8 @@ pub struct Ctx {
     /// The host delivers HTTP requests itself (an edge platform), so
     /// `web.serve` returns at once instead of listening.
     pub hosted: bool,
+    /// Tasks a builtin asked to stop (`task.cancel`, a group's `cancel`).
+    pub cancels: Vec<Rc<super::task::TaskHandle>>,
 }
 
 impl Ctx {
