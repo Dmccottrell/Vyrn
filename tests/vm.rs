@@ -1344,3 +1344,18 @@ fn traits_give_default_methods() {
         "area 9.0\n"
     );
 }
+
+#[test]
+fn private_members_belong_to_their_type() {
+    let src = "object Account:\n    private balance: float = 0.0\n\
+               \x20   create deposit(self, x: float): self.balance += x\n\
+               \x20   create current(self) -> float: return self.balance\nend\n\
+               object Savings(Account):\n    create bonus(self): self.deposit(self.balance)\nend\n\
+               main:\n    a = Savings()\n    a.deposit(5.0)\n    a.bonus()\n    print(a.current())\n    print(a.balance)\nend\n";
+    let e = runtime_error(src);
+    assert_eq!(e.kind, "PrivateError");
+    assert_eq!(
+        e.message,
+        "`balance` is private to `Account`: only its own methods can use it"
+    );
+}

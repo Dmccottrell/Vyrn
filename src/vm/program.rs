@@ -35,6 +35,9 @@ pub struct Proto {
     pub variadic: bool,
     /// The body has `yield`: calling it makes a generator.
     pub is_generator: bool,
+    /// The type whose method (or constructor) this is, or a function
+    /// inside one: it may use that type's `private` members.
+    pub owner: Option<u16>,
     /// `kernel fn`: its body lowered for running on tensors, or why it
     /// could not be.
     pub kernel: Option<Rc<Result<super::kernel::Kernel, String>>>,
@@ -72,6 +75,9 @@ pub struct TypeDef {
     /// The constructor's prototype, for structs, classes and variants with
     /// fields.
     pub ctor: Option<usize>,
+    /// Fields and methods only the type's own methods may use, including
+    /// those of its base classes.
+    pub private: Vec<Symbol>,
 }
 
 #[derive(Debug)]

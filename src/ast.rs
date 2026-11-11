@@ -327,6 +327,9 @@ pub struct AggregateDecl {
     pub fields: Vec<FieldDecl>,
     /// Each is an [`ItemKind::Fn`].
     pub methods: Vec<Item>,
+    /// Fields and methods marked `private`: only the type's own methods
+    /// can use them.
+    pub private: Vec<String>,
 }
 
 /// `name: T`, `name: T = default`, or `name = default`.

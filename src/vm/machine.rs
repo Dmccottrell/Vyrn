@@ -1757,6 +1757,52 @@ impl Vm {
             .position(|f| *f == name)
     }
 
+    /// `PrivateError` when the running function may not use `name` of a
+    /// value of type `ty`: a `private` member, used outside the methods of
+    /// its type (and the types built on it).
+    #[inline]
+    fn check_private(&self, proto: &super::program::Proto, ty: u16, name: Symbol) -> VmResult<()> {
+        let def = &self.program.types[ty as usize];
+        if def.private.is_empty() || !def.private.contains(&name) {
+            return Ok(());
+        }
+        if let Some(owner) = proto.owner {
+            if self.related(owner, ty) {
+                return Ok(());
+            }
+        }
+        // Name the type that declared it.
+        let mut declared = ty;
+        while let Some(p) = self.program.types[declared as usize].parent {
+            if !self.program.types[p as usize].private.contains(&name) {
+                break;
+            }
+            declared = p;
+        }
+        Err(err(
+            "PrivateError",
+            format!(
+                "`{}` is private to `{}`: only its own methods can use it",
+                self.program.symbols.name(name),
+                self.type_name(declared)
+            ),
+        ))
+    }
+
+    /// Whether one type is the other or built on it.
+    fn related(&self, a: u16, b: u16) -> bool {
+        let descends = |mut t: u16, from: u16| loop {
+            if t == from {
+                return true;
+            }
+            match self.program.types[t as usize].parent {
+                Some(p) => t = p,
+                None => return false,
+            }
+        };
+        descends(a, b) || descends(b, a)
+    }
+
     /// The type of a struct or object value.
     fn instance_type(value: &Value) -> Option<u16> {
         match value {
@@ -2827,6 +2873,7 @@ impl Vm {
                             _ => None,
                         };
                         if let Some(ty) = ty {
+                            check!(self.check_private(proto, ty, symbol));
                             match self.methods.get(&(ty, symbol)).cloned() {
                                 Some(method) if method.proto.native.get().is_some() => {
                                     let native =
@@ -3041,14 +3088,22 @@ impl Vm {
                         let symbol = proto.names[name as usize];
                         let result: VmResult<Value> = match &reg!(obj) {
                             Value::Struct(inst) => match self.field_slot(inst.ty, symbol) {
-                                Some(i) => Ok(inst.fields[i].clone()),
-                                None => self.bound_method(&reg!(obj), inst.ty, symbol),
+                                Some(i) => self
+                                    .check_private(proto, inst.ty, symbol)
+                                    .map(|_| inst.fields[i].clone()),
+                                None => self
+                                    .check_private(proto, inst.ty, symbol)
+                                    .and_then(|_| self.bound_method(&reg!(obj), inst.ty, symbol)),
                             },
                             Value::Object(o) => {
                                 let ty = o.borrow().ty;
                                 match self.field_slot(ty, symbol) {
-                                    Some(i) => Ok(o.borrow().fields[i].clone()),
-                                    None => self.bound_method(&reg!(obj), ty, symbol),
+                                    Some(i) => self
+                                        .check_private(proto, ty, symbol)
+                                        .map(|_| o.borrow().fields[i].clone()),
+                                    None => self
+                                        .check_private(proto, ty, symbol)
+                                        .and_then(|_| self.bound_method(&reg!(obj), ty, symbol)),
                                 }
                             }
                             Value::Type(t) => self.type_member(*t, symbol),
@@ -3070,6 +3125,9 @@ impl Vm {
                             }
                             _ => None,
                         };
+                        if let Some((ty, Some(_))) = slot {
+                            check!(self.check_private(proto, ty, symbol));
+                        }
                         let result: VmResult<()> = match slot {
                             Some((ty, None)) => Err(self.no_field(ty, symbol)),
                             Some((_, Some(i))) => {

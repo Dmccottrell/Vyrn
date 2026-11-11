@@ -230,6 +230,8 @@ struct Compiler {
     /// Functions with decorators: the global to wrap, and the decorators
     /// (outermost first).
     decorated: Vec<(u16, Vec<Decorator>)>,
+    /// The type whose method is being compiled.
+    owner: Option<u16>,
     /// Constants with a literal number value, which kernels may read.
     numeric_consts: HashMap<String, f32>,
     symbols: Interner,
@@ -356,6 +358,7 @@ impl Compiler {
             imports: HashMap::new(),
             foreign_inits: Vec::new(),
             decorated: Vec::new(),
+            owner: None,
             numeric_consts: HashMap::new(),
             symbols: Interner::default(),
             routes: Vec::new(),
@@ -392,6 +395,21 @@ impl Compiler {
             );
         }
         self.resolve_bases(&bases, &mut own_fields);
+        // A class's private members include its base classes'.
+        for ty in 0..self.types.len() {
+            let mut parent = self.types[ty].parent;
+            let mut inherited = Vec::new();
+            let mut seen = 0;
+            while let Some(p) = parent {
+                inherited.extend(self.types[p as usize].private.iter().copied());
+                parent = self.types[p as usize].parent;
+                seen += 1;
+                if seen > self.types.len() {
+                    break;
+                }
+            }
+            self.types[ty].private.extend(inherited);
+        }
         let traits: HashMap<String, &TraitDecl> = items
             .iter()
             .filter_map(|(item, _)| match &item.kind {
@@ -533,6 +551,7 @@ impl Compiler {
                         is_async: false,
                         variadic: false,
                         is_generator: false,
+                        owner: None,
                         kernel: None,
                     })
                 })
@@ -762,6 +781,8 @@ impl Compiler {
                 };
                 let ctor = self.reserve_proto();
                 self.types[ty as usize].ctor = Some(ctor);
+                self.types[ty as usize].private =
+                    a.private.iter().map(|n| self.symbols.intern(n)).collect();
                 own_fields.insert(
                     ty,
                     a.fields
@@ -1001,11 +1022,13 @@ impl Compiler {
                     );
                 }
                 let type_name = self.symbols.name(self.types[ty as usize].name).to_string();
+                self.owner = Some(ty);
                 let mut proto = self.function(
                     format!("{type_name}.{}", decl.name.name),
                     &decl.params,
                     &decl.body,
                 );
+                self.owner = None;
                 proto.is_async = decl.modifiers.is_async;
                 self.set_proto(slot, proto);
             }
@@ -1128,6 +1151,7 @@ impl Compiler {
             parent: None,
             variants: Vec::new(),
             ctor: None,
+            private: Vec::new(),
         });
         self.type_index.insert(name.to_string(), ty);
         Some(ty)
@@ -1230,6 +1254,7 @@ impl Compiler {
         let is_generator = f.is_generator;
         Proto {
             is_generator,
+            owner: self.owner,
             name: f.name,
             code: f.code,
             lines: f.lines,

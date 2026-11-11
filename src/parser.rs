@@ -1032,6 +1032,7 @@ impl Parser {
         self.expect_block_start(what)?;
         let mut fields = Vec::new();
         let mut methods = Vec::new();
+        let mut private = Vec::new();
         loop {
             self.skip_newlines();
             self.drop_stray_docs();
@@ -1039,9 +1040,25 @@ impl Parser {
                 break;
             }
             let before = self.pos;
+            // `private balance: float`, `private create audit(self):`
+            let is_private = matches!(self.kind(), Tk::Ident(w) if w == "private")
+                && matches!(self.kind_at(1), Tk::Ident(_) | Tk::Keyword(K::Fn));
+            if is_private {
+                self.bump();
+            }
             match self.member() {
-                Ok(Member::Field(field)) => fields.push(field),
-                Ok(Member::Method(method)) => methods.push(method),
+                Ok(Member::Field(field)) => {
+                    if is_private {
+                        private.push(field.name.name.clone());
+                    }
+                    fields.push(field)
+                }
+                Ok(Member::Method(method)) => {
+                    if let (true, ItemKind::Fn(f)) = (is_private, &method.kind) {
+                        private.push(f.name.name.clone());
+                    }
+                    methods.push(method)
+                }
                 Err(Fail) => self.recover(before),
             }
             if self.pos == before {
@@ -1056,6 +1073,7 @@ impl Parser {
             base,
             fields,
             methods,
+            private,
         })
     }
 

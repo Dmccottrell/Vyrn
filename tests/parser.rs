@@ -784,7 +784,7 @@ fn declaration_errors() {
         "a struct cannot extend another type"
     );
     assert_eq!(
-        one_error("trait T:\n    create f(self): return 1\nend\n").message,
+        one_error("extern \"c\":\n    create f(x: int): return 1\nend\n").message,
         "this function cannot have a body"
     );
     assert_eq!(
