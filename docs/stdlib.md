@@ -289,6 +289,117 @@ All **run today** (`src/vm/stdlib.rs`).
 | `vyrn.csv` | `csv.read(path)` and `csv.parse(text)` (a list of maps from the header, or of lists with `header = false`), `csv.write(path, rows)`, `csv.format(rows)` |
 | `vyrn.http` client | `http.get(url, headers)`, `http.post(url, body, headers)`, `http.put`, `http.delete`: a response with `status`, `ok`, `text`, `json`, `headers`. Maps and lists are sent as JSON |
 
+## 5b. Application modules
+
+All **run today**. Each module's file in `src/vm/` starts with an example.
+
+### `vyrn.db`: SQLite databases
+
+```vyrn
+use vyrn.db
+
+main:
+    using db.open("shop.db") as conn:
+        conn.execute("create table if not exists items (name text, price real)")
+        conn.execute("insert into items values (?, ?)", ["pen", 1.5])
+        each row in conn.query("select * from items where price < ?", [10]):
+            print(row["name"], row["price"])
+        end
+    end
+end
+```
+
+| API | Does |
+|---|---|
+| `db.open(path)` | A database file (made if missing); `":memory:"` lives only while the program runs |
+| `conn.execute(sql, params)` | Runs a statement, gives the rows changed; several statements without params run as a script |
+| `conn.execute_many(sql, rows)` | One statement per row of params |
+| `conn.query(sql, params)` | Every row, as maps from column to value |
+| `conn.query_one(...)`, `conn.value(...)` | The first row, or its first column; `none` when there is none |
+| `conn.last_id()`, `conn.tables()` | The last inserted row id; the table names |
+| `conn.begin()`, `conn.commit()`, `conn.rollback()`, `conn.close()` | Transactions; `using` closes |
+
+Params are a list for `?` or a map for `:name`, always bound separately
+from the SQL, so input cannot change a statement. Errors are
+`DatabaseError` with SQLite's message.
+
+### `vyrn.draw`: pictures, games, 3D and windows
+
+| API | Does |
+|---|---|
+| `draw.window(w, h, title)` | A window: `loop win.open():` ... `win.show()` (60 fps; gives seconds since the last frame) |
+| `draw.canvas(w, h)` | The same surface without a window; `save("pic.png")`, `get_pixel(x, y)` |
+| `clear`, `pixel`, `line`, `rect`, `circle`, `triangle`, `polygon`, `text`, `image` | Drawing on either; `fill = false` and `width` for outlines; colours by name, `"#rrggbb"`, `[r, g, b]` or `[r, g, b, a]` |
+| `win.key_down(k)`, `win.key_pressed(k)` | Keys by name: `"left"`, `"space"`, `"a"`, `"1"`, ... |
+| `win.mouse_x`, `win.mouse_y`, `win.mouse_down(button)`, `win.clicked()`, `win.typed()` | The mouse, and text typed this frame |
+| `win.button(label, x, y)`, `win.input(name, x, y, w, hint)`, `win.checkbox(label, x, y, checked)`, `win.set_input(name, text)` | Widgets for apps: a button is true on the frame it is clicked; an input gives its text |
+| `draw.turtle(surface)` | `forward`, `back`, `left`, `right`, `goto`, `home`, `pen_up`, `pen_down`, `color`, `width`, `circle`, `dot`, `write`, `begin_fill`, `end_fill` |
+| `draw.image(path)` | A PNG, drawn with `surface.image(img, x, y, scale)` |
+| `draw.camera(x, y, z)` | 3D: `move`, `move_to`, `forward`, `turn`, `look_at`, `set_fov` |
+| `cube`, `sphere`, `plane`, `mesh`, `line3d` | 3D shapes, shaded, hidden behind nearer ones: `win.cube(cam, x, y, z, size, color, rotation = [rx, ry, rz])` |
+| `draw.mesh(points, triangles)`, `draw.cube_mesh()`, `draw.sphere_mesh(detail)` | Shapes of your own |
+| `draw.overlaps(x1, y1, w1, h1, x2, y2, w2, h2)`, `draw.rgb`, `draw.text_width` | Collisions, colours, text size |
+
+Everything is drawn in software, so it looks the same on every machine.
+`examples/snake.vyrn`, `examples/cube3d.vyrn` and `examples/tips.vyrn`
+are a game, a 3D scene and a small app.
+
+### `vyrn.html`: reading web pages
+
+`html.parse(text)` gives a page; `page.select(css)` and
+`page.select_one(css)` find elements by CSS selector (`"a[href]"`,
+`"div.price"`, `"#main > p"`). An element has `text`, `raw_text`, `tag`,
+`html`, `outer_html`, `id`, `classes`, `attrs`, `children`, `parent`,
+`attr(name)`, `has_class(name)` and its own `select`. `page.title`,
+`page.text`. `html.escape(text)`. Pages are read as browsers read them.
+
+### `vyrn.template`: pages made from data
+
+```vyrn
+use vyrn.template
+
+main:
+    let page = template.render(r"<h1>{{title}}</h1>{{#each items}}<li>{{name}}</li>{{/each}}",
+                               {"title": "Shop", "items": [{"name": "pen"}]})
+    print(page)
+end
+```
+
+`{{name}}` (HTML-escaped), `{{{raw}}}`, `{{a.b}}` (map keys and struct
+fields), `{{#each list}}` with `{{this}}` and `{{@index}}`, `{{#if x}}` /
+`{{else}}` / `{{/if}}`, `{{#unless x}}`, `{{! comment }}`.
+`template.render_file(path, data)` reads the template from a file. Write
+templates in raw strings `r"..."` or files: in ordinary strings `{...}`
+interpolates. A route returning text that starts with `<` is sent as a web
+page.
+
+### `vyrn.table`: data in rows and columns
+
+| API | Does |
+|---|---|
+| `table.read_csv(path)`, `table.from_csv(text)`, `table.from_rows(rows, columns)` | A table; numbers in CSV become numbers, empty cells `none` |
+| `t.head(n)`, `t.tail(n)`, `t.row(i)`, `t.column(name)`, `t.columns`, `t.rows`, `t.shape`, `len(t)` | Looking at it; `print(t)` shows an aligned table |
+| `t.where(column, op, value)` | Rows that match: `==`, `!=`, `<`, `<=`, `>`, `>=`, `contains`, `startswith`, `in` |
+| `t.sort(column, descending)`, `t.select(columns)`, `t.add_column(name, values)` | New tables |
+| `t.sum`, `t.mean`, `t.median`, `t.min`, `t.max`, `t.count`, `t.unique` | Of one column |
+| `t.group_by(column, value, how)` | One row per group: `how` is sum, mean, median, min, max or count |
+| `t.to_csv(path)`, `each row in t` | Writing, and rows as maps |
+
+### `vyrn.chart`: charts
+
+`chart.line(xs, ys)`, `chart.scatter(xs, ys)`, `chart.bar(labels,
+values)`, `chart.hist(values, bins)`, `chart.pie(labels, values)`, each with
+`title`, `x_label`, `y_label`, `width`, `height`. A map of name to values
+draws several series with a legend. `c.save("chart.png")` or
+`c.save("chart.svg")`; `c.svg()` gives the SVG text.
+
+### `vyrn.mail`: sending email
+
+`mail.send(to, subject, body, sender, server, port, user, password,
+security, html)`: `to` is an address or a list; `security` is
+`"starttls"` (port 587, the default), `"tls"` (465) or `"none"`. Keep
+passwords out of code: `password = os.env("MAIL_PASSWORD")`.
+
 ## 6. Tensors: the Prelude and `vyrn.nn`
 
 The line is **math versus models**.
@@ -412,6 +523,7 @@ end
 | Prelude functions and types | `src/vm/builtins.rs`, `src/vm/stdlib.rs`, `src/prelude.vyrn` | runs |
 | Files, sets, format specs, methods (section 2) | `src/vm/stdlib.rs`, `src/vm/builtins.rs` | runs |
 | `vyrn.os`, `vyrn.path`, `vyrn.time`, `vyrn.random`, `vyrn.math`, `vyrn.json`, `vyrn.re`, `vyrn.csv`, HTTP client | `src/vm/stdlib.rs` | runs |
+| `vyrn.db`, `vyrn.draw`, `vyrn.html`, `vyrn.template`, `vyrn.table`, `vyrn.chart`, `vyrn.mail` | `src/vm/lib_*.rs` | runs |
 | `use vyrn.<module>` with module and name imports | `src/vm/compiler.rs` (`use_decl`, `module_member`) | runs |
 | `vyrn.http` routing, providers, server | `src/vm/machine.rs` (`resolve_route`, `service_servers`), `src/vm/web.rs` | runs; `Request`, `Response`, `Router`, middleware, SSE/WS are design |
 | Green threads, channels, timers | `src/vm/machine.rs`, `src/vm/task.rs` | runs |

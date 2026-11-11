@@ -1,0 +1,31 @@
+# A tip calculator with a window, text fields and buttons.
+use vyrn.draw
+
+main:
+    let win = draw.window(420, 260, "Tips")
+    var result = ""
+    var round_up = false
+    loop win.open():
+        win.clear("#263238")
+        win.text("Bill", 20, 24, "white")
+        let bill = win.input("bill", 120, 18, 260, hint = "e.g. 42.50")
+        win.text("People", 20, 70, "white")
+        let people = win.input("people", 120, 64, 260, hint = "1")
+        round_up = win.checkbox("Round up", 20, 112, round_up)
+
+        each pct in [10, 15, 20]:
+            if win.button("{pct}%", 20 + (pct - 10) * 13, 150, w = 110):
+                attempt:
+                    let n = int(people) if people != "" else 1
+                    var each_pays = float(bill) * (1 + pct / 100) / n
+                    if round_up: each_pays = ceil(each_pays)
+                    result = "Each pays {each_pays:.2f}"
+                catch:
+                    result = "Type numbers in both boxes"
+                end
+            end
+        end
+        win.text(result, 20, 210, "yellow")
+        win.show()
+    end
+end

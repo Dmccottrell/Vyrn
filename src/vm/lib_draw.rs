@@ -1076,11 +1076,231 @@ impl Foreign for Canvas {
     }
 }
 
-/// A window on the screen, with keyboard and mouse.
+// ==== widgets ===============================================================
+
+/// Buttons, text fields and checkboxes, drawn each frame where they are
+/// asked for (immediate mode): `if win.button("Go", 10, 10): ...`. The
+/// window gives this the mouse and the typed text at the start of each
+/// frame; the widgets only read them, so they can be tested without one.
+#[derive(Default)]
+pub struct Ui {
+    mouse: (f64, f64),
+    down: bool,
+    was_down: bool,
+    /// Characters typed during the last frame; `\u{8}` for Backspace.
+    typed: String,
+    fields: std::collections::HashMap<String, String>,
+    focus: Option<String>,
+}
+
+const BUTTON: u32 = 0x3949ab;
+const BUTTON_HOVER: u32 = 0x5c6bc0;
+const FIELD: u32 = 0xffffff;
+const FIELD_EDGE: u32 = 0x9e9e9e;
+const FOCUS_EDGE: u32 = 0x3949ab;
+const INK: u32 = 0x212121;
+
+impl Ui {
+    /// The input for the frame about to be drawn.
+    pub fn next_frame(&mut self, mouse: (f64, f64), down: bool, typed: String) {
+        self.was_down = self.down;
+        self.down = down;
+        self.mouse = mouse;
+        self.typed = typed;
+    }
+
+    /// The mouse button went down this frame.
+    pub fn clicked(&self) -> bool {
+        self.down && !self.was_down
+    }
+
+    fn inside(&self, x: f64, y: f64, w: f64, h: f64) -> bool {
+        let (mx, my) = self.mouse;
+        mx >= x && mx < x + w && my >= y && my < y + h
+    }
+
+    /// Draws a button; true on the frame it is clicked.
+    pub fn button(
+        &mut self,
+        px: &mut Pixels,
+        label: &str,
+        x: f64,
+        y: f64,
+        w: Option<f64>,
+        h: f64,
+    ) -> bool {
+        let w = w.unwrap_or(16.0 * label.chars().count() as f64 + 24.0);
+        let hover = self.inside(x, y, w, h);
+        px.rect(
+            x,
+            y,
+            w,
+            h,
+            Color::opaque(if hover { BUTTON_HOVER } else { BUTTON }),
+            true,
+            1.0,
+        );
+        let tw = 16.0 * label.chars().count() as f64;
+        px.text(
+            label,
+            x + (w - tw) / 2.0,
+            y + (h - 16.0) / 2.0,
+            Color::opaque(0xffffff),
+            2.0,
+        );
+        hover && self.clicked()
+    }
+
+    /// Draws a one-line text field named `name` and gives its text. Click
+    /// it to type into it; Enter or a click elsewhere leaves it.
+    pub fn input(
+        &mut self,
+        px: &mut Pixels,
+        name: &str,
+        x: f64,
+        y: f64,
+        w: f64,
+        hint: &str,
+    ) -> String {
+        let h = 28.0;
+        // Only a field focused before this frame takes this frame's typing.
+        let was_focused = self.focus.as_deref() == Some(name);
+        if self.clicked() {
+            if self.inside(x, y, w, h) {
+                self.focus = Some(name.to_string());
+            } else if self.focus.as_deref() == Some(name) {
+                self.focus = None;
+            }
+        }
+        let focused = self.focus.as_deref() == Some(name);
+        let text = self.fields.entry(name.to_string()).or_default();
+        if focused && was_focused {
+            for c in self.typed.chars() {
+                match c {
+                    '\u{8}' => {
+                        text.pop();
+                    }
+                    '\n' | '\r' => self.focus = None,
+                    c if !c.is_control() => text.push(c),
+                    _ => {}
+                }
+            }
+        }
+        let text = text.clone();
+        px.rect(x, y, w, h, Color::opaque(FIELD), true, 1.0);
+        px.rect(
+            x,
+            y,
+            w,
+            h,
+            Color::opaque(if focused { FOCUS_EDGE } else { FIELD_EDGE }),
+            false,
+            if focused { 2.0 } else { 1.0 },
+        );
+        let room = ((w - 12.0) / 16.0).max(1.0) as usize;
+        let shown: String = if text.is_empty() && !focused {
+            hint.chars().take(room).collect()
+        } else {
+            let n = text.chars().count();
+            text.chars()
+                .skip(n.saturating_sub(room - usize::from(focused)))
+                .collect()
+        };
+        let ink = if text.is_empty() && !focused {
+            FIELD_EDGE
+        } else {
+            INK
+        };
+        px.text(&shown, x + 6.0, y + 6.0, Color::opaque(ink), 2.0);
+        if focused {
+            let cx = x + 6.0 + 16.0 * shown.chars().count() as f64;
+            px.rect(cx, y + 5.0, 2.0, 18.0, Color::opaque(INK), true, 1.0);
+        }
+        text
+    }
+
+    /// Sets a field's text (to clear it, or fill it in).
+    pub fn set_field(&mut self, name: &str, text: &str) {
+        self.fields.insert(name.to_string(), text.to_string());
+    }
+
+    /// Draws a checkbox; gives the new state (flipped when clicked).
+    pub fn checkbox(
+        &mut self,
+        px: &mut Pixels,
+        label: &str,
+        x: f64,
+        y: f64,
+        checked: bool,
+    ) -> bool {
+        let size = 20.0;
+        let w = size + 8.0 + 16.0 * label.chars().count() as f64;
+        let now = if self.inside(x, y, w, size) && self.clicked() {
+            !checked
+        } else {
+            checked
+        };
+        px.rect(x, y, size, size, Color::opaque(FIELD), true, 1.0);
+        px.rect(x, y, size, size, Color::opaque(FIELD_EDGE), false, 2.0);
+        if now {
+            px.rect(
+                x + 5.0,
+                y + 5.0,
+                size - 10.0,
+                size - 10.0,
+                Color::opaque(BUTTON),
+                true,
+                1.0,
+            );
+        }
+        px.text(label, x + size + 8.0, y + 2.0, Color::opaque(0xffffff), 2.0);
+        now
+    }
+}
+
+/// Collects typed characters from the window.
+struct Typed(Rc<RefCell<String>>);
+
+impl minifb::InputCallback for Typed {
+    fn add_char(&mut self, c: u32) {
+        if let Some(ch) = char::from_u32(c) {
+            self.0.borrow_mut().push(ch);
+        }
+    }
+}
+
+/// A window on the screen, with keyboard, mouse and widgets.
 pub struct Window {
     px: Rc<RefCell<Pixels>>,
     win: RefCell<minifb::Window>,
     last: Cell<std::time::Instant>,
+    ui: RefCell<Ui>,
+    typed: Rc<RefCell<String>>,
+}
+
+impl Window {
+    /// Reads the mouse and what was typed, for the frame about to start.
+    fn poll(&self) {
+        let w = self.win.borrow();
+        let mouse = w
+            .get_mouse_pos(minifb::MouseMode::Clamp)
+            .map_or((-1.0, -1.0), |(x, y)| (f64::from(x), f64::from(y)));
+        let down = w.get_mouse_down(minifb::MouseButton::Left);
+        let mut typed = std::mem::take(&mut *self.typed.borrow_mut());
+        for k in w.get_keys_pressed(minifb::KeyRepeat::Yes) {
+            match k {
+                minifb::Key::Backspace => typed.push('\u{8}'),
+                minifb::Key::Enter | minifb::Key::NumPadEnter => typed.push('\n'),
+                _ => {}
+            }
+        }
+        // Control characters arrive by key above, not as text.
+        let typed: String = typed
+            .chars()
+            .filter(|c| !c.is_control() || matches!(c, '\u{8}' | '\n'))
+            .collect();
+        self.ui.borrow_mut().next_frame(mouse, down, typed);
+    }
 }
 
 fn key(name: &str) -> Option<minifb::Key> {
@@ -1202,8 +1422,68 @@ impl Foreign for Window {
                 let now = std::time::Instant::now();
                 let dt = now.duration_since(self.last.get()).as_secs_f64();
                 self.last.set(now);
+                drop(p);
+                self.poll();
                 Ok(Value::Float(dt))
             }
+            // `if win.button("Save", x, y): ...` (optional `w`, `h`).
+            "button" => {
+                let label = a.text(0, "label")?;
+                let w = match a.get(3, "w") {
+                    Some(v) => Some(number(v, "the width")?),
+                    None => None,
+                };
+                let h = a.num_or(4, "h", 32.0)?;
+                let (x, y) = (a.num(1, "x")?, a.num(2, "y")?);
+                let clicked =
+                    self.ui
+                        .borrow_mut()
+                        .button(&mut self.px.borrow_mut(), &label, x, y, w, h);
+                Ok(Value::Bool(clicked))
+            }
+            // `name = win.input("name", x, y, w, hint = "Your name")`
+            "input" => {
+                let name = a.text(0, "name")?;
+                let (x, y) = (a.num(1, "x")?, a.num(2, "y")?);
+                let w = a.num_or(3, "w", 240.0)?;
+                let hint = match a.get(4, "hint") {
+                    Some(Value::Str(s)) => s.to_string(),
+                    _ => String::new(),
+                };
+                let text =
+                    self.ui
+                        .borrow_mut()
+                        .input(&mut self.px.borrow_mut(), &name, x, y, w, &hint);
+                Ok(Value::str(text))
+            }
+            // `win.set_input("name", "")`: clears (or fills) a text field.
+            "set_input" => {
+                let name = a.text(0, "name")?;
+                let text = a.text(1, "text")?;
+                self.ui.borrow_mut().set_field(&name, &text);
+                Ok(Value::None)
+            }
+            // `done = win.checkbox("Done", x, y, done)`
+            "checkbox" => {
+                let label = a.text(0, "label")?;
+                let (x, y) = (a.num(1, "x")?, a.num(2, "y")?);
+                let checked = a.flag_or(3, "checked", false);
+                let now =
+                    self.ui
+                        .borrow_mut()
+                        .checkbox(&mut self.px.borrow_mut(), &label, x, y, checked);
+                Ok(Value::Bool(now))
+            }
+            "clicked" => Ok(Value::Bool(self.ui.borrow().clicked())),
+            // What was typed during the last frame.
+            "typed" => Ok(Value::str(
+                self.ui
+                    .borrow()
+                    .typed
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .collect::<String>(),
+            )),
             "key_down" => {
                 let k = a.text(0, "key")?;
                 let code =
@@ -1452,11 +1732,17 @@ pub fn window(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         )
     })?;
     win.set_target_fps(60);
-    Ok(wrap(Window {
+    let typed = Rc::new(RefCell::new(String::new()));
+    win.set_input_callback(Box::new(Typed(typed.clone())));
+    let window = Window {
         px: Rc::new(RefCell::new(Pixels::new(w, h))),
         win: RefCell::new(win),
         last: Cell::new(std::time::Instant::now()),
-    }))
+        ui: RefCell::new(Ui::default()),
+        typed,
+    };
+    window.poll();
+    Ok(wrap(window))
 }
 
 fn pixels_of(v: &Value) -> Option<Rc<RefCell<Pixels>>> {
@@ -1648,4 +1934,49 @@ pub fn save_prims(
         }
     }
     p.save_png(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn widgets_respond_to_input() {
+        let mut px = Pixels::new(300, 200);
+        let mut ui = Ui::default();
+        // Hovering is not clicking.
+        ui.next_frame((20.0, 20.0), false, String::new());
+        assert!(!ui.button(&mut px, "Go", 10.0, 10.0, None, 32.0));
+        // Pressing inside clicks once, not again while held.
+        ui.next_frame((20.0, 20.0), true, String::new());
+        assert!(ui.button(&mut px, "Go", 10.0, 10.0, None, 32.0));
+        ui.next_frame((20.0, 20.0), true, String::new());
+        assert!(!ui.button(&mut px, "Go", 10.0, 10.0, None, 32.0));
+        // A click elsewhere misses.
+        ui.next_frame((250.0, 150.0), false, String::new());
+        ui.next_frame((250.0, 150.0), true, String::new());
+        assert!(!ui.button(&mut px, "Go", 10.0, 10.0, None, 32.0));
+
+        // Typing goes to the field clicked, with Backspace.
+        ui.next_frame((20.0, 60.0), false, String::new());
+        ui.next_frame((20.0, 60.0), true, "ignored".into());
+        assert_eq!(ui.input(&mut px, "name", 10.0, 50.0, 200.0, "Name"), "");
+        ui.next_frame((20.0, 60.0), false, "Adx".into());
+        assert_eq!(ui.input(&mut px, "name", 10.0, 50.0, 200.0, "Name"), "Adx");
+        ui.next_frame((20.0, 60.0), false, "\u{8}a".into());
+        assert_eq!(ui.input(&mut px, "name", 10.0, 50.0, 200.0, "Name"), "Ada");
+        // Enter leaves the field; later typing does not reach it.
+        ui.next_frame((20.0, 60.0), false, "\n".into());
+        ui.input(&mut px, "name", 10.0, 50.0, 200.0, "Name");
+        ui.next_frame((20.0, 60.0), false, "zz".into());
+        assert_eq!(ui.input(&mut px, "name", 10.0, 50.0, 200.0, "Name"), "Ada");
+        ui.set_field("name", "");
+        assert_eq!(ui.input(&mut px, "name", 10.0, 50.0, 200.0, "Name"), "");
+
+        // A checkbox flips when clicked.
+        ui.next_frame((15.0, 105.0), false, String::new());
+        assert!(!ui.checkbox(&mut px, "Done", 10.0, 100.0, false));
+        ui.next_frame((15.0, 105.0), true, String::new());
+        assert!(ui.checkbox(&mut px, "Done", 10.0, 100.0, false));
+    }
 }

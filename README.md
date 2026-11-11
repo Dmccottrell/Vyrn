@@ -30,6 +30,9 @@ run on the interpreter (`docs/deploy.md` section 3).
 - [`examples/bounce.vyrn`](examples/bounce.vyrn): a terminal game loop with physics, drawn at 30 frames a second
 - [`examples/api.vyrn`](examples/api.vyrn): web, async routes returning JSON
 - [`examples/inference.vyrn`](examples/inference.vyrn): ML, tensor layers spread across GPUs
+- [`examples/snake.vyrn`](examples/snake.vyrn): a Snake game in a window
+- [`examples/cube3d.vyrn`](examples/cube3d.vyrn): a 3D scene you can move through
+- [`examples/tips.vyrn`](examples/tips.vyrn): a desktop app with text fields and buttons
 
 ## Install
 
@@ -107,6 +110,11 @@ Python's are good ones (`docs/stdlib.md` has the full list):
 - **Modules**: `vyrn.os`, `vyrn.fs`, `vyrn.path`, `vyrn.time`, `vyrn.random`,
   `vyrn.math`, `vyrn.json`, `vyrn.re`, `vyrn.csv`, `vyrn.task` (select, timeouts,
   task groups) and `vyrn.http` (a server and a client).
+- **Applications**: `vyrn.db` (SQLite), `vyrn.draw` (2D and 3D graphics,
+  windows with keyboard, mouse and widgets, turtle, images), `vyrn.html`
+  (reading web pages), `vyrn.template` (pages from data), `vyrn.table`
+  (data analysis), `vyrn.chart` (charts to PNG or SVG) and `vyrn.mail`
+  (email). No Python needed.
 
 Runtime errors show the file, the line, the code and a hint, like compile
 errors do.
