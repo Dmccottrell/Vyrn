@@ -1,8 +1,8 @@
 //! The everyday standard library: the Prelude functions a Python
 //! programmer reaches for (`input`, `chr`, `any`, `format`, ...), files from
-//! `open`, sets, and the modules `std.os`, `std.fs`, `std.path`, `std.time`,
-//! `std.random`, `std.math`, `std.json`, `std.re`, `std.csv` and the HTTP
-//! client half of `std.http`.
+//! `open`, sets, and the modules `vyrn.os`, `vyrn.fs`, `vyrn.path`, `vyrn.time`,
+//! `vyrn.random`, `vyrn.math`, `vyrn.json`, `vyrn.re`, `vyrn.csv` and the HTTP
+//! client half of `vyrn.http`.
 //!
 //! Functions that take a callback (`sorted(xs, key = ...)`, `xs.map(f)`)
 //! are written in Vyrn itself, in `src/prelude.vyrn`; the natives they lean
@@ -1054,7 +1054,7 @@ fn display_plain(v: &Value) -> String {
     }
 }
 
-// ==== std.os ================================================================
+// ==== vyrn.os ================================================================
 
 thread_local! {
     static ARGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
@@ -1185,7 +1185,7 @@ pub fn os_run(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     ]))
 }
 
-// ==== std.fs and std.path ===================================================
+// ==== vyrn.fs and vyrn.path ===================================================
 
 pub fn fs_exists(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     Ok(Value::Bool(
@@ -1376,7 +1376,7 @@ pub fn path_home(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
         .unwrap_or(Value::None))
 }
 
-// ==== std.time ==============================================================
+// ==== vyrn.time ==============================================================
 
 fn unix_now() -> f64 {
     std::time::SystemTime::now()
@@ -1602,7 +1602,7 @@ pub fn time_parse(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     ))
 }
 
-// ==== std.random ============================================================
+// ==== vyrn.random ============================================================
 
 thread_local! {
     static RNG: RefCell<u64> = const { RefCell::new(0) };
@@ -1713,7 +1713,7 @@ pub fn random_sample(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     Ok(Value::list(items))
 }
 
-// ==== std.math ==============================================================
+// ==== vyrn.math ==============================================================
 
 fn float_fn(args: &[Value], f: fn(f64) -> f64) -> VmResult<Value> {
     Ok(Value::Float(f(number(&args[0], "the number")?)))
@@ -1821,7 +1821,7 @@ pub fn math_clamp(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     })
 }
 
-// ==== std.json ==============================================================
+// ==== vyrn.json ==============================================================
 
 /// `json.dumps(value, indent = none)`
 pub fn json_dumps(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
@@ -1914,7 +1914,7 @@ pub fn json_save(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     Ok(Value::None)
 }
 
-// ==== std.re ================================================================
+// ==== vyrn.re ================================================================
 
 thread_local! {
     static PATTERNS: RefCell<HashMap<String, Rc<regex::Regex>>> = RefCell::new(HashMap::new());
@@ -2022,7 +2022,7 @@ pub fn re_split(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     Ok(Value::list(re.split(text).map(Value::str).collect()))
 }
 
-// ==== std.csv ===============================================================
+// ==== vyrn.csv ===============================================================
 
 /// Splits CSV text into rows of fields. Handles quotes, `""` inside quotes,
 /// and line breaks inside quoted fields.
@@ -2181,7 +2181,7 @@ pub fn csv_write(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     Ok(Value::None)
 }
 
-// ==== std.http client =======================================================
+// ==== vyrn.http client =======================================================
 
 /// `http.get(url, headers = {})` and `http.post(url, body, headers = {})`:
 /// a response with `status`, `ok`, `text`, `headers` and, for JSON
@@ -2313,7 +2313,7 @@ fn http_request(
     ))
 }
 
-// ==== std.task ==============================================================
+// ==== vyrn.task ==============================================================
 
 /// What `task.select(...)` and `task.timeout(...)` return: awaiting it waits
 /// for the first of several tasks or channels to be ready.

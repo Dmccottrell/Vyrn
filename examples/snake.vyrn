@@ -1,7 +1,7 @@
 # Snake: arrow keys to steer, eat the food, don't hit yourself.
 # Run it with `vyrn run examples/snake.vyrn`.
-use std.draw
-use std.random
+use vyrn.draw
+use vyrn.random
 
 const CELL = 20
 const COLS = 30

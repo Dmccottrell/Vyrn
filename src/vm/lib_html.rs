@@ -1,8 +1,8 @@
-//! `use std.html`: reading web pages, as BeautifulSoup does in Python.
+//! `use vyrn.html`: reading web pages, as BeautifulSoup does in Python.
 //!
 //! ```vyrn
-//! use std.html
-//! use std.http
+//! use vyrn.html
+//! use vyrn.http
 //!
 //! main:
 //!     let page = html.parse(http.get("https://example.com").get("text"))
@@ -18,8 +18,10 @@
 //! again. Parsing follows the HTML standard, so broken pages read the way a
 //! browser would read them.
 
+#[cfg(feature = "html")]
 use std::rc::Rc;
 
+#[cfg(feature = "html")]
 use super::foreign::Foreign;
 use super::ops::{err, type_error, Ctx, VmResult};
 use super::value::Value;

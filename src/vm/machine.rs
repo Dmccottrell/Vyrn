@@ -129,7 +129,7 @@ impl RuntimeError {
             "IndexError" => "positions count from 0, so the last item of `xs` is `xs[len(xs) - 1]` (or `xs[-1]`)",
             "KeyError" => "check with `key in m` first, or use `m.get(key, default)`",
             "DivisionByZero" => "check that the number you divide by is not 0",
-            "NotFound" => "check the path; `fs.exists(path)` (with `use std.fs`) tells whether it is there",
+            "NotFound" => "check the path; `fs.exists(path)` (with `use vyrn.fs`) tells whether it is there",
             "PermissionDenied" => "this program is not allowed to use that file",
             "ValueError" if self.message.contains("is not an integer") || self.message.contains("is not a number") => {
                 "convert text to a number only after checking it, as in `if s.isdigit(): n = int(s)`"

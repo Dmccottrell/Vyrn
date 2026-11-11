@@ -14,7 +14,7 @@ should give way.
 Each task has one way to do it. A new feature must *replace* a pattern,
 not add a second option for it.
 
-- Module paths use dots everywhere: `use std.http`, `use python.numpy`,
+- Module paths use dots everywhere: `use vyrn.http`, `use python.numpy`,
   `use app.storage`. There is no `::`, and no second spelling.
 - Errors use `fail`, `attempt` and `catch`. There are no exceptions plus result types
   plus error codes.

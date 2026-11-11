@@ -1,4 +1,4 @@
-//! `std.draw` in builds without the `draw` feature (such as WebAssembly):
+//! `vyrn.draw` in builds without the `draw` feature (such as WebAssembly):
 //! every function explains how to get it.
 
 use super::ops::{err, Ctx, VmResult};
@@ -7,7 +7,7 @@ use super::value::Value;
 fn unavailable() -> VmResult<Value> {
     Err(err(
         "Unavailable",
-        "`std.draw` needs a build with drawing (the `draw` feature, on by default)",
+        "`vyrn.draw` needs a build with drawing (the `draw` feature, on by default)",
     ))
 }
 

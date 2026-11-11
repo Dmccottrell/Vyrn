@@ -1,5 +1,5 @@
-//! The application libraries: std.db, std.draw, std.html, std.template,
-//! std.table, std.chart and std.mail.
+//! The application libraries: vyrn.db, vyrn.draw, vyrn.html, vyrn.template,
+//! vyrn.table, vyrn.chart and vyrn.mail.
 
 use vyrn::vm::{run_source, RunError};
 
@@ -33,7 +33,7 @@ fn sqlite_databases() {
     let path = temp("shop.db");
     let _ = std::fs::remove_file(&path);
     let src = format!(
-        "use std.db\n\
+        "use vyrn.db\n\
          main:\n\
          \x20   using db.open(\"{path}\") as conn:\n\
          \x20       conn.execute(\"create table items (id integer primary key, name text not null, price real, stock int)\")\n\
@@ -62,14 +62,14 @@ fn sqlite_databases() {
         run(&src),
         "1\npen 1.5 9\nbook 12.0 3\n{\"id\": 3, \"name\": \"lamp\", \"price\": 30.25, \"stock\": none}\nnone\n3 [\"items\"]\n43.75\n[] [\"items\"]\nbook\n"
     );
-    let e = error("use std.db\nmain:\n    let c = db.open(\":memory:\")\n    c.execute(\"select * from missing\")\nend\n");
+    let e = error("use vyrn.db\nmain:\n    let c = db.open(\":memory:\")\n    c.execute(\"select * from missing\")\nend\n");
     assert!(
         e.starts_with("DatabaseError: no such table: missing"),
         "{e}"
     );
-    let e = error("use std.db\nmain:\n    let c = db.open(\":memory:\")\n    c.execute(\"create table t (a int)\")\n    c.execute(\"insert into t values (?)\", [1, 2])\nend\n");
+    let e = error("use vyrn.db\nmain:\n    let c = db.open(\":memory:\")\n    c.execute(\"create table t (a int)\")\n    c.execute(\"insert into t values (?)\", [1, 2])\nend\n");
     assert!(e.contains("takes 1 values, but 2 were given"), "{e}");
-    let e = error("use std.db\nmain:\n    let c = db.open(\":memory:\")\n    c.close()\n    c.query(\"select 1\")\nend\n");
+    let e = error("use vyrn.db\nmain:\n    let c = db.open(\":memory:\")\n    c.close()\n    c.query(\"select 1\")\nend\n");
     assert!(e.contains("is closed"), "{e}");
 }
 
@@ -78,7 +78,7 @@ fn sqlite_databases() {
 fn drawing_on_a_canvas() {
     let png = temp("pic.png");
     let src = format!(
-        "use std.draw\n\
+        "use vyrn.draw\n\
          main:\n\
          \x20   let c = draw.canvas(100, 80)\n\
          \x20   c.clear(\"black\")\n\
@@ -104,9 +104,9 @@ fn drawing_on_a_canvas() {
         run(&src),
         "#ff0000 #0000ff #ffffff #000000\n#c0ca33 #000000 none\ntrue 48 #ff8000\n100 80 #ff0000 #0000ff\ntrue false\n"
     );
-    let e = error("use std.draw\nmain: print(draw.canvas(10, 10).get_pixel(1, 1, \"x\").foo)\n");
+    let e = error("use vyrn.draw\nmain: print(draw.canvas(10, 10).get_pixel(1, 1, \"x\").foo)\n");
     assert!(!e.is_empty());
-    let e = error("use std.draw\nmain:\n    let c = draw.canvas(10, 10)\n    c.rect(0, 0, 5, 5, \"not-a-colour\")\nend\n");
+    let e = error("use vyrn.draw\nmain:\n    let c = draw.canvas(10, 10)\n    c.rect(0, 0, 5, 5, \"not-a-colour\")\nend\n");
     assert!(e.contains("is not a colour"), "{e}");
 }
 
@@ -114,7 +114,7 @@ fn drawing_on_a_canvas() {
 #[test]
 fn turtles_draw_by_moving() {
     let out = run(
-        "use std.draw\n\
+        "use vyrn.draw\n\
          main:\n\
          \x20   let c = draw.canvas(200, 200)\n\
          \x20   let t = draw.turtle(c)\n\
@@ -144,7 +144,7 @@ fn three_d_hides_what_is_behind() {
             format!("{draw_far}{draw_near}")
         };
         let src = format!(
-            "use std.draw\nmain:\n    let c = draw.canvas(200, 200)\n    let cam = draw.camera(0, 0, -4)\n{body}\
+            "use vyrn.draw\nmain:\n    let c = draw.canvas(200, 200)\n    let cam = draw.camera(0, 0, -4)\n{body}\
              \x20   let centre = c.get_pixel(100, 100)\n    let edge = c.get_pixel(100, 60)\n\
              \x20   print(centre.startswith(\"#\"), centre != \"#000000\", edge != \"#000000\", centre != edge)\n\
              \x20   print(c.get_pixel(1, 1))\nend\n"
@@ -152,7 +152,7 @@ fn three_d_hides_what_is_behind() {
         assert_eq!(run(&src), "true true true true\n#000000\n", "{order}");
     }
     let out = run(
-        "use std.draw\nmain:\n    let cam = draw.camera(0, 0, -5)\n    cam.look_at(0, 0, 0)\n    cam.forward(1)\n    print(cam.z, cam.yaw)\n\
+        "use vyrn.draw\nmain:\n    let cam = draw.camera(0, 0, -5)\n    cam.look_at(0, 0, 0)\n    cam.forward(1)\n    print(cam.z, cam.yaw)\n\
          \x20   let m = draw.mesh([[0, 0, 0], [1, 0, 0], [0, 1, 0]], [[0, 1, 2]])\n    print(m, draw.cube_mesh(), draw.sphere_mesh(4).triangles)\nend\n",
     );
     assert_eq!(
@@ -167,7 +167,7 @@ fn windows_without_a_screen_explain() {
     if std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some() {
         return;
     }
-    let e = error("use std.draw\nmain: draw.window(100, 100, \"x\")\n");
+    let e = error("use vyrn.draw\nmain: draw.window(100, 100, \"x\")\n");
     assert!(e.starts_with("DrawError: cannot open a window"), "{e}");
     assert!(e.contains("draw.canvas"), "{e}");
 }
@@ -176,7 +176,7 @@ fn windows_without_a_screen_explain() {
 #[test]
 fn parsing_html() {
     let out = run(
-        "use std.html\n\
+        "use vyrn.html\n\
          main:\n\
          \x20   let page = html.parse(\"\"\"\n\
          <html><head><title> Shop  </title></head><body>\n\
@@ -198,7 +198,7 @@ fn parsing_html() {
         "Shop\nBooks & more h1 [\"big\", \"title\"] true main\nRust book 12 none\nVyrn guide 8 none\n[\"/a\", \"/b\"] 2\nVyrn guide none book\n&lt;a href=&#39;x&#39;&gt;&amp;&lt;/a&gt;\n"
     );
     assert!(
-        error("use std.html\nmain: html.parse(\"<p>\").select(\"p[[\")\n")
+        error("use vyrn.html\nmain: html.parse(\"<p>\").select(\"p[[\")\n")
             .contains("is not a CSS selector")
     );
 }
@@ -206,7 +206,7 @@ fn parsing_html() {
 #[test]
 fn templates() {
     let out = run(
-        "use std.template\n\
+        "use vyrn.template\n\
          struct Item:\n    name: str\n    price: float\nend\n\
          main:\n\
          \x20   let items = [Item(\"pen\", 1.5), Item(\"<script>\", 2.0)]\n\
@@ -220,11 +220,11 @@ fn templates() {
         "<h1>Shop &amp; Co</h1><li>0. pen: 1.5</li><li>1. &lt;script&gt;: 2.0</li>2 items! <b>hi</b> Ada .\n[1][2][3]\n"
     );
     assert!(
-        error("use std.template\nmain: template.render(r\"{{#each xs}}oops\", {})\n")
+        error("use vyrn.template\nmain: template.render(r\"{{#each xs}}oops\", {})\n")
             .contains("never closed")
     );
     assert!(
-        error("use std.template\nmain: template.render(r\"{{/if}}\", {})\n")
+        error("use vyrn.template\nmain: template.render(r\"{{/if}}\", {})\n")
             .contains("does not close")
     );
     // Template syntax in an ordinary string is explained.

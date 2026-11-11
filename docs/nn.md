@@ -1,4 +1,4 @@
-# `std.nn` Kernels: Vyrn Code on the GPU
+# `vyrn.nn` Kernels: Vyrn Code on the GPU
 
 Status: element-wise kernels **run today** on the CPU and, with
 `--features gpu`, as generated WGSL compute shaders (`src/vm/kernel.rs`,
@@ -199,7 +199,7 @@ The order of work: `grid` and inner loops on the CPU evaluator (so every
 kernel has an exact reference), then WGSL generation, then tiling, then
 fusion.
 
-## 5. What `std.nn` builds on this
+## 5. What `vyrn.nn` builds on this
 
 The layers in `docs/stdlib.md` (`nn.Linear`, `nn.RMSNorm`, `nn.Attention`,
 `nn.MLP`) become ordinary Vyrn code: structs holding weight tensors, and

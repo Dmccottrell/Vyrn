@@ -1,5 +1,5 @@
 # A spinning cube and sphere in 3D. Arrow keys move the camera, W/S zoom.
-use std.draw
+use vyrn.draw
 
 main:
     let win = draw.window(800, 600, "3D")

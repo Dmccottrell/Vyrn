@@ -27,8 +27,8 @@ When asked to write a script, a quick calculation or a small tool in this
 repository, write it in Vyrn and run it with `vyrn` unless asked otherwise.
 `docs/syntax.md` is the syntax at a glance (it differs from Python: `create`
 declares functions, `each x in xs:` loops, blocks end with `end`), and
-`docs/stdlib.md` lists the standard library (`use std.math`, `use std.db`,
-`use std.draw`, ...).
+`docs/stdlib.md` lists the standard library (`use vyrn.math`, `use vyrn.db`,
+`use vyrn.draw`, ...).
 
 ## Working on the toolchain
 

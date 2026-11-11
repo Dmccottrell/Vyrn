@@ -311,7 +311,10 @@ fn locate(
         return Ok(Some((file, unique, dir)));
     }
     let segments: Vec<&str> = u.path.segments.iter().map(|s| s.name.as_str()).collect();
-    if matches!(segments.first(), Some(&"std") | Some(&"python")) {
+    if matches!(
+        segments.first(),
+        Some(&"vyrn") | Some(&"std") | Some(&"python")
+    ) {
         return Ok(None);
     }
     let mut file = root.to_path_buf();

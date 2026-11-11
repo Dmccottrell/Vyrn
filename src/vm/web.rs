@@ -1,4 +1,4 @@
-//! `std.web`: a small HTTP/1.1 server that runs a program's `route`s.
+//! `vyrn.web`: a small HTTP/1.1 server that runs a program's `route`s.
 //!
 //! The server is part of the task scheduler. `web.serve` registers a
 //! listener and suspends the calling task; while every task waits, the

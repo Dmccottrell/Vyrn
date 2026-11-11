@@ -1,6 +1,6 @@
 # Example C (web dev): async routes returning JSON.
 
-use std.web
+use vyrn.web
 use app.storage (Db, NotFound)
 
 struct User:

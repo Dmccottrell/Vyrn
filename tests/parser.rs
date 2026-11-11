@@ -452,11 +452,11 @@ fn routes_and_groups() {
 fn use_const_and_main_with_args() {
     assert_eq!(
         tree(
-            "use std.web\nuse std.io as io\nuse app.db (Db, Pool as P)\n\
+            "use vyrn.web\nuse vyrn.io as io\nuse app.db (Db, Pool as P)\n\
              pub const MAX: u32 = 10\n\
              main(args):\n    print(args)\nend\n"
         ),
-        "use std.web\nuse std.io as io\nuse app.db (Db, Pool as P)\n\
+        "use vyrn.web\nuse vyrn.io as io\nuse app.db (Db, Pool as P)\n\
          pub const MAX: u32 = 10\n\
          main(args)\n  (call print args)\n"
     );

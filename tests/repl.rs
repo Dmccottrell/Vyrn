@@ -60,7 +60,7 @@ fn declarations_last_for_the_session() {
         ""
     );
     assert_eq!(r.eval("length(p)"), "5.0");
-    assert_eq!(r.eval("use std.math"), "");
+    assert_eq!(r.eval("use vyrn.math"), "");
     assert_eq!(r.eval("math.floor(2.7)"), "2");
     // Functions stored in variables keep working as declarations are added.
     assert_eq!(r.eval("f = (n) => double(n) + 1"), "");

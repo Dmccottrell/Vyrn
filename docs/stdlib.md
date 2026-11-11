@@ -9,7 +9,7 @@ that implementation can follow it. Syntax follows `docs/grammar.ebnf` v0.4.
 | Tier | How you get it | What belongs there |
 |---|---|---|
 | **Prelude** | Always in scope, no `use` | What a beginner needs in their first hour: core types, `print`, `len`, `open`, collections, tensor math |
-| **`std.*` modules** | `use std.http`, `use std.fs`, ... | Capabilities with a larger surface, a lifecycle or I/O policy: servers, memory mapping, task supervision, neural-network layers |
+| **`vyrn.*` modules** | `use vyrn.http`, `use vyrn.fs`, ... | Capabilities with a larger surface, a lifecycle or I/O policy: servers, memory mapping, task supervision, neural-network layers |
 | **Packages** | `use app.storage (Db)` | Everything else, versioned by the package manager |
 
 A name earns a place in the Prelude only if all four hold:
@@ -32,11 +32,11 @@ Names resolve innermost first, so a program can always shadow the Prelude:
 3. names brought in by `use ... (a, b as c)`
 4. the Prelude
 
-`use std.http` binds the module to the name `http` and nothing else. There
+`use vyrn.http` binds the module to the name `http` and nothing else. There
 are no glob imports, so reading a file tells you where every name comes
-from. `use std.http as web` renames the module. **Runs today:** this order is
-what `src/vm/compiler.rs` (`resolve`) implements, and `use std.web` /
-`use std.http` with both import forms works.
+from. `use vyrn.http as web` renames the module. **Runs today:** this order is
+what `src/vm/compiler.rs` (`resolve`) implements, and `use vyrn.web` /
+`use vyrn.http` with both import forms works.
 
 ## 2. The Prelude
 
@@ -71,7 +71,7 @@ Vyrn's spelling as follows:
 | Tasks | `sleep`, `channel`, `join`, `now` | runs today |
 | Games | `Clock(hz, frames)` | runs today |
 | Tensors | `tensor`, `zeros`, `ones`, `rand`, `arange`, `eye`, `vec2`/`vec3`/`vec4`, `softmax`, `relu`, `gelu`, `argmax`, `@`, `memory`, `fit`, `set_memory_limit`, `format_bytes` | runs today |
-| Weights | `load_weights`, `save_weights`, `load_tokenizer` | runs today; moving to `std.nn` (section 6) |
+| Weights | `load_weights`, `save_weights`, `load_tokenizer` | runs today; moving to `vyrn.nn` (section 6) |
 | Devices | `cpu`, `gpu` (indexed: `gpu[0]`, `gpu[0 to 3]`) | runs today |
 
 `open` belongs in the Prelude because reading a file is part of a first
@@ -103,9 +103,9 @@ with `key =`, ...) are written in Vyrn itself, in `src/prelude.vyrn`.
 A program may declare its own `map`, `sorted` or any other Prelude name;
 its declaration wins.
 
-## 3. `std.http`: a FastAPI-style async router
+## 3. `vyrn.http`: a FastAPI-style async router
 
-`std.http` turns the language's `route` declarations into a running server.
+`vyrn.http` turns the language's `route` declarations into a running server.
 The design follows FastAPI's three ideas, adapted to a compiled language:
 
 1. **The signature is the contract.** Parameters are filled from the path,
@@ -119,7 +119,7 @@ The design follows FastAPI's three ideas, adapted to a compiled language:
    a database or a model never blocks other requests.
 
 ```vyrn
-use std.http
+use vyrn.http
 
 struct Item:
     id: int
@@ -154,7 +154,7 @@ and responses built from return values. A string is sent as `text/plain`,
 `(status, value)` sets the status, `none` is `204`, anything else is JSON.
 A failure is a JSON error whose status follows its kind: `NotFound` is 404,
 `BadRequest` 400, `Unauthorized` 401, `Forbidden` 403, otherwise 500.
-`std.web` is the same module under its earlier name.
+`vyrn.web` is the same module under its earlier name.
 
 ### 3.1 Design: the rest of the module
 
@@ -171,13 +171,13 @@ A failure is a JSON error whose status follows its kind: `NotFound` is 404,
 
 What stays out: templates, ORMs, sessions. Those are packages.
 
-## 4. `std.fs`: files, and memory mapping without copies
+## 4. `vyrn.fs`: files, and memory mapping without copies
 
-The Prelude's `open` covers reading and writing. `std.fs` is for programs
+The Prelude's `open` covers reading and writing. `vyrn.fs` is for programs
 where copies matter: model weights, datasets, logs larger than RAM.
 
 ```vyrn
-use std.fs
+use vyrn.fs
 
 create count_errors(path: str) -> int:
     var errors = 0
@@ -204,7 +204,7 @@ until it is touched, and nothing is copied:
 **Why this matters for large models.** A 14B-parameter model at 4 bits is
 about 8 GB on disk. Reading it into a buffer and then uploading it costs
 8 GB of RAM on top of the GPU copy. Mapping it means the pages stream from
-the page cache straight into the GPU upload (`std.nn` uses this, section 6),
+the page cache straight into the GPU upload (`vyrn.nn` uses this, section 6),
 and on a 32 GB machine nothing is held twice.
 
 **Runs today:** `fs.exists`, `fs.is_file`, `fs.is_dir`, `fs.list(dir)`,
@@ -224,7 +224,7 @@ that is not there fails with `NotFound`. The mapping API below is design.
 On WebAssembly there is no `mmap`, so `fs.map` reads the file into linear
 memory once. Programs keep the same code and lose only the laziness.
 
-## 5. `std.task`: green threads and supervision
+## 5. `vyrn.task`: green threads and supervision
 
 **Runs today, in the language itself:** every `async` function call starts a
 *green thread*. Tasks are stackful, so any function can `await`, and each
@@ -233,10 +233,10 @@ scheduler runs them with timers and channels, reports deadlocks, and warns
 about failed tasks nobody awaited. The Prelude keeps the everyday part:
 `spawn`, `await`, `async for`, `sleep`, `channel`, `join`.
 
-`std.task` adds the structure that larger programs need.
+`vyrn.task` adds the structure that larger programs need.
 
 ```vyrn
-use std.task
+use vyrn.task
 
 async create fetch(url: str) -> str:
     await sleep(0.1)
@@ -271,7 +271,7 @@ end
 The split follows the cost model. Green threads are cheap and share one OS
 thread, so the Prelude has them. A `Pool` adds threads, and with them the
 rule that values cross threads only by `own`. That is an explicit choice,
-so it sits behind `use std.task`.
+so it sits behind `use vyrn.task`.
 
 ## 5a. Everyday modules
 
@@ -279,17 +279,17 @@ All **run today** (`src/vm/stdlib.rs`).
 
 | Module | Functions |
 |---|---|
-| `std.os` | `os.args()` (the arguments after the file name), `os.env(name, default)`, `os.set_env`, `os.environ()`, `os.cwd()`, `os.chdir`, `os.exit(code)`, `os.platform()`, `os.run(command, input)`: a list (`["git", "status"]`) or a shell line; gives `code`, `ok`, `out`, `err` |
-| `std.path` | `path.join(a, b, ...)`, `path.name`, `path.stem`, `path.ext`, `path.parent`, `path.absolute`, `path.home()` |
-| `std.time` | `time.now()` (seconds since 1970), `time.format(t, "%Y-%m-%d %H:%M:%S")`, `time.parse(text, pattern)`, `time.date(t)` (year, month, day, hour, minute, second, weekday), `time.monotonic()`, `time.sleep`. Times are UTC |
-| `std.random` | `random.int(low, high)` (both included), `random.float(low, high)`, `random.choice`, `random.shuffle` (in place), `random.sample(xs, k)`, `random.seed(n)` |
-| `std.math` | `sqrt`, `exp`, `log(x, base)`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `hypot`, `degrees`, `radians`, `floor`, `ceil`, `gcd`, `factorial`, `clamp`, `isnan`, `isinf`; constants `pi`, `e`, `tau`, `inf`, `nan` |
-| `std.json` | `json.parse(text)`, `json.dumps(value, indent)`, `json.load(path)`, `json.save(path, value)` |
-| `std.re` | `re.test(pattern, text)`, `re.find` (a match with `text`, `start`, `end`, `groups`, `named`, or `none`), `re.find_all`, `re.replace(pattern, text, with)` (`$1` inserts a group), `re.split` |
-| `std.csv` | `csv.read(path)` and `csv.parse(text)` (a list of maps from the header, or of lists with `header = false`), `csv.write(path, rows)`, `csv.format(rows)` |
-| `std.http` client | `http.get(url, headers)`, `http.post(url, body, headers)`, `http.put`, `http.delete`: a response with `status`, `ok`, `text`, `json`, `headers`. Maps and lists are sent as JSON |
+| `vyrn.os` | `os.args()` (the arguments after the file name), `os.env(name, default)`, `os.set_env`, `os.environ()`, `os.cwd()`, `os.chdir`, `os.exit(code)`, `os.platform()`, `os.run(command, input)`: a list (`["git", "status"]`) or a shell line; gives `code`, `ok`, `out`, `err` |
+| `vyrn.path` | `path.join(a, b, ...)`, `path.name`, `path.stem`, `path.ext`, `path.parent`, `path.absolute`, `path.home()` |
+| `vyrn.time` | `time.now()` (seconds since 1970), `time.format(t, "%Y-%m-%d %H:%M:%S")`, `time.parse(text, pattern)`, `time.date(t)` (year, month, day, hour, minute, second, weekday), `time.monotonic()`, `time.sleep`. Times are UTC |
+| `vyrn.random` | `random.int(low, high)` (both included), `random.float(low, high)`, `random.choice`, `random.shuffle` (in place), `random.sample(xs, k)`, `random.seed(n)` |
+| `vyrn.math` | `sqrt`, `exp`, `log(x, base)`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `hypot`, `degrees`, `radians`, `floor`, `ceil`, `gcd`, `factorial`, `clamp`, `isnan`, `isinf`; constants `pi`, `e`, `tau`, `inf`, `nan` |
+| `vyrn.json` | `json.parse(text)`, `json.dumps(value, indent)`, `json.load(path)`, `json.save(path, value)` |
+| `vyrn.re` | `re.test(pattern, text)`, `re.find` (a match with `text`, `start`, `end`, `groups`, `named`, or `none`), `re.find_all`, `re.replace(pattern, text, with)` (`$1` inserts a group), `re.split` |
+| `vyrn.csv` | `csv.read(path)` and `csv.parse(text)` (a list of maps from the header, or of lists with `header = false`), `csv.write(path, rows)`, `csv.format(rows)` |
+| `vyrn.http` client | `http.get(url, headers)`, `http.post(url, body, headers)`, `http.put`, `http.delete`: a response with `status`, `ok`, `text`, `json`, `headers`. Maps and lists are sent as JSON |
 
-## 6. Tensors: the Prelude and `std.nn`
+## 6. Tensors: the Prelude and `vyrn.nn`
 
 The line is **math versus models**.
 
@@ -303,7 +303,7 @@ is the CPU reference or the wgpu GPU backend (**runs today**,
 `x @ w` means the same thing in every program. Placement is part of the
 language (`on gpu[0]:`, `x on gpu[1]`), not of a library.
 
-**`std.nn`: model building blocks.** Layers carry parameters and state,
+**`vyrn.nn`: model building blocks.** Layers carry parameters and state,
 model formats change, and sampling strategies are a matter of taste. These
 need versioning, so they live in a module:
 
@@ -317,7 +317,7 @@ need versioning, so they live in a module:
 | `nn.generate(model, tokens, max_new)` | An `async` stream of tokens, for `async for` |
 
 `load_weights`, `save_weights` and `load_tokenizer` run today as Prelude
-functions. They move to `std.nn` as `nn.load_weights`, `nn.save_weights` and
+functions. They move to `vyrn.nn` as `nn.load_weights`, `nn.save_weights` and
 `nn.Tokenizer.load`, with the Prelude names kept as aliases for one release.
 
 ## 7. Two complete programs
@@ -357,10 +357,10 @@ Prelude. The model is memory-mapped and spread across GPUs, each request is
 a task, and generation streams over server-sent events.
 
 ```vyrn
-use std.http
-use std.fs
-use std.task
-use std.nn
+use vyrn.http
+use vyrn.fs
+use vyrn.task
+use vyrn.nn
 use app.auth (require_key)
 
 struct Prompt:
@@ -411,16 +411,16 @@ end
 |---|---|---|
 | Prelude functions and types | `src/vm/builtins.rs`, `src/vm/stdlib.rs`, `src/prelude.vyrn` | runs |
 | Files, sets, format specs, methods (section 2) | `src/vm/stdlib.rs`, `src/vm/builtins.rs` | runs |
-| `std.os`, `std.path`, `std.time`, `std.random`, `std.math`, `std.json`, `std.re`, `std.csv`, HTTP client | `src/vm/stdlib.rs` | runs |
-| `use std.<module>` with module and name imports | `src/vm/compiler.rs` (`use_decl`, `module_member`) | runs |
-| `std.http` routing, providers, server | `src/vm/machine.rs` (`resolve_route`, `service_servers`), `src/vm/web.rs` | runs; `Request`, `Response`, `Router`, middleware, SSE/WS are design |
+| `vyrn.os`, `vyrn.path`, `vyrn.time`, `vyrn.random`, `vyrn.math`, `vyrn.json`, `vyrn.re`, `vyrn.csv`, HTTP client | `src/vm/stdlib.rs` | runs |
+| `use vyrn.<module>` with module and name imports | `src/vm/compiler.rs` (`use_decl`, `module_member`) | runs |
+| `vyrn.http` routing, providers, server | `src/vm/machine.rs` (`resolve_route`, `service_servers`), `src/vm/web.rs` | runs; `Request`, `Response`, `Router`, middleware, SSE/WS are design |
 | Green threads, channels, timers | `src/vm/machine.rs`, `src/vm/task.rs` | runs |
-| `std.task` groups, timeouts, select, cancel | `src/vm/stdlib.rs`, `src/vm/machine.rs` (`await_race`, `apply_cancels`) | runs; pools, bounded channels, `yield_now` are design |
-| `std.fs` files and directories | `src/vm/stdlib.rs` | runs |
-| `std.fs` mapping and views | | design; views depend on borrow checking of slices (`src/check.rs`) |
+| `vyrn.task` groups, timeouts, select, cancel | `src/vm/stdlib.rs`, `src/vm/machine.rs` (`await_race`, `apply_cancels`) | runs; pools, bounded channels, `yield_now` are design |
+| `vyrn.fs` files and directories | `src/vm/stdlib.rs` | runs |
+| `vyrn.fs` mapping and views | | design; views depend on borrow checking of slices (`src/check.rs`) |
 | Tensor math on CPU and GPU | `src/vm/tensor.rs`, `src/vm/gpu.rs` | runs |
-| `std.nn` | `src/vm/weights.rs`, `src/vm/tokenizer.rs` hold its first pieces | design |
+| `vyrn.nn` | `src/vm/weights.rs`, `src/vm/tokenizer.rs` hold its first pieces | design |
 
-Build order from here: `std.fs.map` with views (the large-model path), then
-`std.nn.load` and `generate` on top of it, then the rest of `std.http`, then
+Build order from here: `vyrn.fs.map` with views (the large-model path), then
+`vyrn.nn.load` and `generate` on top of it, then the rest of `vyrn.http`, then
 `task.Pool`.

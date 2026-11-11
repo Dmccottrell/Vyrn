@@ -164,7 +164,7 @@ fn control_flow_matches() {
 #[test]
 fn calls_recursion_and_builtins() {
     let out = both(
-        "use std.math\n\
+        "use vyrn.math\n\
          create fib(n: int) -> int:\n    if n < 2: return n\n    return fib(n - 1) + fib(n - 2)\nend\n\
          create even(n: int) -> bool:\n    if n == 0: return true\n    return odd(n - 1)\nend\n\
          create odd(n: int) -> bool:\n    if n == 0: return false\n    return even(n - 1)\nend\n\

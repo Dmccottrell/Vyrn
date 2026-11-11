@@ -285,9 +285,9 @@ function, such as `sorted(..., key = ...)` and `xs.map(f)`, use the arrow form
 `(x) => ...`, or `x => ...` for one parameter.
 
 ```vyrn
-use std.fs
-use std.json
-use std.re
+use vyrn.fs
+use vyrn.json
+use vyrn.re
 
 struct Sale:
     item: str
@@ -328,8 +328,8 @@ book     12.00
 `using open(path) as f:` closes the file at `end`, even after a failure;
 `each line in f` reads it line by line. `"{total:,.2f}"` formats a number as
 Python's format specs do. `{... each ...}` makes a set, which drops the
-repeated `pen`. `std.os`, `std.fs`, `std.path`, `std.time`, `std.random`,
-`std.math`, `std.csv`, `std.task` and an HTTP client complete the toolbox;
+repeated `pen`. `vyrn.os`, `vyrn.fs`, `vyrn.path`, `vyrn.time`, `vyrn.random`,
+`vyrn.math`, `vyrn.csv`, `vyrn.task` and an HTTP client complete the toolbox;
 `docs/stdlib.md` lists everything.
 
 Type `vyrn` with no file to try code line by line:
@@ -401,7 +401,7 @@ locked to an exact version in `vyrn.lock`. Then:
 ## 11. A web API
 
 ```vyrn check
-use std.http
+use vyrn.http
 
 struct Todo:
     id: int

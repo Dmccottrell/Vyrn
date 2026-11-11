@@ -1,7 +1,7 @@
 # Exercises every construct in the v0.4 grammar. Not meant to be meaningful.
 
-use std.io as io
-use std.math (sqrt, pow as power)
+use vyrn.io as io
+use vyrn.math (sqrt, pow as power)
 
 pub type Id = u64
 pub const LIMIT: u32 = 0xFF_FFu32

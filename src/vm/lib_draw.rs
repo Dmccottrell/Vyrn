@@ -1,7 +1,7 @@
-//! `use std.draw`: pictures, games and 3D, with nothing to install.
+//! `use vyrn.draw`: pictures, games and 3D, with nothing to install.
 //!
 //! ```vyrn
-//! use std.draw
+//! use vyrn.draw
 //!
 //! main:
 //!     let win = draw.window(640, 480, "Hello")

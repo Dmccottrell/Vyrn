@@ -149,7 +149,7 @@ its body stays within those types:
   `range(...)` and lists, `stop`, `skip`, `return`;
 - calls to other compiled functions and methods, recursion included, and
   `abs`, `min`, `max`, `sqrt`, `floor`, `ceil`, `int`, `float`, `exp`,
-  `tanh` and the `std.math` functions;
+  `tanh` and the `vyrn.math` functions;
 - **lists**: literals, `[]` typed by its context, `[x] * n`, `+`,
   comprehensions, `len`, indexing (negative too), item assignment,
   `append`, `copy`, `list(xs)`, `sum` of `[int]`, and lists as results;

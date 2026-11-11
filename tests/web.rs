@@ -1,4 +1,4 @@
-//! `std.web`: a program serves real HTTP requests over TCP, and `Clock`
+//! `vyrn.web`: a program serves real HTTP requests over TCP, and `Clock`
 //! paces a game loop.
 
 use std::io::{Read, Write};
@@ -42,7 +42,7 @@ fn request(port: u16, method: &str, path: &str, body: &str) -> (u16, String) {
     (status, body)
 }
 
-const SERVER: &str = r#"use std.web
+const SERVER: &str = r#"use vyrn.web
 
 struct NotFound:
     id: int
@@ -120,7 +120,7 @@ fn routes_answer_http_requests() {
 fn json_bodies_become_the_declared_struct() {
     let port = free_port();
     let src = format!(
-        "use std.http\n\
+        "use vyrn.http\n\
          struct Item:\n    id: int\n    name: str\nend\n\
          route POST \"/items\" (body: Item) -> (int, Item):\n    return 201, body\nend\n\
          route POST \"/names\" (body: Item): return body.name\n\
@@ -168,13 +168,16 @@ fn waiting_handlers_do_not_block_other_requests() {
 
 #[test]
 fn unknown_modules_and_members_are_compile_errors() {
-    let errors = compile_source("use std.nope\nmain: print(1)\n").unwrap_err();
+    let errors = compile_source("use vyrn.nope\nmain: print(1)\n").unwrap_err();
+    assert_eq!(errors[0].message, "Vyrn's library has no module `nope`");
+    // The old `std` root says what to write instead.
+    let errors = compile_source("use std.math\nmain: print(1)\n").unwrap_err();
     assert_eq!(
         errors[0].message,
-        "the standard library has no module `nope`"
+        "Vyrn's library is `vyrn`, not `std`: write `use vyrn.math`"
     );
-    let errors = compile_source("use std.web\nmain: web.launch()\n").unwrap_err();
-    assert_eq!(errors[0].message, "`std.web` has no `launch`");
+    let errors = compile_source("use vyrn.web\nmain: web.launch()\n").unwrap_err();
+    assert_eq!(errors[0].message, "`vyrn.web` has no `launch`");
     // Without the `use`, `web` is just an unknown name.
     assert!(compile_source("main: web.serve()\n").is_err());
 }
@@ -182,7 +185,7 @@ fn unknown_modules_and_members_are_compile_errors() {
 #[test]
 fn names_can_be_imported_from_a_module() {
     let errors = compile_source(
-        "use std.web (serve, provide as give)\nmain:\n    give(\"x\", 1)\n    serve\nend\n",
+        "use vyrn.web (serve, provide as give)\nmain:\n    give(\"x\", 1)\n    serve\nend\n",
     );
     assert!(errors.is_ok(), "{errors:?}");
 }
@@ -226,7 +229,7 @@ fn clocks_can_be_stopped() {
 #[test]
 fn hosted_programs_answer_requests_without_a_socket() {
     let program = compile_source(
-        "use std.http\n\
+        "use vyrn.http\n\
          struct Item:\n    id: int\n    name: str\nend\n\
          struct NotFound:\n    id: int\nend\n\
          route GET \"/items/{id}\" (id: int, db):\n    if id not in db: fail NotFound(id)\n    return db[id]\nend\n\

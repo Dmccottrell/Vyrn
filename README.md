@@ -17,7 +17,7 @@ run on the interpreter (`docs/deploy.md` section 3).
 - [`docs/syntax.md`](docs/syntax.md): the syntax at a glance, and how it maps from Python
 - [`docs/grammar.ebnf`](docs/grammar.ebnf): the complete EBNF grammar (v0.4)
 - [`docs/architecture.md`](docs/architecture.md): compiler tiers, memory model, GPU bridge and concurrency design
-- [`docs/stdlib.md`](docs/stdlib.md): the standard library: the Prelude, `std.http`, `std.fs`, `std.task` and `std.nn`
+- [`docs/stdlib.md`](docs/stdlib.md): the standard library: the Prelude, `vyrn.http`, `vyrn.fs`, `vyrn.task` and `vyrn.nn`
 - [`docs/principles.md`](docs/principles.md): the five rules every feature is checked against, and what Vyrn takes from each language
 - [`docs/ffi.md`](docs/ffi.md): the Python and C bridges, zero-copy tensors, and the decentralized module resolver
 - [`docs/nn.md`](docs/nn.md): `kernel` function on tensors, its lowering to WGSL, and tensor memory layout
@@ -104,9 +104,9 @@ Python's are good ones (`docs/stdlib.md` has the full list):
   (`{1, 2, 3}`), format specs (`"{price:.2f}"`, `"{n:,}"`), and the methods
   of strings, lists and maps, including `xs.map(f)`, `xs.filter(f)`,
   `xs.group_by(f)`.
-- **Modules**: `std.os`, `std.fs`, `std.path`, `std.time`, `std.random`,
-  `std.math`, `std.json`, `std.re`, `std.csv`, `std.task` (select, timeouts,
-  task groups) and `std.http` (a server and a client).
+- **Modules**: `vyrn.os`, `vyrn.fs`, `vyrn.path`, `vyrn.time`, `vyrn.random`,
+  `vyrn.math`, `vyrn.json`, `vyrn.re`, `vyrn.csv`, `vyrn.task` (select, timeouts,
+  task groups) and `vyrn.http` (a server and a client).
 
 Runtime errors show the file, the line, the code and a hint, like compile
 errors do.
@@ -146,7 +146,7 @@ cargo run --release --features gpu -- run program.vyrn
 | `src/lsp.rs` | The language server |
 | `src/project/` | Multi-file programs, the URL module resolver, `vyrn.lock`, single-file builds |
 | `src/native/` | The native tier: typed functions to machine code with Cranelift |
-| `src/vm/` | Bytecode compiler, register VM, tensor backends and builtins (see `docs/architecture.md` section 2.4); `src/vm/stdlib.rs` holds files, sets, format specs and the `std.*` modules |
+| `src/vm/` | Bytecode compiler, register VM, tensor backends and builtins (see `docs/architecture.md` section 2.4); `src/vm/stdlib.rs` holds files, sets, format specs and the `vyrn.*` modules |
 | `.github/workflows/` | CI on Linux, macOS and Windows; release builds for the installers |
 
 `examples/grade.vyrn`, `examples/api.vyrn` (a web API on port 8080, with its

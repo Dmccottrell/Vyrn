@@ -1,7 +1,7 @@
-//! `use std.template`: web pages and other text made from data.
+//! `use vyrn.template`: web pages and other text made from data.
 //!
 //! ```vyrn
-//! use std.template
+//! use vyrn.template
 //!
 //! main:
 //!     let page = template.render("""

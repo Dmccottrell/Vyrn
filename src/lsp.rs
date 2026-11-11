@@ -231,7 +231,7 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("return", "Leaves the function with a value."),
     (
         "use",
-        "Brings in a module: `use std.math`, `use app.storage (Db)`, `use \"github.com/...@v1\"`.",
+        "Brings in a module: `use vyrn.math`, `use app.storage (Db)`, `use \"github.com/...@v1\"`.",
     ),
     (
         "async",
@@ -1009,7 +1009,7 @@ impl Server {
         if let Some((name, doc)) = MODULES.iter().find(|(m, _)| {
             modules.get(&word).is_some_and(|p| p == m) || **m == word && modules.contains_key(&word)
         }) {
-            return Some(markdown(format!("module `std.{name}`: {doc}")));
+            return Some(markdown(format!("module `vyrn.{name}`: {doc}")));
         }
         None
     }
@@ -1258,11 +1258,11 @@ impl Server {
     }
 }
 
-/// `use std.math` and `use std.math as m`: local name to builtin prefix.
+/// `use vyrn.math` and `use vyrn.math as m`: local name to builtin prefix.
 fn used_modules(text: &str) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for line in text.lines() {
-        let Some(rest) = line.trim().strip_prefix("use std.") else {
+        let Some(rest) = line.trim().strip_prefix("use vyrn.") else {
             continue;
         };
         let mut parts = rest.split_whitespace();

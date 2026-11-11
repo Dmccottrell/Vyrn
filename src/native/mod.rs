@@ -6,7 +6,7 @@
 //! numbers and booleans, arithmetic, comparisons, `if`/`else if`/`else`,
 //! `loop`, `each i in a until b`, `stop`, `skip`, `return`, calls to other
 //! such functions (recursion included) and math builtins (`abs`, `sqrt`,
-//! `min`, `max`, `std.math`, ...). The interpreter then calls the machine
+//! `min`, `max`, `vyrn.math`, ...). The interpreter then calls the machine
 //! code whenever the arguments have the declared types, and runs the
 //! bytecode otherwise, so a program means exactly the same either way.
 //!
@@ -938,7 +938,7 @@ pub fn attach(module: &Module, program: &Program) {
         }
     };
 
-    // `use std.math` (or `as m`): the local name of the math module.
+    // `use vyrn.math` (or `as m`): the local name of the math module.
     let mut math_names: Vec<String> = Vec::new();
     let mut all_names: Vec<String> = Vec::new();
     let mut candidates: Vec<Candidate> = Vec::new();
@@ -947,7 +947,7 @@ pub fn attach(module: &Module, program: &Program) {
         match &item.kind {
             ItemKind::Use(u) => {
                 let segs: Vec<&str> = u.path.segments.iter().map(|s| s.name.as_str()).collect();
-                if segs == ["std", "math"] {
+                if segs == ["vyrn", "math"] {
                     if let UseKind::Module { alias } = &u.kind {
                         math_names.push(
                             alias
@@ -1110,7 +1110,7 @@ struct KeepAlive(Option<JITModule>, Vec<Rc<String>>);
 
 /// What names mean to the lowering, besides locals and the candidates.
 struct Env {
-    /// Local names of `std.math`.
+    /// Local names of `vyrn.math`.
     math: Vec<String>,
     /// Every top-level function, type and constant: a call to one that is
     /// not a candidate cannot be compiled.
@@ -3087,7 +3087,7 @@ impl Lower<'_, '_> {
         if args.iter().any(|a| a.name.is_some() || a.is_mut) {
             return Err("calls with keyword or `mut` arguments".into());
         }
-        // `math.sqrt(x)` when `use std.math`.
+        // `math.sqrt(x)` when `use vyrn.math`.
         let name = match &callee.kind {
             ExprKind::Name(n) => {
                 if self.lookup(&n.name).is_some() {
@@ -3298,7 +3298,7 @@ impl Lower<'_, '_> {
         }
     }
 
-    /// `std.math` functions, and `exp`/`tanh`.
+    /// `vyrn.math` functions, and `exp`/`tanh`.
     fn math_call(&mut self, name: &str, args: &[crate::ast::Arg]) -> Res<(Value, NTy)> {
         if let Some((_, sym)) = FLOAT1.iter().find(|(n, _)| *n == name) {
             if name == "log" && args.len() != 1 {

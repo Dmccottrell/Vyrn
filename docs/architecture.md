@@ -207,7 +207,7 @@ task waits on something that can never happen, the program stops with a
 warning. When `main` returns, tasks still running are cancelled; hosts
 that keep a program alive call `Vm::run_pending`.
 
-**Standard library in the interpreter.** `use std.web` (or `std.http`)
+**Standard library in the interpreter.** `use vyrn.web` (or `vyrn.http`)
 brings in `web.serve(port, host, requests)` and `web.provide(name,
 value)`. The server is part of the scheduler: `web.serve` suspends the
 calling task, the scheduler accepts connections while tasks wait, and each

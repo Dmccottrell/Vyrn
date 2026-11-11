@@ -136,7 +136,7 @@ pub static NATIVES: &[Native] = &[
     fixed("__sort_by", &["xs", "keys", "reverse"], 2, S::sort_by),
     fixed("__pick_by", &["xs", "keys", "greatest"], 2, S::pick_by),
     fixed("__fail", &["kind", "message"], 2, S::prelude_fail),
-    // ---- std.os ----
+    // ---- vyrn.os ----
     fixed("os.args", &[], 0, S::os_args),
     fixed("os.env", &["name", "default"], 1, S::os_env),
     fixed("os.set_env", &["name", "value"], 2, S::os_set_env),
@@ -146,7 +146,7 @@ pub static NATIVES: &[Native] = &[
     fixed("os.exit", &["code"], 0, S::os_exit),
     fixed("os.platform", &[], 0, S::os_platform),
     fixed("os.run", &["command", "input"], 1, S::os_run),
-    // ---- std.fs ----
+    // ---- vyrn.fs ----
     fixed("fs.exists", &["path"], 1, S::fs_exists),
     fixed("fs.is_file", &["path"], 1, S::fs_is_file),
     fixed("fs.is_dir", &["path"], 1, S::fs_is_dir),
@@ -162,7 +162,7 @@ pub static NATIVES: &[Native] = &[
     fixed("fs.write_text", &["path", "text"], 2, write_text),
     fixed("fs.append_text", &["path", "text"], 2, S::fs_append_text),
     fixed("fs.read_lines", &["path"], 1, S::fs_read_lines),
-    // ---- std.path ----
+    // ---- vyrn.path ----
     variadic("path.join", S::path_join),
     fixed("path.name", &["path"], 1, S::path_name),
     fixed("path.stem", &["path"], 1, S::path_stem),
@@ -170,21 +170,21 @@ pub static NATIVES: &[Native] = &[
     fixed("path.parent", &["path"], 1, S::path_parent),
     fixed("path.absolute", &["path"], 1, S::path_absolute),
     fixed("path.home", &[], 0, S::path_home),
-    // ---- std.time ----
+    // ---- vyrn.time ----
     fixed("time.now", &[], 0, S::time_now),
     fixed("time.format", &["time", "pattern"], 0, S::time_format),
     fixed("time.date", &["time"], 0, S::time_date),
     fixed("time.parse", &["text", "pattern"], 1, S::time_parse),
     fixed("time.monotonic", &[], 0, now),
     fixed("time.sleep", &["seconds"], 1, sleep),
-    // ---- std.random ----
+    // ---- vyrn.random ----
     fixed("random.seed", &["n"], 1, S::random_seed),
     fixed("random.float", &["low", "high"], 0, S::random_float),
     fixed("random.int", &["low", "high"], 2, S::random_int),
     fixed("random.choice", &["xs"], 1, S::random_choice),
     fixed("random.shuffle", &["xs"], 1, S::random_shuffle),
     fixed("random.sample", &["xs", "k"], 2, S::random_sample),
-    // ---- std.math ----
+    // ---- vyrn.math ----
     fixed("math.sqrt", &["x"], 1, sqrt),
     fixed("math.exp", &["x"], 1, exp),
     fixed("math.floor", &["x"], 1, S::floor),
@@ -207,23 +207,23 @@ pub static NATIVES: &[Native] = &[
     fixed("math.gcd", &["a", "b"], 2, S::math_gcd),
     fixed("math.factorial", &["n"], 1, S::math_factorial),
     fixed("math.clamp", &["x", "low", "high"], 3, S::math_clamp),
-    // ---- std.json ----
+    // ---- vyrn.json ----
     fixed("json.parse", &["text"], 1, parse_json),
     fixed("json.dumps", &["value", "indent"], 1, S::json_dumps),
     fixed("json.load", &["path"], 1, S::json_load),
     fixed("json.save", &["path", "value"], 2, S::json_save),
-    // ---- std.re ----
+    // ---- vyrn.re ----
     fixed("re.test", &["pattern", "text"], 2, S::re_test),
     fixed("re.find", &["pattern", "text"], 2, S::re_find),
     fixed("re.find_all", &["pattern", "text"], 2, S::re_find_all),
     fixed("re.replace", &["pattern", "text", "with"], 3, S::re_replace),
     fixed("re.split", &["pattern", "text"], 2, S::re_split),
-    // ---- std.csv ----
+    // ---- vyrn.csv ----
     fixed("csv.parse", &["text", "header", "sep"], 1, S::csv_parse),
     fixed("csv.read", &["path", "header", "sep"], 1, S::csv_read),
     fixed("csv.format", &["rows", "sep"], 1, S::csv_format),
     fixed("csv.write", &["path", "rows", "sep"], 2, S::csv_write),
-    // ---- std.draw ----
+    // ---- vyrn.draw ----
     fixed(
         "draw.canvas",
         &["width", "height"],
@@ -260,10 +260,10 @@ pub static NATIVES: &[Native] = &[
         1,
         super::lib_draw::text_width,
     ),
-    // ---- std.html ----
+    // ---- vyrn.html ----
     fixed("html.parse", &["text"], 1, super::lib_html::parse),
     fixed("html.escape", &["text"], 1, super::lib_html::escape),
-    // ---- std.template ----
+    // ---- vyrn.template ----
     fixed(
         "template.render",
         &["text", "data"],
@@ -276,16 +276,16 @@ pub static NATIVES: &[Native] = &[
         1,
         super::lib_template::render_file,
     ),
-    // ---- std.db ----
+    // ---- vyrn.db ----
     fixed("db.open", &["path"], 1, super::lib_db::db_open),
-    // ---- std.task ----
+    // ---- vyrn.task ----
     variadic("task.select", S::task_select),
     fixed("task.timeout", &["seconds", "work"], 2, S::task_timeout),
     fixed("task.group", &[], 0, S::task_group),
     fixed("task.done", &["task"], 1, S::task_done),
     fixed("task.cancel", &["task"], 1, S::task_cancel),
     fixed("task.sleep", &["seconds"], 1, sleep),
-    // ---- std.http client ----
+    // ---- vyrn.http client ----
     fixed("web.get", &["url", "headers"], 1, S::http_get),
     fixed("web.post", &["url", "body", "headers"], 1, S::http_post),
     fixed("web.put", &["url", "body", "headers"], 1, S::http_put),
@@ -294,7 +294,7 @@ pub static NATIVES: &[Native] = &[
     fixed("web.provide", &["name", "value"], 2, web_provide),
 ];
 
-/// The modules of the standard library that `use std.<name>` brings in,
+/// The modules of the standard library that `use vyrn.<name>` brings in,
 /// and the prefix of their builtins.
 pub fn std_module(name: &str) -> Option<&'static str> {
     match name {
@@ -315,6 +315,21 @@ pub fn std_module(name: &str) -> Option<&'static str> {
         "template" => Some("template"),
         _ => None,
     }
+}
+
+/// The library's modules, for messages: `vyrn.os`, `vyrn.fs`, ...
+pub const LIBRARY: &[&str] = &[
+    "os", "fs", "path", "time", "random", "math", "json", "re", "csv", "http", "task", "db",
+    "draw", "html", "template", "table", "chart", "mail",
+];
+
+pub fn library_list() -> String {
+    let names: Vec<String> = LIBRARY
+        .iter()
+        .filter(|m| std_module(m).is_some())
+        .map(|m| format!("`vyrn.{m}`"))
+        .collect();
+    names.join(", ")
 }
 
 pub fn lookup(name: &str) -> Option<u16> {

@@ -1,7 +1,7 @@
-//! `use std.db`: SQLite databases, built into `vyrn`.
+//! `use vyrn.db`: SQLite databases, built into `vyrn`.
 //!
 //! ```vyrn
-//! use std.db
+//! use vyrn.db
 //!
 //! main:
 //!     using db.open("shop.db") as conn:

@@ -95,7 +95,7 @@ pub struct Ident {
     pub span: Span,
 }
 
-/// A dotted name: `std.web`, `Shape.Circle`.
+/// A dotted name: `vyrn.web`, `Shape.Circle`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Path {
     pub segments: Vec<Ident>,
@@ -183,7 +183,7 @@ pub enum ItemKind {
     Extern(ExternDecl),
 }
 
-/// `use std.web`, `use std.web as w`, `use app.storage (Db, Cache as C)`.
+/// `use vyrn.web`, `use vyrn.web as w`, `use app.storage (Db, Cache as C)`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UseDecl {
     /// The module path. For a URL import this is the name it is bound

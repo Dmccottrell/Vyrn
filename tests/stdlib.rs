@@ -1,5 +1,5 @@
 //! The everyday standard library: Prelude functions, methods of strings,
-//! lists and maps, format specs, sets, files, and the `std.*` modules.
+//! lists and maps, format specs, sets, files, and the `vyrn.*` modules.
 
 use vyrn::vm::{run_source, RunError};
 
@@ -107,7 +107,7 @@ fn files() {
     let path = dir.join("t.txt");
     let p = path.display().to_string().replace('\\', "\\\\");
     let out = main(
-        "use std.fs",
+        "use vyrn.fs",
         &format!(
             "using open(\"{p}\", \"w\") as f:\n    f.write_line(\"alpha\")\n    f.write(\"beta\\n\")\nend\nusing open(\"{p}\", \"a\") as f: f.write_line(\"gamma\")\nusing open(\"{p}\") as f:\n    each line in f: print(\"line:\", line)\nend\nprint(fs.read_lines(\"{p}\"), fs.exists(\"{p}\"), fs.size(\"{p}\"))\nf = open(\"{p}\")\nprint(f.readline().strip(), f.read().split())\nf.close()\nfs.remove(\"{p}\")\nprint(fs.exists(\"{p}\"))"
         ),
@@ -123,7 +123,7 @@ fn files() {
 #[test]
 fn modules() {
     let out = main(
-        "use std.path\nuse std.time\nuse std.random\nuse std.math\nuse std.json\nuse std.re\nuse std.csv\nuse std.os",
+        "use vyrn.path\nuse vyrn.time\nuse vyrn.random\nuse vyrn.math\nuse vyrn.json\nuse vyrn.re\nuse vyrn.csv\nuse vyrn.os",
         "print(path.join(\"a\", \"b\", \"c.txt\").replace(\"\\\\\", \"/\"), path.name(\"x/y.txt\"), path.stem(\"x/y.txt\"), path.ext(\"x/y.txt\"))\n\
          print(time.format(0.0), time.format(1794355200.0, \"%a %d %b %Y %j\"), time.parse(\"2026-11-11\"), time.date(86400.5).get(\"weekday\"))\n\
          random.seed(7)\n\
@@ -156,13 +156,13 @@ fn errors_name_what_went_wrong() {
         error("main: print([1][5])\n"),
         "IndexError: index 5 is out of range for a list of length 1"
     );
-    assert!(error("use std.random\nmain: random.int(5, 1)\n").contains("below the low end"));
+    assert!(error("use vyrn.random\nmain: random.int(5, 1)\n").contains("below the low end"));
     assert!(error("main: print([].reduce((a, b) => a + b))\n").contains("empty list"));
 }
 
 #[test]
 fn tasks_select_timeout_and_groups() {
-    let out = run("use std.task\n\
+    let out = run("use vyrn.task\n\
         async create fetch(name: str, seconds: float) -> str:\n    await sleep(seconds)\n    return \"{name} done\"\nend\n\
         main:\n\
         \x20   print(await task.select(fetch(\"slow\", 0.2), fetch(\"fast\", 0.01)))\n\

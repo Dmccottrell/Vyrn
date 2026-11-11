@@ -219,7 +219,7 @@ struct Compiler {
     /// Standard library modules in scope: the name used in the program,
     /// then the prefix of the module's builtins (`web` -> `web`).
     modules: HashMap<String, &'static str>,
-    /// Builtins imported by name: `use std.web (serve)`.
+    /// Builtins imported by name: `use vyrn.web (serve)`.
     imports: HashMap<String, u16>,
     /// Globals filled by a builtin call before anything else runs: Python
     /// modules and C functions. Global slot, builtin, and its arguments.
@@ -1218,7 +1218,7 @@ impl Compiler {
 
     // ==== names ============================================================
 
-    /// `use std.web` brings the module in as `web`; `use std.web (serve)`
+    /// `use vyrn.web` brings the module in as `web`; `use vyrn.web (serve)`
     /// brings in the names listed. Other modules belong to the package
     /// system, which the interpreter leaves to the release toolchain.
     fn use_decl(&mut self, decl: &UseDecl) {
@@ -1227,17 +1227,25 @@ impl Compiler {
             self.python_use(decl, &segments[1..]);
             return;
         }
-        let [std, name] = segments[..] else {
+        let [root, name] = segments[..] else {
             return;
         };
-        if std != "std" {
+        if root == "std" {
+            self.error_hint(
+                format!("Vyrn's library is `vyrn`, not `std`: write `use vyrn.{name}`"),
+                decl.path.span,
+                format!("the library's modules are {}", builtins::library_list()),
+            );
+            return;
+        }
+        if root != "vyrn" {
             return;
         }
         let Some(prefix) = builtins::std_module(name) else {
             self.error_hint(
-                format!("the standard library has no module `{name}`"),
+                format!("Vyrn's library has no module `{name}`"),
                 decl.path.span,
-                "the standard library has `std.os`, `std.fs`, `std.path`, `std.time`, `std.random`, `std.math`, `std.json`, `std.re`, `std.csv` and `std.http`",
+                format!("the library's modules are {}", builtins::library_list()),
             );
             return;
         };
@@ -1255,7 +1263,7 @@ impl Compiler {
                         }
                         None => {
                             self.error(
-                                format!("`std.{name}` has no `{}`", item.name.name),
+                                format!("`vyrn.{name}` has no `{}`", item.name.name),
                                 item.name.span,
                             );
                         }
@@ -1403,7 +1411,7 @@ impl Compiler {
         let prefix = self.module_prefix(&module.name)?;
         Some(
             builtins::lookup(&format!("{prefix}.{}", name.name))
-                .ok_or_else(|| (format!("`std.{prefix}` has no `{}`", name.name), name.span)),
+                .ok_or_else(|| (format!("`vyrn.{prefix}` has no `{}`", name.name), name.span)),
         )
     }
 

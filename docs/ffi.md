@@ -278,7 +278,7 @@ written in the source.
 (`safetensors.numpy.load_file(path)` gives NumPy arrays), and Vyrn's own
 `load_weights` reads them natively. The next step is for `load_weights` to
 memory-map the file and hand out `External` tensors over the mapping, which
-reaches the same zero-copy result without Python (the `std.fs.map` design
+reaches the same zero-copy result without Python (the `vyrn.fs.map` design
 in `docs/stdlib.md`).
 
 ---
