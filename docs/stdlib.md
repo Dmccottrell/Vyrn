@@ -1,6 +1,6 @@
 # The Vyrn Standard Library
 
-Status: design spec, v0.1. Where an API already runs in the interpreter it
+Status: v0.4. Where an API already runs in the interpreter it
 says **runs today**; everything else is design, which this document fixes so
 that implementation can follow it. Syntax follows `docs/grammar.ebnf` v0.4.
 
@@ -61,11 +61,12 @@ Vyrn's spelling as follows:
 
 | Group | Names | Status |
 |---|---|---|
-| Output | `print` | runs today |
-| Conversion | `str`, `int`, `float` | runs today |
-| Sequences | `len`, `range`, `enumerate`, `zip`, `sorted`, `min`, `max`, `sum` | runs today |
-| Math | `abs`, `round`, `sqrt`, `exp`, `tanh` | runs today |
-| Files | `open(path, mode = "r")` returning a `File` (`read`, `lines`, `write`, `close`) for use with `using`; `read_text`, `write_text` | `read_text`/`write_text` run today, `open` is design |
+| Input and output | `print`, `input(prompt)` | runs today |
+| Conversion | `str`, `int`, `float`, `bool`, `list`, `dict`, `set`, `repr`, `chr`, `ord`, `hex`, `oct`, `bin`, `typeof` | runs today |
+| Sequences | `len`, `range`, `enumerate`, `zip`, `reversed`, `any`, `all`, `sum`, and `sorted`, `min`, `max` with `key =` (and `reverse =` for `sorted`), `map(f, xs)`, `filter(f, xs)` | runs today |
+| Math | `abs`, `round`, `sqrt`, `exp`, `tanh`, `floor`, `ceil`, `pow`, `divmod` | runs today |
+| Text | `format(value, spec)`; the same specs inside strings: `"{price:.2f}"`, `"{n:,}"`, `"{name:>8}"`, `"{ratio:.1%}"`, `"{n:#x}"` | runs today |
+| Files | `open(path, mode = "r")` returning a `File` (`read`, `readline`, `lines`, `write`, `write_line`, `close`; `each line in f`) for use with `using`; `read_text`, `write_text` | runs today |
 | Data | `parse_json`, `to_json` | runs today |
 | Tasks | `sleep`, `channel`, `join`, `now` | runs today |
 | Games | `Clock(hz, frames)` | runs today |
@@ -85,7 +86,22 @@ end
 ```
 
 `using` calls `close()` on every way out of the block, including failures
-(**runs today** for any value with a `close` method).
+(**runs today**). `"w"` replaces a file and `"a"` adds to its end.
+
+### 2.3 Methods of strings, lists, maps and sets
+
+All **run today**. Methods that take a function (`map`, `filter`, `sort`
+with `key =`, ...) are written in Vyrn itself, in `src/prelude.vyrn`.
+
+| Type | Methods |
+|---|---|
+| `str` | `upper`, `lower`, `title`, `capitalize`, `swapcase`, `strip`/`lstrip`/`rstrip` (optionally of given characters), `split(sep, limit)`, `rsplit`, `lines`, `chars`, `join`, `replace`, `startswith`, `endswith`, `find`, `rfind`, `index`, `count`, `contains`, `partition`, `rpartition`, `removeprefix`, `removesuffix`, `zfill`, `ljust`, `rjust`, `center`, `repeat`, `format(spec)`, `isdigit`, `isalpha`, `isalnum`, `isspace`, `isupper`, `islower`, `is_empty`, `encode` |
+| `[T]` | `append`, `extend`, `insert`, `pop`, `remove`, `clear`, `sort(key, reverse)`, `reverse`, `copy`, `index`, `count`, `contains`, `first`, `last`, `is_empty`, `unique`, `join(sep)`, `chunks(n)`, `sum`; taking a function: `map`, `filter`, `reduce`, `find`, `find_index`, `any`, `all`, `count_if`, `min_by`, `max_by`, `sum_by`, `group_by`, `each`, `take_while`, `drop_while`; and `flatten` |
+| `{K: V}` | `keys`, `values`, `items`, `get(key, default)`, `pop(key, default)`, `update`, `setdefault`, `has`, `copy`, `clear`, `is_empty`; taking a function: `map_values`, `filter` |
+| set | `{1, 2, 3}`, `{x each x in xs}` or `set(xs)`; `add`, `remove`, `discard`, `has`, `union`, `intersection`, `difference`, `symmetric_difference`, `issubset`, `issuperset`, `copy`, `clear`; the operators `|`, `&`, `-`, `^`; `in`; `len` |
+
+A program may declare its own `map`, `sorted` or any other Prelude name;
+its declaration wins.
 
 ## 3. `std.http`: a FastAPI-style async router
 
@@ -191,6 +207,12 @@ about 8 GB on disk. Reading it into a buffer and then uploading it costs
 the page cache straight into the GPU upload (`std.nn` uses this, section 6),
 and on a 32 GB machine nothing is held twice.
 
+**Runs today:** `fs.exists`, `fs.is_file`, `fs.is_dir`, `fs.list(dir)`,
+`fs.walk(dir)`, `fs.mkdir` (with parents), `fs.remove` (files and
+directories), `fs.rename`, `fs.copy`, `fs.size`, `fs.modified`,
+`fs.read_text`, `fs.write_text`, `fs.append_text`, `fs.read_lines`. A file
+that is not there fails with `NotFound`. The mapping API below is design.
+
 | API | Behaviour |
 |---|---|
 | `fs.map(path) -> Mapped` | Read-only mapping; `fails IoError` |
@@ -222,22 +244,25 @@ async create fetch(url: str) -> str:
 end
 
 async create crawl(urls: [str]) -> [str]:
-    var pages = []
-    # Structured concurrency: the group outlives none of its tasks. Leaving
-    # the block waits for all of them, and the first failure cancels the rest.
+    # Structured concurrency: the group outlives none of its tasks. Tasks
+    # still running at `end` are cancelled.
     using task.group() as g:
         each url in urls: g.spawn(fetch(url))
+        return await g.wait()
     end
-    each t in g.tasks(): pages.append(await t)
-    return pages
 end
 ```
 
+**Runs today:** `task.group`, `task.timeout`, `task.select`, `task.cancel`,
+`task.done`, `task.sleep`. Awaiting a cancelled task fails with
+`Cancelled`.
+
 | API | Purpose |
 |---|---|
-| `task.group()` | Structured concurrency, as above; `g.cancel()` stops every task in it |
-| `task.timeout(seconds, work)` | `await task.timeout(2.0, fetch(url))` fails with `Timeout` |
-| `task.select(a, b, ...)` | Waits for the first of several tasks or channels; returns its index and value |
+| `task.group()` | Structured concurrency, as above: `g.spawn(work)`, `await g.wait()` (or `await g`) for every result, `g.cancel()` to stop the unfinished |
+| `task.timeout(seconds, work)` | `await task.timeout(2.0, fetch(url))` gives the result, or fails with `Timeout` and stops the work |
+| `task.select(a, b, ...)` | Waits for the first of several tasks or channels; `await` gives `(index, value)` |
+| `task.cancel(t)`, `task.done(t)` | Stop a task; whether it has finished |
 | `task.yield_now()` | Lets other tasks run inside a long computation |
 | `task.current()` | The running task's handle, for names and cancellation checks |
 | `channel(capacity = n)` | A bounded channel: `send` waits when it is full, which gives back-pressure |
@@ -247,6 +272,22 @@ The split follows the cost model. Green threads are cheap and share one OS
 thread, so the Prelude has them. A `Pool` adds threads, and with them the
 rule that values cross threads only by `own`. That is an explicit choice,
 so it sits behind `use std.task`.
+
+## 5a. Everyday modules
+
+All **run today** (`src/vm/stdlib.rs`).
+
+| Module | Functions |
+|---|---|
+| `std.os` | `os.args()` (the arguments after the file name), `os.env(name, default)`, `os.set_env`, `os.environ()`, `os.cwd()`, `os.chdir`, `os.exit(code)`, `os.platform()`, `os.run(command, input)`: a list (`["git", "status"]`) or a shell line; gives `code`, `ok`, `out`, `err` |
+| `std.path` | `path.join(a, b, ...)`, `path.name`, `path.stem`, `path.ext`, `path.parent`, `path.absolute`, `path.home()` |
+| `std.time` | `time.now()` (seconds since 1970), `time.format(t, "%Y-%m-%d %H:%M:%S")`, `time.parse(text, pattern)`, `time.date(t)` (year, month, day, hour, minute, second, weekday), `time.monotonic()`, `time.sleep`. Times are UTC |
+| `std.random` | `random.int(low, high)` (both included), `random.float(low, high)`, `random.choice`, `random.shuffle` (in place), `random.sample(xs, k)`, `random.seed(n)` |
+| `std.math` | `sqrt`, `exp`, `log(x, base)`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `hypot`, `degrees`, `radians`, `floor`, `ceil`, `gcd`, `factorial`, `clamp`, `isnan`, `isinf`; constants `pi`, `e`, `tau`, `inf`, `nan` |
+| `std.json` | `json.parse(text)`, `json.dumps(value, indent)`, `json.load(path)`, `json.save(path, value)` |
+| `std.re` | `re.test(pattern, text)`, `re.find` (a match with `text`, `start`, `end`, `groups`, `named`, or `none`), `re.find_all`, `re.replace(pattern, text, with)` (`$1` inserts a group), `re.split` |
+| `std.csv` | `csv.read(path)` and `csv.parse(text)` (a list of maps from the header, or of lists with `header = false`), `csv.write(path, rows)`, `csv.format(rows)` |
+| `std.http` client | `http.get(url, headers)`, `http.post(url, body, headers)`, `http.put`, `http.delete`: a response with `status`, `ok`, `text`, `json`, `headers`. Maps and lists are sent as JSON |
 
 ## 6. Tensors: the Prelude and `std.nn`
 
@@ -368,15 +409,18 @@ end
 
 | Piece | Where | Status |
 |---|---|---|
-| Prelude functions and types | `src/vm/builtins.rs`, `src/vm/value.rs` | runs, except `open` |
+| Prelude functions and types | `src/vm/builtins.rs`, `src/vm/stdlib.rs`, `src/prelude.vyrn` | runs |
+| Files, sets, format specs, methods (section 2) | `src/vm/stdlib.rs`, `src/vm/builtins.rs` | runs |
+| `std.os`, `std.path`, `std.time`, `std.random`, `std.math`, `std.json`, `std.re`, `std.csv`, HTTP client | `src/vm/stdlib.rs` | runs |
 | `use std.<module>` with module and name imports | `src/vm/compiler.rs` (`use_decl`, `module_member`) | runs |
-| `std.http` routing, providers, server | `src/vm/machine.rs` (`resolve_route`, `service_servers`), `src/vm/web.rs` | runs; `Request`, `Response`, `Router`, middleware, SSE/WS, client are design |
+| `std.http` routing, providers, server | `src/vm/machine.rs` (`resolve_route`, `service_servers`), `src/vm/web.rs` | runs; `Request`, `Response`, `Router`, middleware, SSE/WS are design |
 | Green threads, channels, timers | `src/vm/machine.rs`, `src/vm/task.rs` | runs |
-| `std.task` groups, timeouts, select, pools | | design |
+| `std.task` groups, timeouts, select, cancel | `src/vm/stdlib.rs`, `src/vm/machine.rs` (`await_race`, `apply_cancels`) | runs; pools, bounded channels, `yield_now` are design |
+| `std.fs` files and directories | `src/vm/stdlib.rs` | runs |
 | `std.fs` mapping and views | | design; views depend on borrow checking of slices (`src/check.rs`) |
 | Tensor math on CPU and GPU | `src/vm/tensor.rs`, `src/vm/gpu.rs` | runs |
 | `std.nn` | `src/vm/weights.rs`, `src/vm/tokenizer.rs` hold its first pieces | design |
 
-Build order: `open` and `File` first (the beginner path), then `std.fs.map`
-with views (the large-model path), then `std.nn.load` on top of it, then
-`task.group`, `timeout` and `select`, then the rest of `std.http`.
+Build order from here: `std.fs.map` with views (the large-model path), then
+`std.nn.load` and `generate` on top of it, then the rest of `std.http`, then
+`task.Pool`.

@@ -45,5 +45,5 @@ fn tutorial_examples_print_what_the_page_says() {
             _ => {}
         }
     }
-    assert_eq!((ran, checked), (8, 2));
+    assert_eq!((ran, checked), (9, 2));
 }

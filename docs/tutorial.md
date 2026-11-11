@@ -153,7 +153,7 @@ error: this `when` does not handle `Shape.Empty`
   = help: add `is Shape.Empty: ...` for each, or an `else:` arm
 ```
 
-## 5. Structs and classes
+## 5. Structs and objects
 
 ```vyrn
 struct Point:
@@ -278,7 +278,69 @@ While one task waits (here, `sleep`), the others run, so the two fetches
 above take as long as the slower one, not both together. A `channel` passes
 values between tasks, and `async for` reads them as they arrive.
 
-## 8. Tensors and kernels
+## 8. Everyday tools
+
+Files, text, sorting and data formats need no packages. Functions that take a
+function, such as `sorted(..., key = ...)` and `xs.map(f)`, use the arrow form
+`(x) => ...`, or `x => ...` for one parameter.
+
+```vyrn
+use std.fs
+use std.json
+use std.re
+
+struct Sale:
+    item: str
+    price: float
+end
+
+main:
+    write_text("sales.csv", "pen,1.5\nbook,12.0\npen,1.5\nlamp,30.25\n")
+    var sales = []
+    using open("sales.csv") as f:
+        each line in f:
+            let name, price = line.split(",")
+            sales.append(Sale(name, float(price)))
+        end
+    end
+
+    let total = sales.sum_by(s => s.price)
+    print("total: {total:,.2f}")
+    print("items:", {s.item each s in sales})
+    each s in sorted(sales, key = s => s.price, reverse = true)[:2]:
+        print("{s.item:<6}{s.price:>8.2f}")
+    end
+    print(json.dumps({"count": len(sales), "top": max(sales, key = s => s.price).item}))
+    print(re.find_all("\\d+", "order 12, then 345"))
+    fs.remove("sales.csv")
+end
+```
+
+```text
+total: 45.25
+items: {"pen", "book", "lamp"}
+lamp     30.25
+book     12.00
+{"count":4,"top":"lamp"}
+["12", "345"]
+```
+
+`using open(path) as f:` closes the file at `end`, even after a failure;
+`each line in f` reads it line by line. `"{total:,.2f}"` formats a number as
+Python's format specs do. `{... each ...}` makes a set, which drops the
+repeated `pen`. `std.os`, `std.fs`, `std.path`, `std.time`, `std.random`,
+`std.math`, `std.csv`, `std.task` and an HTTP client complete the toolbox;
+`docs/stdlib.md` lists everything.
+
+Type `vyrn` with no file to try code line by line:
+
+```console
+>>> xs = [3, 1, 2]
+>>> xs.map(x => x * 10)
+[30, 10, 20]
+```
+
+## 9. Tensors and kernels
 
 ```vyrn
 kernel create leaky(x: f32) -> f32:
@@ -307,7 +369,7 @@ tensor([[-0.2, -0.2]])
 runs on every element of a tensor; inside `on gpu[0]:`, Vyrn turns it into
 a GPU program (see `docs/nn.md`).
 
-## 9. Projects
+## 10. Projects
 
 ```bash
 vyrn new hello
@@ -336,7 +398,7 @@ locked to an exact version in `vyrn.lock`. Then:
 | `vyrn fmt` | formats your code in the one Vyrn style |
 | `vyrn build` | makes one file you can copy to any computer and run |
 
-## 10. A web API
+## 11. A web API
 
 ```vyrn check
 use std.http

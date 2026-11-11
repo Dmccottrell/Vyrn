@@ -3,8 +3,10 @@
 A gradually typed, garbage-collector-free language for machine learning, web
 services and WebAssembly, and games and systems code.
 
-Status: grammar v0.4, with a lexer, parser and bytecode interpreter in Rust.
-The type checker, borrow checker and native backends do not exist yet.
+Status: v0.4. A complete toolchain in Rust: parser, gradual type and borrow
+checker, bytecode interpreter, formatter, interactive prompt, language
+server, package resolver and single-file builds. The LLVM native backend is
+designed (`docs/deploy.md`) but not built; programs run on the interpreter.
 
 ## Documents
 
@@ -26,11 +28,42 @@ The type checker, borrow checker and native backends do not exist yet.
 - [`examples/api.vyrn`](examples/api.vyrn): web, async routes returning JSON
 - [`examples/inference.vyrn`](examples/inference.vyrn): ML, tensor layers spread across GPUs
 
-## Getting started
+## Install
+
+macOS and Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dmccottrell/vyrn/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/dmccottrell/vyrn/main/install.ps1 | iex
+```
+
+Or from source, with Rust installed:
 
 ```bash
 cargo install --path .
 ```
+
+The installers download a release built by `.github/workflows/release.yml`;
+releases appear once a version tag such as `v0.4.0` is pushed.
+
+## Getting started
+
+Type `vyrn` for the interactive prompt:
+
+```text
+>>> prices = [4.5, 12.0, 7.25]
+>>> "{sum(prices):.2f}"
+"23.75"
+>>> sorted(prices, reverse = true)
+[12.0, 7.25, 4.5]
+```
+
+Run a file with `vyrn hello.vyrn`, or start a project:
 
 ```bash
 vyrn new hello
@@ -42,6 +75,8 @@ cd hello && vyrn run
 
 | Command | Does |
 |---|---|
+| `vyrn` | The interactive prompt (also `vyrn repl`) |
+| `vyrn file.vyrn [args]` | Runs one file (same as `vyrn run file.vyrn`) |
 | `vyrn new <name>` | Creates a project: `vyrn.toml`, `main.vyrn`, a module and a test |
 | `vyrn run [file]` | Runs the project (or one file) |
 | `vyrn check [file]` | Finds type, `let`, `strict` and borrow errors without running |
@@ -49,17 +84,37 @@ cd hello && vyrn run
 | `vyrn fmt [--check]` | Formats every file in the one Vyrn style |
 | `vyrn add github.com/ann/neural@v1` | Fetches a module and locks its exact commit and content hash in `vyrn.lock` |
 | `vyrn fetch` | Downloads every locked module, to work offline |
+| `vyrn lsp` | The language server, for editors |
 | `vyrn build [--target=T]` | Makes one executable file that runs anywhere, with nothing to install; `--target=linux-musl` for a static Linux binary, `--target=wasm32-edge` for Vercel, Cloudflare and Deno |
 
 Files of a project use each other with `use geo.shapes` (loads `geo/shapes.vyrn`),
 and modules from any git host with `use "github.com/ann/neural@v1"`. There is no
 central registry: `docs/ffi.md` describes the resolver.
 
+## Standard library
+
+What a Python programmer uses every day is there, with the same names where
+Python's are good ones (`docs/stdlib.md` has the full list):
+
+- **Prelude** (no `use` needed): `print`, `input`, `len`, `open` for files,
+  `sorted`/`min`/`max` with `key =`, `map`, `filter`, `any`, `all`, sets
+  (`{1, 2, 3}`), format specs (`"{price:.2f}"`, `"{n:,}"`), and the methods
+  of strings, lists and maps, including `xs.map(f)`, `xs.filter(f)`,
+  `xs.group_by(f)`.
+- **Modules**: `std.os`, `std.fs`, `std.path`, `std.time`, `std.random`,
+  `std.math`, `std.json`, `std.re`, `std.csv`, `std.task` (select, timeouts,
+  task groups) and `std.http` (a server and a client).
+
+Runtime errors show the file, the line, the code and a hint, like compile
+errors do.
+
 ## Editor
 
-`editors/vscode` is the VS Code extension: highlighting, errors from `vyrn check`
-as you type, formatting with `vyrn fmt`, and run and test commands. Its README
-says how to package and install it.
+`vyrn lsp` is a language server: errors as you type, completion, hover
+documentation, go to definition, signature help, an outline and formatting.
+`editors/vscode` is the VS Code extension that uses it; its README says how to
+package and install it. Neovim, Helix, Zed, Sublime and Emacs can run
+`vyrn lsp` through their own LSP clients.
 
 ## Compiler
 
@@ -83,8 +138,12 @@ cargo run --release --features gpu -- run program.vyrn
 | `src/pretty.rs` | Compact text form of the syntax tree |
 | `src/check.rs` | Gradual type checks, `let`/`strict` rules and borrow checks (`vyrn check <file>`) |
 | `src/fmt.rs` | The formatter (`vyrn fmt`) |
+| `src/prelude.vyrn`, `src/prelude.rs` | The part of the Prelude written in Vyrn: everything that takes a function |
+| `src/repl.rs` | The interactive prompt |
+| `src/lsp.rs` | The language server |
 | `src/project/` | Multi-file programs, the URL module resolver, `vyrn.lock`, single-file builds |
-| `src/vm/` | Bytecode compiler, register VM, tensor backends and builtins (see `docs/architecture.md` section 2.4) |
+| `src/vm/` | Bytecode compiler, register VM, tensor backends and builtins (see `docs/architecture.md` section 2.4); `src/vm/stdlib.rs` holds files, sets, format specs and the `std.*` modules |
+| `.github/workflows/` | CI on Linux, macOS and Windows; release builds for the installers |
 
 `examples/grade.vyrn`, `examples/api.vyrn` (a web API on port 8080, with its
 database module in `examples/app/storage.vyrn`) and `examples/bounce.vyrn` (a

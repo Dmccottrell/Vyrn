@@ -135,7 +135,7 @@ fn modules() {
          print(re.test(\"\\\\d+\", \"ab12\"), re.find(\"(\\\\w+)@(\\\\w+)\", \"mail me@site now\").get(\"groups\"), re.find_all(\"\\\\d\", \"a1b2\"), re.replace(\"o\", \"foo\", \"0\"), re.split(\",\\\\s*\", \"a, b,c\"))\n\
          rows = csv.parse(\"name,age\\nAda,36\\n\\\"Lovelace, A\\\",37\\n\")\n\
          print(rows, csv.format(rows).lines())\n\
-         print(os.env(\"VYRN_SURELY_UNSET\", \"default\"), typeof(os.platform()), os.run([\"echo\", \"hi\"]).get(\"out\").strip())",
+         print(os.env(\"VYRN_SURELY_UNSET\", \"default\"), typeof(os.platform()), os.run(\"echo hi\").get(\"out\").strip())",
     );
     assert_eq!(
         out,
