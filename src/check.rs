@@ -863,7 +863,7 @@ impl Checker<'_> {
                     }
                 }
             }
-            StmtKind::Fail(e) | StmtKind::Defer(e) => {
+            StmtKind::Fail(e) | StmtKind::Defer(e) | StmtKind::Yield(e) => {
                 self.expr(e);
             }
             StmtKind::Stop | StmtKind::Skip => {}

@@ -261,6 +261,11 @@ pub enum Op {
         dst: u8,
         src: u8,
     },
+    /// `yield src`: hands the value to whoever reads the generator and
+    /// pauses until it asks for the next one.
+    Yield {
+        src: u8,
+    },
     /// Stores the next item in `dst` and skips the following instruction;
     /// when the iterator is exhausted it falls through to that instruction,
     /// which is the jump out of the loop.

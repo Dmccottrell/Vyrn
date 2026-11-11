@@ -555,6 +555,7 @@ impl Printer {
             StmtKind::Return(Some(value)) => self.line(format!("return {}", expr(value))),
             StmtKind::Return(None) => self.line("return"),
             StmtKind::Fail(e) => self.line(format!("fail {}", expr(e))),
+            StmtKind::Yield(e) => self.line(format!("yield {}", expr(e))),
             StmtKind::Defer(e) => self.line(format!("defer {}", expr(e))),
             StmtKind::Stop => self.line("stop"),
             StmtKind::Skip => self.line("skip"),

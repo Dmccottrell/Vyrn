@@ -342,6 +342,37 @@ pub fn prelude_fail(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     Err(err(kind, message.to_string()))
 }
 
+/// `fail ValueError("age must be positive")`: a built-in kind of error,
+/// caught by `catch ValueError` (or `catch Error`).
+fn error_of(kind: &'static str, args: &[Value]) -> VmResult<Value> {
+    let message = match args.first() {
+        Some(Value::Str(s)) => s.to_string(),
+        Some(other) => format!("{other:?}"),
+        None => String::new(),
+    };
+    Ok(err(kind, message))
+}
+
+pub fn make_error(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    error_of("Error", args)
+}
+
+pub fn make_value_error(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    error_of("ValueError", args)
+}
+
+pub fn make_type_error(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    error_of("TypeError", args)
+}
+
+pub fn make_key_error(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    error_of("KeyError", args)
+}
+
+pub fn make_index_error(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    error_of("IndexError", args)
+}
+
 // ==== format specs ==========================================================
 
 /// `format(value, spec)`: what `"{value:spec}"` shows. Specs follow Python:

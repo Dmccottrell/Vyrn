@@ -585,6 +585,8 @@ pub enum StmtKind {
     },
     Return(Option<Expr>),
     Fail(Expr),
+    /// `yield value`: makes the function a generator.
+    Yield(Expr),
     Defer(Expr),
     /// Leaves the innermost loop.
     Stop,

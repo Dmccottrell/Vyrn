@@ -1614,6 +1614,10 @@ impl Parser {
                 self.bump();
                 Ok(StmtKind::Fail(self.expression()?))
             }
+            Tk::Keyword(K::Yield) => {
+                self.bump();
+                Ok(StmtKind::Yield(self.expression()?))
+            }
             Tk::Keyword(K::Defer) => {
                 self.bump();
                 Ok(StmtKind::Defer(self.expression()?))

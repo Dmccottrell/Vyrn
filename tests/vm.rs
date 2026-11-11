@@ -1304,3 +1304,23 @@ fn types_define_their_own_operators_and_text() {
         "<4,6> <3,6> <2,4> <-1,-2> 2\n<1,2> [<5,0>, <1,2>] [<1,2>, <5,0>] <5,0> true\n"
     );
 }
+
+#[test]
+fn generators_make_values_as_they_are_asked_for() {
+    assert_eq!(
+        run("create naturals():\n    var n = 0\n    loop:\n        n += 1\n        yield n\n    end\nend\n\
+             create take(source, k):\n    var got = 0\n    each x in source:\n        if got == k: return\n        yield x\n        got += 1\n    end\nend\n\
+             create noisy():\n    print(\"start\")\n    yield 1\n    print(\"after 1\")\n    yield 2\nend\n\
+             main:\n    print(list(take(naturals(), 3)), sum(take(naturals(), 10)))\n    g = noisy()\n    print(\"made\")\n    print(g.next())\n    print(g.next(), g.next())\n    print(\"-\".join(take(naturals(), 3).map(str)))\nend\n"),
+        "[1, 2, 3] 55\nmade\nstart\n1\nafter 1\n2 none\n1-2-3\n"
+    );
+}
+
+#[test]
+fn builtin_error_kinds_can_be_raised_and_caught() {
+    assert_eq!(
+        run("create age(n):\n    if n < 0: fail ValueError(\"age cannot be negative\")\n    return n\nend\n\
+             main:\n    attempt:\n        age(-1)\n    catch ValueError as e:\n        print(e.message)\n    end\nend\n"),
+        "age cannot be negative\n"
+    );
+}

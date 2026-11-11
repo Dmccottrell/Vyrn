@@ -65,6 +65,8 @@ spelled_enum! {
         Export => "export",
         Extern => "extern",
         Fail => "fail",
+        /// Hands one value to the loop reading a generator, then pauses.
+        Yield => "yield",
         Fails => "fails",
         False => "false",
         Always => "always",

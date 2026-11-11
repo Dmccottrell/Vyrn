@@ -106,6 +106,8 @@ struct LoopCtx {
 }
 
 struct FnState {
+    /// The body has a `yield`.
+    is_generator: bool,
     name: String,
     code: Vec<Op>,
     lines: Vec<u32>,
@@ -150,6 +152,7 @@ impl FnState {
             captures: Vec::new(),
             cells: HashSet::new(),
             param_cells: Vec::new(),
+            is_generator: false,
         }
     }
 }
@@ -483,6 +486,7 @@ impl Compiler {
                         captures: Vec::new(),
                         is_async: false,
                         variadic: false,
+                        is_generator: false,
                         kernel: None,
                     })
                 })
@@ -1177,7 +1181,9 @@ impl Compiler {
         self.sync_param_cells();
         self.emit(Op::ReturnNone);
         let f = self.fns.pop().expect("a function is being compiled");
+        let is_generator = f.is_generator;
         Proto {
+            is_generator,
             name: f.name,
             code: f.code,
             lines: f.lines,
@@ -1747,6 +1753,12 @@ impl Compiler {
             StmtKind::Fail(e) => {
                 let r = self.expr_any(e)?;
                 self.emit(Op::Fail { src: r });
+                Ok(())
+            }
+            StmtKind::Yield(e) => {
+                let r = self.expr_any(e)?;
+                self.f().is_generator = true;
+                self.emit(Op::Yield { src: r });
                 Ok(())
             }
             StmtKind::Defer(_) => Ok(()),
@@ -3972,7 +3984,9 @@ fn scan_stmt(stmt: &Stmt, inside: bool, names: &mut HashSet<String>) {
                 scan_expr(v, inside, names);
             }
         }
-        StmtKind::Expr(e) | StmtKind::Fail(e) | StmtKind::Defer(e) => scan_expr(e, inside, names),
+        StmtKind::Expr(e) | StmtKind::Fail(e) | StmtKind::Defer(e) | StmtKind::Yield(e) => {
+            scan_expr(e, inside, names)
+        }
         StmtKind::Assign { target, value, .. } => {
             scan_expr(target, inside, names);
             scan_expr(value, inside, names);

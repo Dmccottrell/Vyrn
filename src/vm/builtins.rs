@@ -136,6 +136,11 @@ pub static NATIVES: &[Native] = &[
     fixed("__sort_by", &["xs", "keys", "reverse"], 2, S::sort_by),
     fixed("__pick_by", &["xs", "keys", "greatest"], 2, S::pick_by),
     fixed("__fail", &["kind", "message"], 2, S::prelude_fail),
+    fixed("Error", &["message"], 1, S::make_error),
+    fixed("ValueError", &["message"], 1, S::make_value_error),
+    fixed("TypeError", &["message"], 1, S::make_type_error),
+    fixed("KeyError", &["message"], 1, S::make_key_error),
+    fixed("IndexError", &["message"], 1, S::make_index_error),
     // ---- vyrn.os ----
     fixed("os.args", &[], 0, S::os_args),
     fixed("os.env", &["name", "default"], 1, S::os_env),

@@ -177,6 +177,10 @@ pub struct Vm {
     /// if a `catch` passes it on and nothing else catches it, the error
     /// names that place rather than the `catch`.
     caught: Option<(Value, Vec<TraceLine>)>,
+    /// The value the running generator just gave with `yield`.
+    yielded: Option<Value>,
+    /// How many generators are running, one inside another.
+    generators: usize,
 }
 
 /// The state of a task that is not running.
@@ -288,6 +292,8 @@ impl Vm {
             frames: Vec::new(),
             handlers: Vec::new(),
             caught: None,
+            yielded: None,
+            generators: 0,
             methods,
             builtin_methods,
             functions,
@@ -811,7 +817,7 @@ impl Vm {
         base: usize,
         argc: usize,
     ) -> VmResult<()> {
-        if closure.proto.is_async || closure.proto.kernel.is_some() {
+        if closure.proto.is_async || closure.proto.kernel.is_some() || closure.proto.is_generator {
             return self.enter_special(closure, ret, base, argc);
         }
         self.push_frame(closure, ret, base, argc)
@@ -836,10 +842,101 @@ impl Vm {
                 return Ok(());
             }
         }
+        if closure.proto.is_generator {
+            let generator = self.new_generator(closure, base, argc)?;
+            self.stack[ret] = generator;
+            return Ok(());
+        }
         if closure.proto.is_async {
             return self.start_task(closure, ret, base, argc);
         }
         self.push_frame(closure, ret, base, argc)
+    }
+
+    /// Calling a function with `yield`: its frame is set up, but nothing
+    /// runs until the first value is asked for.
+    fn new_generator(&mut self, closure: Rc<Closure>, base: usize, argc: usize) -> VmResult<Value> {
+        let name = closure.proto.name.clone();
+        let mut stack = Vec::with_capacity(argc + closure.proto.num_regs + 1);
+        stack.push(Value::Function(closure.clone()));
+        stack.extend(self.stack[base..base + argc].iter().cloned());
+        let saved = self.swap_in(GenState {
+            stack,
+            frames: Vec::new(),
+            handlers: Vec::new(),
+        });
+        let entry = std::mem::replace(&mut self.entry_depth, 1);
+        let pushed = self.push_frame(closure, 0, 1, argc);
+        self.entry_depth = entry;
+        let state = self.swap_in(saved);
+        pushed?;
+        Ok(Value::Foreign(Rc::new(Box::new(Generator {
+            name,
+            state: RefCell::new(Some(state)),
+        }))))
+    }
+
+    /// Puts `state` in place of the running stack, frames and handlers, and
+    /// gives back the ones it replaced.
+    fn swap_in(&mut self, state: GenState) -> GenState {
+        GenState {
+            stack: std::mem::replace(&mut self.stack, state.stack),
+            frames: std::mem::replace(&mut self.frames, state.frames),
+            handlers: std::mem::replace(&mut self.handlers, state.handlers),
+        }
+    }
+
+    /// Runs a generator to its next `yield`: the value, or `None` once the
+    /// function has returned.
+    fn generator_next(&mut self, generator: &Generator) -> VmResult<Option<Value>> {
+        let Some(state) = generator.state.borrow_mut().take() else {
+            return Ok(None);
+        };
+        let saved = self.swap_in(state);
+        let entry = std::mem::replace(&mut self.entry_depth, 1);
+        self.generators += 1;
+        let root = self.current;
+        let result = self.execute(root);
+        self.generators -= 1;
+        self.entry_depth = entry;
+        let state = self.swap_in(saved);
+        match result {
+            Ok(_) => match self.yielded.take() {
+                Some(value) => {
+                    *generator.state.borrow_mut() = Some(state);
+                    Ok(Some(value))
+                }
+                None => Ok(None),
+            },
+            Err(e) => Err(e.value),
+        }
+    }
+
+    /// Every remaining value of a generator, as a list.
+    fn drain_generator(&mut self, generator: &Generator) -> VmResult<Value> {
+        let mut items = Vec::new();
+        while let Some(v) = self.generator_next(generator)? {
+            items.push(v);
+        }
+        Ok(Value::list(items))
+    }
+
+    /// Replaces generator arguments of a builtin (`list(g)`, `sum(g)`) with
+    /// the lists of their values.
+    fn drain_generator_args(&mut self, from: usize, count: usize) -> VmResult<()> {
+        for i in from..from + count {
+            let generator = match &self.stack[i] {
+                Value::Foreign(f) if f.as_any().is::<Generator>() => f.clone(),
+                _ => continue,
+            };
+            let generator = generator
+                .as_any()
+                .downcast_ref::<Generator>()
+                .expect("checked");
+            let list = self.drain_generator(generator)?;
+            self.stack[i] = list;
+        }
+        Ok(())
     }
 
     /// Applies a kernel to tensor arguments (and number arguments, the same
@@ -2006,6 +2103,13 @@ impl Vm {
                             }
                             Value::Native(id) => {
                                 let id = *id;
+                                if !matches!(
+                                    builtins::NATIVES[id as usize].name,
+                                    "print" | "str" | "repr" | "typeof"
+                                ) {
+                                    save_ip!();
+                                    check!(self.drain_generator_args(at + 1, argc));
+                                }
                                 if matches!(builtins::NATIVES[id as usize].name, "print" | "str") {
                                     save_ip!();
                                     check!(self.apply_to_text(at + 1, argc));
@@ -2508,12 +2612,30 @@ impl Vm {
                         }
                     }
                     Op::IterInit { dst, src } => {
-                        let iter = check!(ops::make_iter(&reg!(src)));
+                        let iter = match &reg!(src) {
+                            g @ Value::Foreign(f) if f.as_any().is::<Generator>() => g.clone(),
+                            other => check!(ops::make_iter(other)),
+                        };
                         put!(dst, iter);
+                    }
+                    Op::Yield { src } => {
+                        if self.generators == 0 {
+                            throw!(err("YieldError", "`yield` works only inside a function"));
+                        }
+                        self.yielded = Some(reg!(src).clone());
+                        save_ip!();
+                        return Ok(Value::None);
                     }
                     Op::IterNext { iter, dst } => {
                         let next = match &reg!(iter) {
                             Value::Iter(it) => it.borrow_mut().next_value(),
+                            Value::Foreign(f) if f.as_any().is::<Generator>() => {
+                                let f = f.clone();
+                                let generator =
+                                    f.as_any().downcast_ref::<Generator>().expect("checked");
+                                save_ip!();
+                                check!(self.generator_next(generator))
+                            }
                             other => throw!(type_error(format!(
                                 "cannot loop over {}",
                                 other.type_name()
@@ -2746,6 +2868,27 @@ impl Vm {
                                     )
                                 )),
                             }
+                        }
+                        if let Value::Foreign(f) = &self.stack[receiver] {
+                            if f.as_any().is::<Generator>() {
+                                // `g.next()`; any other method sees the
+                                // remaining values as a list.
+                                let f = f.clone();
+                                let generator =
+                                    f.as_any().downcast_ref::<Generator>().expect("checked");
+                                save_ip!();
+                                if self.program.symbols.name(symbol) == "next" {
+                                    let next = check!(self.generator_next(generator));
+                                    self.stack[result_at] = next.unwrap_or(Value::None);
+                                    continue;
+                                }
+                                let list = check!(self.drain_generator(generator));
+                                self.stack[receiver] = list;
+                            }
+                        }
+                        if argc > 0 {
+                            save_ip!();
+                            check!(self.drain_generator_args(receiver + 1, argc as usize));
                         }
                         if let Some(method) = self.builtin_method(&self.stack[receiver], symbol) {
                             save_ip!();
@@ -3245,6 +3388,34 @@ impl super::foreign::Foreign for Shown {
 
     fn display(&self) -> String {
         self.0.clone()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// A paused function's stack, frames and handlers.
+struct GenState {
+    stack: Vec<Value>,
+    frames: Vec<Frame>,
+    handlers: Vec<Handler>,
+}
+
+/// What calling a function with `yield` gives: values made one at a time,
+/// as a loop asks for them.
+struct Generator {
+    name: String,
+    state: RefCell<Option<GenState>>,
+}
+
+impl super::foreign::Foreign for Generator {
+    fn type_name(&self) -> &'static str {
+        "generator"
+    }
+
+    fn display(&self) -> String {
+        format!("<generator {}>", self.name)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

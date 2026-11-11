@@ -668,7 +668,9 @@ impl Renamer<'_> {
                 }
                 self.target(&b.target);
             }
-            StmtKind::Expr(e) | StmtKind::Fail(e) | StmtKind::Defer(e) => self.expr(e),
+            StmtKind::Expr(e) | StmtKind::Fail(e) | StmtKind::Defer(e) | StmtKind::Yield(e) => {
+                self.expr(e)
+            }
             StmtKind::Assign { target, value, op } => {
                 self.expr(value);
                 self.assign_target(target, *op);

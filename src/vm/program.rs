@@ -33,6 +33,8 @@ pub struct Proto {
     pub is_async: bool,
     /// The last parameter takes every remaining argument as a list.
     pub variadic: bool,
+    /// The body has `yield`: calling it makes a generator.
+    pub is_generator: bool,
     /// `kernel fn`: its body lowered for running on tensors, or why it
     /// could not be.
     pub kernel: Option<Rc<Result<super::kernel::Kernel, String>>>,
