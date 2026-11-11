@@ -141,6 +141,8 @@ struct Table {
     /// Type aliases and other names that are types the checker does not
     /// model.
     opaque: HashSet<String>,
+    /// Each trait's default methods (those with a body), by trait name.
+    trait_defaults: HashMap<String, Vec<(String, FnSig)>>,
     /// C functions that pass or return pointers, which only `unsafe:` code
     /// may call.
     raw_externs: HashSet<String>,
@@ -169,6 +171,13 @@ impl Table {
                 }
                 ItemKind::Trait(t) => {
                     self.opaque.insert(t.name.name.clone());
+                    let defaults = t
+                        .methods
+                        .iter()
+                        .filter(|f| matches!(f.body, FnBody::Block(_)))
+                        .map(|f| (f.name.name.clone(), self.signature(f)))
+                        .collect();
+                    self.trait_defaults.insert(t.name.name.clone(), defaults);
                 }
                 _ => {}
             }
@@ -219,7 +228,7 @@ impl Table {
                 ItemKind::Impl(i) => {
                     if let TypeExprKind::Named { path, .. } = &i.target.kind {
                         let name = path.segments.last().map(|s| s.name.clone());
-                        let sigs: Vec<(String, FnSig)> = i
+                        let mut sigs: Vec<(String, FnSig)> = i
                             .methods
                             .iter()
                             .filter_map(|m| match &m.kind {
@@ -227,6 +236,20 @@ impl Table {
                                 _ => None,
                             })
                             .collect();
+                        let trait_name = i.trait_.as_ref().and_then(|t| match &t.kind {
+                            TypeExprKind::Named { path, .. } => {
+                                path.segments.last().map(|s| s.name.clone())
+                            }
+                            _ => None,
+                        });
+                        if let Some(defaults) = trait_name.and_then(|t| self.trait_defaults.get(&t))
+                        {
+                            for (name, sig) in defaults {
+                                if !sigs.iter().any(|(n, _)| n == name) {
+                                    sigs.push((name.clone(), sig.clone()));
+                                }
+                            }
+                        }
                         if let Some(info) = name.and_then(|n| self.types.get_mut(&n)) {
                             info.methods.extend(sigs);
                         }
