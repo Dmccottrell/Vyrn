@@ -1201,6 +1201,14 @@ fn kernels_run_on_numbers_and_on_tensors() {
 }
 
 #[test]
+fn kernels_that_take_tensors_work_on_whole_tensors() {
+    assert_eq!(
+        run("kernel fn scale_rows(x: tensor[f32], k: f32) -> tensor[f32]: return x * k\nmain: print(scale_rows(ones(2), 3.0))\n"),
+        "tensor([3.0, 3.0])\n"
+    );
+}
+
+#[test]
 fn kernels_explain_what_cannot_run_on_tensors() {
     let e = runtime_error(
         "kernel fn noisy(x: f32) -> f32:\n    print(x)\n    return x\nend\nmain:\n    print(noisy(2.0))\n    noisy(ones(3))\nend\n",

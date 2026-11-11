@@ -253,7 +253,7 @@ impl Table {
     fn signature(&self, f: &FnDecl) -> FnSig {
         let generics: Vec<String> = f.generics.iter().map(|g| g.name.name.clone()).collect();
         FnSig {
-            elementwise: f.modifiers.is_kernel,
+            elementwise: f.modifiers.is_kernel && crate::vm::kernel::is_elementwise(f),
             params: f
                 .params
                 .iter()

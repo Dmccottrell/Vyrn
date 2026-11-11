@@ -101,6 +101,18 @@ impl KFn {
     }
 }
 
+/// Whether a kernel works element by element: every parameter is a
+/// number. A kernel that takes tensors works on whole tensors instead.
+pub fn is_elementwise(f: &FnDecl) -> bool {
+    !f.params.is_empty()
+        && f.params.iter().all(|p| {
+            matches!(&p.declared_ty, Some(TypeExpr { kind: TypeExprKind::Named { path, .. }, .. })
+                if path.segments.len() == 1
+                    && matches!(path.segments[0].name.as_str(),
+                        "f32" | "f64" | "float" | "f16" | "bf16" | "int" | "i32" | "i64"))
+        })
+}
+
 /// Lowers a `kernel fn`. `consts` holds the program's numeric constants,
 /// which a kernel may read. The error says what could not be lowered.
 pub fn lower(f: &FnDecl, consts: &HashMap<String, f32>) -> Result<Kernel, String> {

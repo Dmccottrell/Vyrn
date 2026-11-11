@@ -765,7 +765,7 @@ impl Compiler {
                 self.set_pos(decl.name.span);
                 let mut proto = self.function(decl.name.name.clone(), &decl.params, &decl.body);
                 proto.is_async = decl.modifiers.is_async;
-                if decl.modifiers.is_kernel {
+                if decl.modifiers.is_kernel && super::kernel::is_elementwise(decl) {
                     proto.kernel = Some(Rc::new(super::kernel::lower(decl, &self.numeric_consts)));
                 }
                 self.set_proto(slot, proto);
