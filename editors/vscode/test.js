@@ -44,7 +44,7 @@ let patterns = 0;
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, "language-configuration.json"), "utf8"));
 const increase = new RegExp(config.indentationRules.increaseIndentPattern);
 const decrease = new RegExp(config.indentationRules.decreaseIndentPattern);
-assert.ok(increase.test("fn f(x):") && increase.test("    if x > 1:  # big") && !increase.test("    x = 1"));
+assert.ok(increase.test("create f(x):") && increase.test("    if x > 1:  # big") && !increase.test("    x = 1"));
 assert.ok(decrease.test("end") && decrease.test("    else:") && decrease.test("    is Shape.Circle(r):") && !decrease.test("    ending = 1"));
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(`ok: diagnostics parsed, ${patterns} grammar patterns compile`);

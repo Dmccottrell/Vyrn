@@ -160,7 +160,7 @@ source ─▶ syntax tree ─▶ checker (src/check.rs) ─▶ VIR ─▶ LLVM I
    | `any` | `{ i64 tag, i64 payload }` with runtime helpers |
 
 3. **Tensor operations stay library calls.** `@`, element-wise math,
-   placement and `kernel fn`s lower to calls into the same tensor runtime
+   placement and `kernel` functions lower to calls into the same tensor runtime
    the VM uses (`vyrn_rt_matmul(a, b)`), which dispatches to the CPU
    reference, wgpu, or a CUDA backend. The GPU kernels are already native,
    and what the backend removes is the interpretation between them.
@@ -176,7 +176,7 @@ source ─▶ syntax tree ─▶ checker (src/check.rs) ─▶ VIR ─▶ LLVM I
 ### 3.2 What a typed function becomes
 
 ```vyrn
-strict fn dot(a: [f32], b: [f32]) -> f32:
+strict create dot(a: [f32], b: [f32]) -> f32:
     var acc: f32 = 0.0
     each i in 0 until len(a):
         acc += a[i] * b[i]
@@ -227,7 +227,7 @@ compiles this IR as written.)
 **Floating-point order.** Summing floats in a different order can change
 the last bits of the result, so ordinary compiled code keeps the source's
 order exactly, as the VM does, and LLVM leaves this loop scalar. In
-`kernel fn` code, whose results may already differ in the last bits between
+`kernel` function code, whose results may already differ in the last bits between
 CPU and GPU, the backend marks arithmetic `reassoc contract`; with that,
 `opt -O2` for AVX2 turns the same loop into 8-wide vector code (also
 checked). The trade-off is visible in the source, as rule 4 asks.

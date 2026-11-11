@@ -1,6 +1,6 @@
 # Example A (beginner): a grade calculator.
 
-fn letter_for(score):
+create letter_for(score):
     if score >= 90: return "A"
     if score >= 80: return "B"
     if score >= 70: return "C"

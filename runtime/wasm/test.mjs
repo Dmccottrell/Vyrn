@@ -17,7 +17,7 @@ const wasm = readFileSync(join(here, "target/wasm32-unknown-unknown/release/vyrn
 assert.deepEqual(WebAssembly.Module.imports(new WebAssembly.Module(wasm)), [], "the module needs no imports");
 const vyrn = await loadVyrn(wasm);
 
-let r = vyrn.run('fn fib(n: int) -> int:\n    if n < 2: return n\n    return fib(n - 1) + fib(n - 2)\nend\nmain: print(fib(20), tensor([[1.0, 2.0]]) @ tensor([[3.0], [4.0]]))\n');
+let r = vyrn.run('create fib(n: int) -> int:\n    if n < 2: return n\n    return fib(n - 1) + fib(n - 2)\nend\nmain: print(fib(20), tensor([[1.0, 2.0]]) @ tensor([[3.0], [4.0]]))\n');
 assert.deepEqual(r, { ok: true, output: "6765 tensor([[11.0]])\n" });
 
 r = vyrn.run("main:\n    let n = 1\n    n = 2\nend\n");

@@ -7,7 +7,7 @@ struct Layer[D]:
 end
 
 # `@` is the matrix product, `*` is element-wise. B, T and D are shape variables.
-kernel fn feed_forward(x: tensor[f16; B, T, D], w: Layer[D]) -> tensor[f16; B, T, D]:
+kernel create feed_forward(x: tensor[f16; B, T, D], w: Layer[D]) -> tensor[f16; B, T, D]:
     let h = gelu(x @ w.w_up)                  # (B, T, D) @ (D, 4D) -> (B, T, 4D)
     return (x + h @ w.w_down) * w.gain
 end

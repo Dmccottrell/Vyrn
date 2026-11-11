@@ -70,11 +70,11 @@ loop over; `1 to 5` counts from 1 to 5 inclusive (`0 until 5` stops before
 ## 3. Functions, `let` and `var`
 
 ```vyrn
-fn greet(name, excited = false):
+create greet(name, excited = false):
     return "Hello, {name}" + ("!" if excited else ".")
 end
 
-fn area(width: float, height: float) -> float:
+create area(width: float, height: float) -> float:
     return width * height
 end
 
@@ -114,7 +114,7 @@ enum Shape:
     Empty
 end
 
-fn area(s: Shape) -> float:
+create area(s: Shape) -> float:
     when s:
         is Shape.Circle(r): return 3.14159 * r * r
         is Shape.Rect(w, h): return w * h
@@ -122,7 +122,7 @@ fn area(s: Shape) -> float:
     end
 end
 
-fn size(n: int) -> str:
+create size(n: int) -> str:
     if n < 10:
         return "small"
     else if n < 100:
@@ -160,7 +160,7 @@ struct Point:
     x: float
     y: float
 
-    fn length(self) -> float:
+    create length(self) -> float:
         return sqrt(self.x * self.x + self.y * self.y)
     end
 end
@@ -168,7 +168,7 @@ end
 object Counter:
     count: int = 0
 
-    fn add(self, n: int):
+    create add(self, n: int):
         self.count += n
     end
 end
@@ -203,13 +203,13 @@ struct NotFound:
     name: str
 end
 
-fn find(name: str) -> int?:
+create find(name: str) -> int?:
     let people = {"Ada": 36, "Alan": 41}
     if name in people: return people[name]
     return none
 end
 
-fn age_of(name: str) -> int:
+create age_of(name: str) -> int:
     let age = find(name)
     if age == none: fail NotFound(name)
     return age
@@ -244,7 +244,7 @@ an int. `??` gives a default. `fail` stops with an error, and `attempt` /
 ## 7. Doing several things at once
 
 ```vyrn
-async fn fetch(name: str, seconds: float) -> str:
+async create fetch(name: str, seconds: float) -> str:
     await sleep(seconds)
     return "{name} done"
 end
@@ -273,7 +273,7 @@ job 1
 job 2
 ```
 
-Calling an `async fn` starts it right away; `await` waits for its result.
+Calling an `async` function starts it right away; `await` waits for its result.
 While one task waits (here, `sleep`), the others run, so the two fetches
 above take as long as the slower one, not both together. A `channel` passes
 values between tasks, and `async for` reads them as they arrive.
@@ -281,7 +281,7 @@ values between tasks, and `async for` reads them as they arrive.
 ## 8. Tensors and kernels
 
 ```vyrn
-kernel fn leaky(x: f32) -> f32:
+kernel create leaky(x: f32) -> f32:
     return x if x > 0.0 else 0.1 * x
 end
 
@@ -303,7 +303,7 @@ tensor([[-0.2, -0.2]])
 -0.5
 ```
 
-`@` is the matrix product. A `kernel fn` is written for one number and
+`@` is the matrix product. A `kernel` function is written for one number and
 runs on every element of a tensor; inside `on gpu[0]:`, Vyrn turns it into
 a GPU program (see `docs/nn.md`).
 
@@ -331,7 +331,7 @@ locked to an exact version in `vyrn.lock`. Then:
 | Command | Does |
 |---|---|
 | `vyrn run` | runs the project |
-| `vyrn test` | runs every `fn test_...()` in `tests/` |
+| `vyrn test` | runs every `create test_...()` in `tests/` |
 | `vyrn check` | finds mistakes without running |
 | `vyrn fmt` | formats your code in the one Vyrn style |
 | `vyrn build` | makes one file you can copy to any computer and run |

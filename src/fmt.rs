@@ -222,8 +222,8 @@ mod tests {
 
     #[test]
     fn blocks_are_reindented() {
-        let src = "fn f(x):\n  if x > 1:   \n        return 1\n  else if x < 0:\n   return -1\n  else:\n     return 0\n  end\nend\n\n\n\n\nmain:\n\tprint(f(2))  # two\nend";
-        let want = "fn f(x):\n    if x > 1:\n        return 1\n    else if x < 0:\n        return -1\n    else:\n        return 0\n    end\nend\n\n\nmain:\n    print(f(2))  # two\nend\n";
+        let src = "create f(x):\n  if x > 1:   \n        return 1\n  else if x < 0:\n   return -1\n  else:\n     return 0\n  end\nend\n\n\n\n\nmain:\n\tprint(f(2))  # two\nend";
+        let want = "create f(x):\n    if x > 1:\n        return 1\n    else if x < 0:\n        return -1\n    else:\n        return 0\n    end\nend\n\n\nmain:\n    print(f(2))  # two\nend\n";
         assert_eq!(format(src).unwrap(), want);
         // Formatting is stable.
         assert_eq!(format(want).unwrap(), want);
@@ -238,8 +238,8 @@ mod tests {
 
     #[test]
     fn match_else_and_operator_continuations() {
-        let src = "## Doc.\nfn f(x):\n when x:\n  is 1: return 1\n  else:\n   return 0\n end\nend\nmain:\n let total = 1 +\n         2 +\n 3\nend\n";
-        let want = "## Doc.\nfn f(x):\n    when x:\n        is 1: return 1\n        else:\n            return 0\n    end\nend\nmain:\n    let total = 1 +\n        2 +\n        3\nend\n";
+        let src = "## Doc.\ncreate f(x):\n when x:\n  is 1: return 1\n  else:\n   return 0\n end\nend\nmain:\n let total = 1 +\n         2 +\n 3\nend\n";
+        let want = "## Doc.\ncreate f(x):\n    when x:\n        is 1: return 1\n        else:\n            return 0\n    end\nend\nmain:\n    let total = 1 +\n        2 +\n        3\nend\n";
         assert_eq!(format(src).unwrap(), want);
     }
 

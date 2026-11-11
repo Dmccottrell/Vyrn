@@ -290,10 +290,10 @@ in `docs/stdlib.md`).
 ```vyrn
 @link("accel")                       # libaccel.so / accel.dll; omit for libc
 extern "c":
-    fn accel_sum(x: tensor[f32], n: i32) -> f32
-    fn accel_new() -> ptr u8
-    fn accel_add(h: ptr u8, x: tensor[f32], n: i32)
-    fn accel_free(h: ptr u8)
+    create accel_sum(x: tensor[f32], n: i32) -> f32
+    create accel_new() -> ptr u8
+    create accel_add(h: ptr u8, x: tensor[f32], n: i32)
+    create accel_free(h: ptr u8)
 end
 
 main:

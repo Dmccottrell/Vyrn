@@ -118,8 +118,8 @@ fn load(entry: &Path, root: &Path, resolver: &mut Resolver) -> Result<loader::Lo
 }
 
 const NEURAL_V1: &[(&str, &str)] = &[
-    ("lib.vyrn", "use layers (relu1)\n\nfn version() -> str: return \"1.0\"\nfn activate(x: float) -> float: return relu1(x)\n"),
-    ("layers.vyrn", "fn relu1(x: float) -> float: return x if x > 0.0 else 0.0\n"),
+    ("lib.vyrn", "use layers (relu1)\n\ncreate version() -> str: return \"1.0\"\ncreate activate(x: float) -> float: return relu1(x)\n"),
+    ("layers.vyrn", "create relu1(x: float) -> float: return x if x > 0.0 else 0.0\n"),
 ];
 
 #[test]
@@ -134,7 +134,7 @@ fn url_modules_are_fetched_locked_and_cached() {
     host.publish(
         "v2.0.0",
         &"b".repeat(40),
-        &[("lib.vyrn", "fn version() -> str: return \"2.0\"\n")],
+        &[("lib.vyrn", "create version() -> str: return \"2.0\"\n")],
     );
     let cache = dir.0.join("cache");
 
@@ -162,7 +162,7 @@ fn url_modules_are_fetched_locked_and_cached() {
         "a".repeat(40),
         vec![(
             "lib.vyrn".into(),
-            "fn version() -> str: return \"evil\"\n".into(),
+            "create version() -> str: return \"evil\"\n".into(),
         )],
     );
     std::fs::remove_dir_all(&cache).unwrap();
@@ -216,10 +216,10 @@ fn projects_lock_into_vyrn_lock() {
 #[test]
 fn local_modules_have_their_own_namespaces() {
     let dir = TempDir::new("local");
-    dir.write("geo/shapes.vyrn", "struct Point:\n    x: float\n    y: float\nend\nfn load() -> str: return \"geo\"\nfn norm(p: Point) -> float: return sqrt(p.x * p.x + p.y * p.y)\n");
+    dir.write("geo/shapes.vyrn", "struct Point:\n    x: float\n    y: float\nend\ncreate load() -> str: return \"geo\"\ncreate norm(p: Point) -> float: return sqrt(p.x * p.x + p.y * p.y)\n");
     dir.write(
         "store.vyrn",
-        "fn load() -> str: return \"store\"\nmain: print(\"modules do not run their main\")\n",
+        "create load() -> str: return \"store\"\nmain: print(\"modules do not run their main\")\n",
     );
     let main = dir.write(
         "main.vyrn",
@@ -249,7 +249,7 @@ fn errors_name_the_file_they_are_in() {
     let dir = TempDir::new("files");
     dir.write(
         "util.vyrn",
-        "fn half(x: int) -> int:\n    return \"half\"\nend\n",
+        "create half(x: int) -> int:\n    return \"half\"\nend\n",
     );
     let main = dir.write("main.vyrn", "use util\nmain: print(util.half(4))\n");
     let host = FakeHost::default();

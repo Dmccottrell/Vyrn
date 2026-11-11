@@ -10,14 +10,14 @@ struct Entity:
     health: f32 = 100.0
     alive: bool = true
 
-    fn damage(mut self, amount: f32):
+    create damage(mut self, amount: f32):
         self.health -= amount
         self.alive = self.health > 0.0
     end
 end
 
 # `mut world` borrows the pool exclusively; `for mut e` edits each entity in place.
-strict fn step(mut world: [Entity; MAX_ENTITIES], dt: f32):
+strict create step(mut world: [Entity; MAX_ENTITIES], dt: f32):
     each mut e in world:
         if not e.alive: skip
         e.vel += GRAVITY * dt

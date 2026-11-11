@@ -41,7 +41,7 @@
     "declaration": {
       "patterns": [
         {
-          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "match": "\\b(create)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*[\\[(])",
           "captures": {
             "1": { "name": "storage.type.function.vyrn" },
             "2": { "name": "entity.name.function.vyrn" }

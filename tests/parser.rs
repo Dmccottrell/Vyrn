@@ -157,14 +157,14 @@ fn comprehensions_and_lambdas() {
         ex("{k: v each k, v in pairs}"),
         "(map-comp k v (each (k, v) pairs))"
     );
-    assert_eq!(ex("fn(x) => x * 2"), "(fn (x) (* x 2))");
+    assert_eq!(ex("(x) => x * 2"), "(=> (x) (* x 2))");
     assert_eq!(
-        ex("async fn(x, n = 1) => await f(x)"),
-        "(async fn (x, n = 1) (await (call f x)))"
+        ex("async (x, n = 1) => await f(x)"),
+        "(async => (x, n = 1) (await (call f x)))"
     );
     assert_eq!(
-        ex("map(xs, fn(x) => x + 1)"),
-        "(call map xs (fn (x) (+ x 1)))"
+        ex("map(xs, (x) => x + 1)"),
+        "(call map xs (=> (x) (+ x 1)))"
     );
 }
 
@@ -318,8 +318,8 @@ fn try_with_on_region() {
 #[test]
 fn nested_functions_and_doc_comments() {
     assert_eq!(
-        stmts("## Squares a number.\nfn sq(x): return x * x\nprint(sq(3))"),
-        "## Squares a number.\nfn sq(x)\n  return (* x x)\n(call print (call sq 3))\n"
+        stmts("## Squares a number.\ncreate sq(x): return x * x\nprint(sq(3))"),
+        "## Squares a number.\ncreate sq(x)\n  return (* x x)\n(call print (call sq 3))\n"
     );
 }
 
@@ -337,15 +337,15 @@ fn lines_continue_after_operators_and_inside_brackets() {
 fn functions_with_modifiers_and_results() {
     assert_eq!(
         tree(
-            "pub strict fn step(mut world: [Entity], dt: f32 = 0.016):\n    pass_through()\nend\n\
-             async fn fetch(id: u64) -> User fails NotFound: return await db.find(id)\n\
-             export \"wasm\" fn render(own scene: Scene) -> int:\n    return 0\nend\n\
-             kernel fn mm[T](a: tensor[T; M, K], b: tensor[T; K, N]) -> tensor[T; M, N]: return a @ b\n"
+            "pub strict create step(mut world: [Entity], dt: f32 = 0.016):\n    pass_through()\nend\n\
+             async create fetch(id: u64) -> User fails NotFound: return await db.find(id)\n\
+             export \"wasm\" create render(own scene: Scene) -> int:\n    return 0\nend\n\
+             kernel create mm[T](a: tensor[T; M, K], b: tensor[T; K, N]) -> tensor[T; M, N]: return a @ b\n"
         ),
-        "pub strict fn step(mut world: [Entity], dt: f32 = 0.016)\n  (call pass_through)\n\
-         async fn fetch(id: u64) -> User fails NotFound\n  return (await (call (. db find) id))\n\
-         export \"wasm\" fn render(own scene: Scene) -> int\n  return 0\n\
-         kernel fn mm[T](a: tensor[T; M, K], b: tensor[T; K, N]) -> tensor[T; M, N]\n  return (@ a b)\n"
+        "pub strict create step(mut world: [Entity], dt: f32 = 0.016)\n  (call pass_through)\n\
+         async create fetch(id: u64) -> User fails NotFound\n  return (await (call (. db find) id))\n\
+         export \"wasm\" create render(own scene: Scene) -> int\n  return 0\n\
+         kernel create mm[T](a: tensor[T; M, K], b: tensor[T; K, N]) -> tensor[T; M, N]\n  return (@ a b)\n"
     );
 }
 
@@ -355,7 +355,7 @@ fn types() {
         tree(
             "type A = {str: [u8]}\n\
              type B = (int, str?)\n\
-             type C = fn(int, int) -> int\n\
+             type C = (int, int) -> int\n\
              type D = int | str | float\n\
              type E = shared Node[T]?\n\
              type F = ref mut Canvas\n\
@@ -365,7 +365,7 @@ fn types() {
         ),
         "type A = {str: [u8]}\n\
          type B = (int, str?)\n\
-         type C = fn(int, int) -> int\n\
+         type C = (int, int) -> int\n\
          type D = int | str | float\n\
          type E = shared Node[T]?\n\
          type F = ref mut Canvas\n\
@@ -383,7 +383,7 @@ fn structs_classes_and_enums() {
              \x20   pos: vec3\n\
              \x20   health: f32 = 100.0\n\
              \x20   pub name = \"hero\"\n\
-             \x20   fn damage(mut self, n: f32):\n\
+             \x20   create damage(mut self, n: f32):\n\
              \x20       self.health -= n\n\
              \x20   end\n\
              end\n\
@@ -394,7 +394,7 @@ fn structs_classes_and_enums() {
          \x20 pos: vec3\n\
          \x20 health: f32 = 100.0\n\
          \x20 pub name = \"hero\"\n\
-         \x20 fn damage(mut self, n: f32)\n\
+         \x20 create damage(mut self, n: f32)\n\
          \x20   (. self health) -= n\n\
          object Enemy(Actor)\n  speed = 2\n\
          enum Shape\n  Circle(radius: f32)\n  Rect(f32, f32)\n  Empty\n  Big = 10\n"
@@ -405,19 +405,19 @@ fn structs_classes_and_enums() {
 fn traits_impls_and_externs() {
     assert_eq!(
         tree(
-            "trait Drawable(Sized):\n    fn draw(self, mut frame: Frame)\n    fn size(self) -> int\nend\n\
-             impl Drawable for Shape:\n    fn draw(self, mut frame: Frame): frame.add(self)\nend\n\
-             impl [T] Stack[T]:\n    fn push(mut self, own x: T): self.items.append(x)\nend\n\
-             impl [Entity]:\n    fn alive(self): return self\nend\n\
-             extern \"js\":\n    fn log(msg: str)\nend\n\
-             extern \"c\" fn puts(s: ptr u8) -> i32\n"
+            "trait Drawable(Sized):\n    create draw(self, mut frame: Frame)\n    create size(self) -> int\nend\n\
+             impl Drawable for Shape:\n    create draw(self, mut frame: Frame): frame.add(self)\nend\n\
+             impl [T] Stack[T]:\n    create push(mut self, own x: T): self.items.append(x)\nend\n\
+             impl [Entity]:\n    create alive(self): return self\nend\n\
+             extern \"js\":\n    create log(msg: str)\nend\n\
+             extern \"c\" create puts(s: ptr u8) -> i32\n"
         ),
-        "trait Drawable(Sized)\n  fn draw(self, mut frame: Frame)\n  fn size(self) -> int\n\
-         impl Drawable for Shape\n  fn draw(self, mut frame: Frame)\n    (call (. frame add) self)\n\
-         impl[T] Stack[T]\n  fn push(mut self, own x: T)\n    (call (. (. self items) append) x)\n\
-         impl [Entity]\n  fn alive(self)\n    return self\n\
-         extern \"js\"\n  fn log(msg: str)\n\
-         extern \"c\"\n  fn puts(s: ptr u8) -> i32\n"
+        "trait Drawable(Sized)\n  create draw(self, mut frame: Frame)\n  create size(self) -> int\n\
+         impl Drawable for Shape\n  create draw(self, mut frame: Frame)\n    (call (. frame add) self)\n\
+         impl[T] Stack[T]\n  create push(mut self, own x: T)\n    (call (. (. self items) append) x)\n\
+         impl [Entity]\n  create alive(self)\n    return self\n\
+         extern \"js\"\n  create log(msg: str)\n\
+         extern \"c\"\n  create puts(s: ptr u8) -> i32\n"
     );
 }
 
@@ -532,13 +532,13 @@ fn spans_point_at_the_source() {
 
 #[test]
 fn missing_colon_gets_a_hint() {
-    let e = one_error("fn area(w, h)\n    return w * h\nend\n");
+    let e = one_error("create area(w, h)\n    return w * h\nend\n");
     assert_eq!(
         e.message,
-        "expected `:` to end the `fn` line, found the end of the line"
+        "expected `:` to end the `create` line, found the end of the line"
     );
     assert!(e.hint.unwrap().contains("ends with `:`"));
-    assert_eq!((e.span.start.line, e.span.start.column), (1, 14));
+    assert_eq!((e.span.start.line, e.span.start.column), (1, 18));
 }
 
 #[test]
@@ -558,15 +558,15 @@ fn unclosed_block_points_at_its_header() {
 #[test]
 fn recovery_reports_independent_errors_once_each() {
     let src = "\
-fn a()
+create a()
     return 1
 end
 
-fn b():
+create b():
     let = 2
 end
 
-fn c():
+create c():
     return 3
 end
 ";
@@ -576,8 +576,8 @@ end
     assert_eq!(errors[1].span.start.line, 6);
     // `b` and `c` survive: the broken `a` header did not swallow them.
     let printed = pretty::module(&module);
-    assert!(printed.contains("fn b()"), "{printed}");
-    assert!(printed.contains("fn c()\n  return 3"), "{printed}");
+    assert!(printed.contains("create b()"), "{printed}");
+    assert!(printed.contains("create c()\n  return 3"), "{printed}");
 }
 
 #[test]
@@ -618,7 +618,12 @@ fn python_spellings_get_vyrn_hints() {
         (
             "def area(w):\n    return w\nend\n",
             "`def` is not a Vyrn keyword",
-            "fn",
+            "create",
+        ),
+        (
+            "fn area(w):\n    return w\nend\n",
+            "`fn` is not a Vyrn keyword",
+            "create",
         ),
         ("import os\n", "`import` is not a Vyrn keyword", "use"),
         (
@@ -779,11 +784,11 @@ fn declaration_errors() {
         "a struct cannot extend another type"
     );
     assert_eq!(
-        one_error("trait T:\n    fn f(self): return 1\nend\n").message,
+        one_error("trait T:\n    create f(self): return 1\nend\n").message,
         "this function cannot have a body"
     );
     assert_eq!(
-        one_error("fn main():\n    go()\nend\n").message,
+        one_error("create main():\n    go()\nend\n").message,
         "`main` is not a function name"
     );
     assert!(one_error("main:\n    a = 1\nend\nmain:\n    b = 2\nend\n")

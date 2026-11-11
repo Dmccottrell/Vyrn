@@ -303,11 +303,11 @@ fn new(args: &[String]) -> ExitCode {
         ),
         (
             "greeting.vyrn",
-            "fn greet(name: str) -> str:\n    return \"Hello, {name}!\"\nend\n".to_string(),
+            "create greet(name: str) -> str:\n    return \"Hello, {name}!\"\nend\n".to_string(),
         ),
         (
             "tests/test_greeting.vyrn",
-            "# Run with `vyrn test`.\n\nuse greeting (greet)\n\nfn test_greet():\n    assert(greet(\"Ada\") == \"Hello, Ada!\")\nend\n".to_string(),
+            "# Run with `vyrn test`.\n\nuse greeting (greet)\n\ncreate test_greet():\n    assert(greet(\"Ada\") == \"Hello, Ada!\")\nend\n".to_string(),
         ),
         (".gitignore", "build/\n".to_string()),
     ];
@@ -337,7 +337,7 @@ fn test(args: &[String]) -> ExitCode {
     collect_vyrn_files(&start, &mut files);
     if files.is_empty() {
         eprintln!(
-            "no tests found in {}; a test is a `fn test_...()` in a .vyrn file there",
+            "no tests found in {}; a test is a `create test_...()` in a .vyrn file there",
             start.display()
         );
         return ExitCode::FAILURE;

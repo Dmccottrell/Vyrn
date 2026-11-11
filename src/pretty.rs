@@ -174,7 +174,7 @@ pub fn expr(expr: &Expr) -> String {
             params: ps,
             body,
         } => format!(
-            "({}fn ({}) {})",
+            "({}=> ({}) {})",
             if *is_async { "async " } else { "" },
             params(ps),
             self::expr(body)
@@ -222,12 +222,11 @@ pub fn type_expr(ty: &TypeExpr) -> String {
         TypeExprKind::Map { key, value } => format!("{{{}: {}}}", type_expr(key), type_expr(value)),
         TypeExprKind::Tuple(items) => format!("({})", join(items.iter().map(type_expr), ", ")),
         TypeExprKind::Fn { params, returns } => format!(
-            "fn({}){}",
+            "({}) -> {}",
             join(params.iter().map(type_expr), ", "),
             returns
                 .as_ref()
-                .map(|r| format!(" -> {}", type_expr(r)))
-                .unwrap_or_default()
+                .map_or_else(|| "none".to_string(), |r| type_expr(r))
         ),
         TypeExprKind::Optional(inner) => format!("{}?", type_expr(inner)),
         TypeExprKind::Union(members) => join(members.iter().map(type_expr), " | "),
@@ -515,7 +514,7 @@ impl Printer {
             None => {}
         }
         head.push_str(&format!(
-            "fn {}{}({}){}",
+            "create {}{}({}){}",
             f.name.name,
             generics(&f.generics),
             params(&f.params),

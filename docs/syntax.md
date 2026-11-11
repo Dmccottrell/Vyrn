@@ -2,7 +2,7 @@
 
 Vyrn keeps what makes Python easy to read (header lines ending in `:`,
 indentation, slicing, comprehensions, type hints, `a if c else b`) but has its
-own vocabulary: `fn`, `each`, `loop`, `when`, `using`, `attempt`, `object`.
+own vocabulary: `create`, `each`, `loop`, `when`, `using`, `attempt`, `object`.
 Each word says what the line does, so Vyrn code is recognisably Vyrn. Every block closes with `end`,
 so pasted or reformatted code cannot silently change meaning.
 
@@ -66,7 +66,7 @@ The formal definition is [`grammar.ebnf`](grammar.ebnf).
 
 | Python | Vyrn | Why |
 |---|---|---|
-| `def f(x):` | `fn f(x):` ... `end` | Shorter; one keyword for functions and lambdas |
+| `def f(x):` | `create f(x):` ... `end` | Says what the line does: it creates a function |
 | `elif c:` | `else if c:` | Two plain words, as in most languages |
 | `for x in xs:` | `each x in xs:` | Says what happens: once for each item |
 | `while c:` | `loop c:` | One word for every loop; `loop:` alone runs forever |
@@ -75,7 +75,8 @@ The formal definition is [`grammar.ebnf`](grammar.ebnf).
 | `try:` / `finally:` | `attempt:` / `always:` | `always` runs whether or not something failed |
 | `class Point:` | `object Point:` | Says what it makes |
 | `[x * 2 for x in xs]` | `[x * 2 each x in xs]` | Comprehensions read like loops |
-| `lambda x: x * 2` | `fn(x) => x * 2` | Same keyword as named functions |
+| `lambda x: x * 2` | `(x) => x * 2` or `x => x * 2` | No keyword: the arrow says it all |
+| `Callable[[int], str]` | `(int) -> str` | A function type looks like a function |
 | `f"Hi {name}"` | `"Hi {name}"` | Every string interpolates; no prefix to forget |
 | `True` `False` `None` | `true` `false` `none` | Lowercase like every other keyword |
 | `break` / `continue` | `stop` / `skip` | Plain English |
@@ -90,7 +91,9 @@ The formal definition is [`grammar.ebnf`](grammar.ebnf).
 Writing a Python word out of habit is not a mystery error: the parser names
 the Vyrn word, as in "`while` is not a Vyrn keyword" with the hint "write
 `loop condition:`". The retired words (`while`, `match`, `class`, ...) are
-ordinary names in Vyrn, so `match = find(xs)` is fine.
+ordinary names in Vyrn, so `match = find(xs)` is fine. `create` is a
+keyword only where it declares a function (`create greet(name):`), so
+`create(x)` and `db.create(row)` are ordinary calls.
 
 ### Added for 2026-era code
 
@@ -109,7 +112,7 @@ ordinary names in Vyrn, so `match = find(xs)` is fine.
 | `region frame:`, `on frame` | Memory arena freed in one step |
 | `route GET "/users/{id}" (id: u64):` | HTTP route, implicitly async |
 | `spawn task`, `par each` | Concurrent task, parallel loop |
-| `strict fn`, `kernel fn` | Fully typed function, GPU/SIMD function |
+| `strict create`, `kernel create` | Fully typed function, GPU/SIMD function |
 
 ## The four examples
 

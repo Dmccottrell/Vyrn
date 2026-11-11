@@ -1,7 +1,7 @@
-//! `kernel fn`: functions on numbers that also run on whole tensors.
+//! `kernel create`: functions on numbers that also run on whole tensors.
 //!
 //! ```vyrn
-//! kernel fn swish(x: f32, beta: f32) -> f32:
+//! kernel create swish(x: f32, beta: f32) -> f32:
 //!     return x / (1.0 + exp(-beta * x))
 //! end
 //!
@@ -113,7 +113,7 @@ pub fn is_elementwise(f: &FnDecl) -> bool {
         })
 }
 
-/// Lowers a `kernel fn`. `consts` holds the program's numeric constants,
+/// Lowers a `kernel create` function. `consts` holds the program's numeric constants,
 /// which a kernel may read. The error says what could not be lowered.
 pub fn lower(f: &FnDecl, consts: &HashMap<String, f32>) -> Result<Kernel, String> {
     let FnBody::Block(body) = &f.body else {
@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn kernels_lower_and_run() {
-        let k = kernel("kernel fn swish(x: f32, beta: f32) -> f32:\n    let s = 1.0 / (1.0 + exp(-beta * x))\n    return x * s if x > -20.0 else 0.0\nend\n").unwrap();
+        let k = kernel("kernel create swish(x: f32, beta: f32) -> f32:\n    let s = 1.0 / (1.0 + exp(-beta * x))\n    return x * s if x > -20.0 else 0.0\nend\n").unwrap();
         let out = k.run_cpu(&[Input::Values(&[0.0, 1.0, -30.0]), Input::Scalar(1.0)], 3);
         assert_eq!(out[0], 0.0);
         assert!((out[1] - 0.731_058_6).abs() < 1e-6);
@@ -478,18 +478,18 @@ mod tests {
         assert!(wgsl.contains("let p0 = input0[i];"), "{wgsl}");
         assert!(wgsl.contains("let p1 = scalars[0u];"), "{wgsl}");
         assert!(wgsl.contains("let l0 = "), "{wgsl}");
-        let k = kernel("kernel fn f(x: f32) -> f32: return x * BETA\n").unwrap();
+        let k = kernel("kernel create f(x: f32) -> f32: return x * BETA\n").unwrap();
         assert_eq!(k.run_cpu(&[Input::Scalar(3.0)], 1), vec![6.0]);
     }
 
     #[test]
     fn unsupported_bodies_say_why() {
-        let e =
-            kernel("kernel fn f(x: f32) -> f32:\n    print(x)\n    return x\nend\n").unwrap_err();
+        let e = kernel("kernel create f(x: f32) -> f32:\n    print(x)\n    return x\nend\n")
+            .unwrap_err();
         assert_eq!(e, "its body is not `let` bindings followed by one `return`");
-        let e = kernel("kernel fn f(x: f32) -> f32: return sin(x)\n").unwrap_err();
+        let e = kernel("kernel create f(x: f32) -> f32: return sin(x)\n").unwrap_err();
         assert!(e.contains("it calls `sin`"), "{e}");
-        let e = kernel("kernel fn f(xs: [f32]) -> f32: return 1.0\n").unwrap_err();
+        let e = kernel("kernel create f(xs: [f32]) -> f32: return 1.0\n").unwrap_err();
         assert_eq!(e, "parameter `xs` is not a number type");
     }
 }

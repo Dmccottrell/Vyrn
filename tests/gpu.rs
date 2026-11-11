@@ -200,7 +200,7 @@ fn generated_kernel_shaders_match_the_cpu() {
     use vyrn::vm::tensor::KernelArg;
     let Some(gpu) = backend() else { return };
     let module = vyrn::parse(
-        "kernel fn f(x: f32, y: f32, k: f32) -> f32:\n    let g = 1.0 / (1.0 + exp(-k * x))\n    let h = max(y, -1.0) ** 2.0\n    return x * g + tanh(h) if x > y else gelu(x) - abs(y) + sqrt(abs(x)) + min(x, y)\nend\n",
+        "kernel create f(x: f32, y: f32, k: f32) -> f32:\n    let g = 1.0 / (1.0 + exp(-k * x))\n    let h = max(y, -1.0) ** 2.0\n    return x * g + tanh(h) if x > y else gelu(x) - abs(y) + sqrt(abs(x)) + min(x, y)\nend\n",
     )
     .unwrap();
     let vyrn::ast::ItemKind::Fn(f) = &module.items[0].kind else {

@@ -346,12 +346,34 @@ impl<'src> Lexer<'src> {
             TokenKind::Punct(Punct::Underscore)
         } else if after_dot {
             TokenKind::Ident(text.to_string())
+        } else if text == "create" && !self.declares_a_function() {
+            // `create` is a keyword only where it declares a function
+            // (`create greet(name):`), so `create(x)` stays an ordinary call.
+            TokenKind::Ident(text.to_string())
         } else if let Some(keyword) = Keyword::lookup(text) {
             TokenKind::Keyword(keyword)
         } else {
             TokenKind::Ident(text.to_string())
         };
         self.push(kind, start);
+    }
+
+    /// After the word `create`: whether a function name and its `(` or
+    /// `[` follow on the same line.
+    fn declares_a_function(&self) -> bool {
+        let rest = self.src[self.index..].trim_start_matches([' ', '\t']);
+        let Some(first) = rest.chars().next() else {
+            return false;
+        };
+        if !is_ident_start(first) || rest.len() == self.src.len() - self.index {
+            return false;
+        }
+        let name_len = rest
+            .char_indices()
+            .find(|&(_, c)| !is_ident_continue(c))
+            .map_or(rest.len(), |(i, _)| i);
+        let after = rest[name_len..].trim_start_matches([' ', '\t']);
+        after.starts_with('(') || after.starts_with('[')
     }
 
     // ---- numbers --------------------------------------------------------
@@ -860,8 +882,16 @@ mod tests {
     #[test]
     fn every_keyword_round_trips() {
         for &keyword in K::ALL {
-            assert_eq!(kinds(keyword.as_str())[0], T::Keyword(keyword));
+            // `create` is a keyword only before a function's name.
+            let src = if keyword == K::Fn {
+                "create f()"
+            } else {
+                keyword.as_str()
+            };
+            assert_eq!(kinds(src)[0], T::Keyword(keyword));
         }
+        assert_eq!(kinds("create(x)")[0], ident("create"));
+        assert_eq!(kinds("create = 1")[0], ident("create"));
     }
 
     #[test]
@@ -917,7 +947,7 @@ mod tests {
     #[test]
     fn header_lines_end_with_a_colon_and_a_newline() {
         assert_eq!(
-            kinds("fn area(w, h) -> f32:\n    return w * h\nend"),
+            kinds("create area(w, h) -> f32:\n    return w * h\nend"),
             vec![
                 T::Keyword(K::Fn),
                 ident("area"),
@@ -1280,7 +1310,7 @@ mod tests {
     #[test]
     fn doc_comments_attach_to_the_next_line() {
         assert_eq!(
-            kinds("## Moves one step.\nfn step()\n### banner ###\n# plain"),
+            kinds("## Moves one step.\ncreate step()\n### banner ###\n# plain"),
             vec![
                 T::DocComment("Moves one step.".to_string()),
                 T::Keyword(K::Fn),

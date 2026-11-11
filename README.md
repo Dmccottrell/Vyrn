@@ -15,7 +15,7 @@ The type checker, borrow checker and native backends do not exist yet.
 - [`docs/stdlib.md`](docs/stdlib.md): the standard library: the Prelude, `std.http`, `std.fs`, `std.task` and `std.nn`
 - [`docs/principles.md`](docs/principles.md): the five rules every feature is checked against, and what Vyrn takes from each language
 - [`docs/ffi.md`](docs/ffi.md): the Python and C bridges, zero-copy tensors, and the decentralized module resolver
-- [`docs/nn.md`](docs/nn.md): `kernel fn` on tensors, its lowering to WGSL, and tensor memory layout
+- [`docs/nn.md`](docs/nn.md): `kernel` function on tensors, its lowering to WGSL, and tensor memory layout
 - [`docs/deploy.md`](docs/deploy.md): `vyrn build --target=...` for static Linux binaries and edge WebAssembly, and the LLVM backend design
 
 ## Examples
@@ -45,7 +45,7 @@ cd hello && vyrn run
 | `vyrn new <name>` | Creates a project: `vyrn.toml`, `main.vyrn`, a module and a test |
 | `vyrn run [file]` | Runs the project (or one file) |
 | `vyrn check [file]` | Finds type, `let`, `strict` and borrow errors without running |
-| `vyrn test` | Runs every `fn test_...()` in `tests/` |
+| `vyrn test` | Runs every `create test_...()` in `tests/` |
 | `vyrn fmt [--check]` | Formats every file in the one Vyrn style |
 | `vyrn add github.com/ann/neural@v1` | Fetches a module and locks its exact commit and content hash in `vyrn.lock` |
 | `vyrn fetch` | Downloads every locked module, to work offline |

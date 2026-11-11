@@ -196,7 +196,7 @@ development.
 
 **Tasks in the interpreter.** Tasks are stackful: a suspended task keeps
 its registers and call frames, so any function can `await`. Calling an
-`async fn` starts a task at once and runs it until it first waits (as in
+`async` function starts a task at once and runs it until it first waits (as in
 JavaScript); the caller gets a task handle. `await` takes a task, a
 channel, or a tuple or list of tasks (`join(a, b)` builds one).
 `sleep(seconds)` and `channel()` (with `send`, `close`, `len`) are
@@ -307,7 +307,7 @@ Consequences:
   with generational indices. A `Handle[T]` is 8 bytes, survives reallocation and
   detects use after removal.
 - **Columns are tensors.** `world.pos` is a zero-copy `tensor[f32; N, 3]` view.
-  The same bytes can be iterated by game code, passed to a `kernel fn`, or
+  The same bytes can be iterated by game code, passed to a `kernel` function, or
   uploaded to a GPU buffer without conversion.
 - **Parallelism falls out of the layout.** `par each mut e in world` splits by
   index range. The borrow checker proves iterations touch disjoint rows.
@@ -325,7 +325,7 @@ struct Entity:
     alive: bool = true
 end
 
-strict fn step(mut world: [Entity], dt: f32):
+strict create step(mut world: [Entity], dt: f32):
     each mut e in world:
         if not e.alive: skip
         e.vel += GRAVITY * dt
@@ -333,7 +333,7 @@ strict fn step(mut world: [Entity], dt: f32):
     end
 end
 
-fn lowest_point(world: [Entity]) -> f32: return min(world.pos[:, 1])
+create lowest_point(world: [Entity]) -> f32: return min(world.pos[:, 1])
 ```
 
 What the compiler does with it:
@@ -387,7 +387,7 @@ General code and tensor code start in the same IR and separate late.
            `--> LLVM -> AVX-512 / NEON / SVE                  (CPU fallback)
 ```
 
-- **Region formation** happens in VIR. Any `kernel fn` is one region. In other
+- **Region formation** happens in VIR. Any `kernel` function is one region. In other
   functions, adjacent tensor instructions are grouped automatically. Scalar code
   between tensor operations stays on the CPU path and calls into the region.
 - **What crosses the boundary** is a typed handle: (device, buffer, dtype, shape,
@@ -455,7 +455,7 @@ not do it.
 ### 4.5 Tensor example
 
 ```vyrn
-kernel fn attention(
+kernel create attention(
     q: tensor[f16; B, H, T, D],
     k: tensor[f16; B, H, T, D],
     v: tensor[f16; B, H, T, D],
@@ -465,7 +465,7 @@ kernel fn attention(
     return softmax(where(mask, scores, -inf), axis = -1) @ v
 end
 
-strict fn generate(model: Model on gpu[0 to 3], prompt: tensor[i32; B, T]) -> tensor[i32; B]:
+strict create generate(model: Model on gpu[0 to 3], prompt: tensor[i32; B, T]) -> tensor[i32; B]:
     var h = model.embed[prompt]
     each layer in model.layers:
         on layer.device: h = layer.forward(h)
@@ -488,7 +488,7 @@ What the compiler does with it:
 
 ### 5.1 Tasks
 
-- `async fn` compiles to a stackless state machine. A suspended task is a small
+- `async` function compiles to a stackless state machine. A suspended task is a small
   heap or region object, typically a few hundred bytes, so millions can exist.
 - `spawn f()` starts a task and returns a handle. `await` suspends.
 - Scheduler: M:N work stealing by default. Servers can select thread-per-core,
@@ -559,7 +559,7 @@ end
 
 - Both backends emit Wasm. The dev backend targets it directly for fast browser
   iteration.
-- `export "wasm" fn` and `extern "js"` generate the JavaScript glue and
+- `export "wasm" create` and `extern "js"` generate the JavaScript glue and
   TypeScript declarations.
 - `await` on a JavaScript promise suspends the task and resumes from the host
   event loop.
@@ -596,11 +596,11 @@ Python and annotations buy static errors where they are written.
 | Rule | Example it rejects |
 |---|---|
 | Annotated bindings, assignments, arguments, returns and fields match | `let n: int = "seven"`, `area(2, "3")` |
-| A function with a return type returns on every path | `fn sign(x: int) -> int` ending in an `if` with no `else` |
+| A function with a return type returns on every path | `create sign(x: int) -> int` ending in an `if` with no `else` |
 | Fields and methods exist on structs and classes declared in the file (base classes included) | `p.z` on a `Point` |
 | Obvious operator mistakes between known scalars | `1 + "a"` |
 | `let` is not reassigned, passed as `mut`, or changed through a struct field or `mut self` method | `let limit = 10` then `limit = 20` |
-| `strict`/`kernel`: typed parameters, no `any`, variables declared with `let`/`var`, parameters read-only unless `mut` | `strict fn scale(v, k: float)` |
+| `strict`/`kernel`: typed parameters, no `any`, variables declared with `let`/`var`, parameters read-only unless `mut` | `strict create scale(v, k: float)` |
 | No use after `move`, including "may have been moved" across branches and loop iterations | `keep(move xs)` then `print(xs)` |
 | A `mut` argument is the only use of that variable in the call | `swap(mut xs, mut xs)`, `add(mut xs, xs)` |
 | An argument for a `mut` parameter says `mut` | `reset(xs)` where `reset(mut xs)` |
@@ -608,7 +608,7 @@ Python and annotations buy static errors where they are written.
 | Changing a field of a plain `each` loop's struct copy, which is lost | `each e in es: e.hp = 10` |
 | A `T?` is checked before it is used as a `T`: narrowed by `if x != none:`, an early `return`, `and`, `??`, `?.` or `if let` | `u.name` where `u: User?` |
 | A `when` over an enum declared here, a `bool` or a `T?` handles every case or has `else:` | a `when` on `Shape` without `Shape.Empty` |
-| Generic functions infer their type parameters at each call | `pair(1, "a")` for `fn pair[T](a: T, b: T)` |
+| Generic functions infer their type parameters at each call | `pair(1, "a")` for `create pair[T](a: T, b: T)` |
 | C functions that pass or return pointers are called in `unsafe:` | `accel_add(h, x, n)` outside `unsafe:` |
 
 The `each mut` rule is what makes the interpreter's in-place loop sound: the

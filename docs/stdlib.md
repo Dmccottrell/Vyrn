@@ -54,7 +54,7 @@ Vyrn's spelling as follows:
 | Optional | `T?` | `none` or a `T`; `x?.f` and `x ?? default` |
 | Numbers | `int` (`i8` to `u64`), `float` (`f16`, `bf16`, `f32`, `f64`), `bool` | |
 | Tuples | `(A, B)` | `()` is the unit type |
-| Tasks | `Task[T]`, `Channel[T]` | What an `async fn` call and `channel()` return |
+| Tasks | `Task[T]`, `Channel[T]` | What an `async` function call and `channel()` return |
 | Errors | `Error` and the built-in kinds (`IoError`, `KeyError`, `TypeError`, `NotFound`, ...) | Any struct can be passed to `fail` |
 
 ### 2.2 Functions
@@ -163,7 +163,7 @@ where copies matter: model weights, datasets, logs larger than RAM.
 ```vyrn
 use std.fs
 
-fn count_errors(path: str) -> int:
+create count_errors(path: str) -> int:
     var errors = 0
     using fs.map(path) as data:
         each line in data.lines():
@@ -204,7 +204,7 @@ memory once. Programs keep the same code and lose only the laziness.
 
 ## 5. `std.task`: green threads and supervision
 
-**Runs today, in the language itself:** every `async fn` call starts a
+**Runs today, in the language itself:** every `async` function call starts a
 *green thread*. Tasks are stackful, so any function can `await`, and each
 suspended task costs only its own registers and frames. A single-threaded
 scheduler runs them with timers and channels, reports deadlocks, and warns
@@ -216,12 +216,12 @@ about failed tasks nobody awaited. The Prelude keeps the everyday part:
 ```vyrn
 use std.task
 
-async fn fetch(url: str) -> str:
+async create fetch(url: str) -> str:
     await sleep(0.1)
     return "page at {url}"
 end
 
-async fn crawl(urls: [str]) -> [str]:
+async create crawl(urls: [str]) -> [str]:
     var pages = []
     # Structured concurrency: the group outlives none of its tasks. Leaving
     # the block waits for all of them, and the first failure cancels the rest.
@@ -269,7 +269,7 @@ need versioning, so they live in a module:
 | API | Purpose |
 |---|---|
 | `nn.load(path, dtype = "q4", devices = gpu[0])` | Loads safetensors through `fs.map`, quantizes on the way if asked, and spreads layers over devices with `fit` |
-| `nn.Linear`, `nn.Embedding`, `nn.RMSNorm`, `nn.Attention`, `nn.MLP` | Layers as structs: weights are fields, `forward` is a `kernel fn` |
+| `nn.Linear`, `nn.Embedding`, `nn.RMSNorm`, `nn.Attention`, `nn.MLP` | Layers as structs: weights are fields, `forward` is a `kernel` function |
 | `nn.KVCache(layers, max_tokens)` | Preallocated attention cache, placed with the layers |
 | `nn.Tokenizer.load(path)` | Hugging Face `tokenizer.json` (BPE, byte-level and SentencePiece) |
 | `nn.sample(logits, temperature, top_k, top_p)` | Next-token sampling |

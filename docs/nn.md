@@ -7,7 +7,7 @@ mechanism needs, are design. Each section says which applies.
 
 ## 1. The model a developer learns
 
-A `kernel fn` is written on numbers. Called with numbers, it is an ordinary
+A `kernel` function is written on numbers. Called with numbers, it is an ordinary
 function. Called with tensors, it runs once per element, on whichever
 device the tensors live on. That is all there is to learn (rule 2, the
 five-minute test):
@@ -16,12 +16,12 @@ five-minute test):
 const BETA = 1.5
 
 ## Swish with a sharpness: x * sigmoid(beta * x).
-kernel fn swish(x: f32, beta: f32) -> f32:
+kernel create swish(x: f32, beta: f32) -> f32:
     let gate = 1.0 / (1.0 + exp(-beta * x))
     return x * gate
 end
 
-kernel fn mix(a: f32, b: f32, t: f32) -> f32:
+kernel create mix(a: f32, b: f32, t: f32) -> f32:
     return a + (b - a) * t
 end
 
@@ -55,7 +55,7 @@ error: kernel `noisy` works on numbers, but cannot run on tensors because
 ## 2. How a kernel becomes WGSL
 
 ```text
-kernel fn swish(...)          syntax tree (FnDecl, `kernel` modifier)
+kernel create swish(...)      syntax tree (FnDecl, `kernel` modifier)
         │  src/vm/kernel.rs: lower()
         ▼
 Kernel IR                     params, let-bound locals, one result expression
@@ -70,13 +70,13 @@ WGSL compute shader           direct evaluation over the elements
 dispatch: one invocation per element, 64 per workgroup
 ```
 
-1. **Lowering.** At compile time, every `kernel fn` body is lowered to a
+1. **Lowering.** At compile time, every `kernel` function body is lowered to a
    small expression IR: parameters, `let` locals in order, one result.
    Names resolve to parameters, earlier locals, or numeric constants, which
    are folded in. The IR is stored with the function (`Proto::kernel`), or
    the reason it could not be lowered.
 2. **Dispatch.** A call with any tensor argument takes the VM's rarely-used
-   call path, shared with `async fn`, so ordinary calls pay nothing for it.
+   call path, shared with `async` function, so ordinary calls pay nothing for it.
    It checks shapes and devices and asks the tensors' backend to run the
    kernel. The reference backend declines, and the IR is evaluated on the
    CPU.
@@ -150,12 +150,12 @@ simple enough to guarantee:
 
 Element-wise kernels cover activations, gates, residual mixing, scaling and
 masks. A custom attention mechanism also needs reductions and index
-arithmetic. The design extends `kernel fn` rather than adding a second
+arithmetic. The design extends `kernel` function rather than adding a second
 mechanism (rule 1):
 
 ```vyrn
 ## Scores for grouped-query attention: q is [T, D], k is [S, D].
-kernel fn scores(q: tensor[f16; T, D], k: tensor[q8; S, D], scale: f32) -> tensor[f32; T, S]:
+kernel create scores(q: tensor[f16; T, D], k: tensor[q8; S, D], scale: f32) -> tensor[f32; T, S]:
     each t, s in grid(T, S):              # one GPU invocation per output element
         var acc = 0.0
         each d in 0 until D:              # a loop inside the invocation
@@ -188,7 +188,7 @@ Then three optimizations, each invisible in the source:
 1. **Tiling.** When the inner loop reads one input along the reduction
    axis (here `d`), the compiler stages 16 × 16 tiles of both inputs in
    workgroup shared memory, the standard matmul tiling.
-2. **Epilogue fusion.** An element-wise `kernel fn` applied to a tile
+2. **Epilogue fusion.** An element-wise `kernel` function applied to a tile
    kernel's result (`swish(x @ w)`) is inlined into that kernel's final
    write, so the intermediate tensor never reaches memory.
 3. **Static checks.** The `kernel` modifier already implies `strict`: the
@@ -203,6 +203,6 @@ fusion.
 
 The layers in `docs/stdlib.md` (`nn.Linear`, `nn.RMSNorm`, `nn.Attention`,
 `nn.MLP`) become ordinary Vyrn code: structs holding weight tensors, and
-`forward` methods built from `@` and `kernel fn`s. Developers read and copy
+`forward` methods built from `@` and `kernel` functions. Developers read and copy
 them like any other code, and a custom layer is the same kind of code as a
 built-in one.

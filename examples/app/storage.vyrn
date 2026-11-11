@@ -8,17 +8,17 @@ end
 object Table:
     rows: {int: any} = {}
 
-    async fn find(self, id: int):
+    async create find(self, id: int):
         if id not in self.rows: fail NotFound(id)
         return self.rows[id]
     end
 
-    async fn insert(self, row):
+    async create insert(self, row):
         self.rows[row.id] = row
         return row
     end
 
-    async fn count(self, user_id: int) -> int:
+    async create count(self, user_id: int) -> int:
         var n = 0
         each row in self.rows.values():
             if row.user_id == user_id: n += 1

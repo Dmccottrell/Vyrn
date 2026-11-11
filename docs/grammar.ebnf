@@ -77,14 +77,14 @@ clause_body   = simple_stmt NEWLINE
      async   returns a future; may use await
      strict  every binding must be statically typed; no dynamic dispatch
      kernel  strict + compiled for CPU SIMD / GPU execution
-     export  exposed to the host ABI, e.g. export "wasm" fn render()          *)
+     export  exposed to the host ABI, e.g. export "wasm" create render()      *)
 fn_decl       = fn_head suite ;
 fn_sig        = fn_head NEWLINE ;
-fn_head       = { fn_modifier } "fn" IDENT [ generic_params ]
+fn_head       = { fn_modifier } "create" IDENT [ generic_params ]
                 "(" [ params ] ")" [ result ] ;
 
 (* `-> T` is the return type. `fails E` names the error the function may
-   pass to its caller: fn find(id: u64) -> User fails NotFound:              *)
+   pass to its caller: create find(id: u64) -> User fails NotFound:          *)
 fn_modifier   = "async" | "strict" | "kernel" | "export" [ STRING ] ;
 result        = "->" type [ "fails" type ]
               | "fails" type ;
@@ -261,7 +261,7 @@ primary_type  = "any"
               | "[" type [ ";" expression ] "]"
               | "{" type ":" type "}"
               | "(" [ type { "," type } ] ")"
-              | "fn" "(" [ type { "," type } ] ")" [ "->" type ]
+              | "(" [ type { "," type } ] ")" "->" type
               | ownership primary_type ;
 
 (* [T]      growable list          [T; N]   fixed array, stored inline
@@ -291,7 +291,9 @@ expression_list = expression { "," expression } [ "," ] ;
 
 expression    = lambda
               | conditional ;
-lambda        = [ "async" ] "fn" "(" [ params ] ")" "=>" expression ;
+(* `x => x * 2`, `(a, b) => a + b`, `async (url) => await get(url)`. A
+   `(` starts a lambda when the matching `)` is followed by `=>`.            *)
+lambda        = [ "async" ] ( IDENT | "(" [ params ] ")" ) "=>" expression ;
 
 (* Python's conditional expression: "big" if size > 3 else "small" *)
 conditional   = pipeline [ "if" pipeline "else" expression ] ;
@@ -397,12 +399,14 @@ seq_pat       = pattern
 
 (* Hard keywords:
      always and any as async attempt await by catch const defer each else end
-     enum export extern fail fails false fn for if impl in is kernel let loop
+     enum export extern fail fails false for if impl in is kernel let loop
      main move mut none not object on or own par ptr pub ref region return
      route routes shared skip spawn stop strict struct tensor to trait true
      type unsafe until use using var weak when
 
-   `for` appears only in `impl Trait for Type`. Python's words (def, elif,
+   `create` is a keyword only when a function name and `(` or `[` follow
+   it on the same line (`create greet(name):`); elsewhere it is a name.
+   `for` appears only in `impl Trait for Type`. Python's words (def, fn, elif,
    while, match, class, with, try, finally, pass, ...) are ordinary names;
    used as statement headers, the parser names the Vyrn word instead.
 
@@ -411,6 +415,7 @@ seq_pat       = pattern
 
    Contextual keywords:
      GET POST PUT PATCH DELETE HEAD OPTIONS WS SSE     directly after `route`
+     create                                            before a function name and `(`/`[`
 
    Ordinary predeclared names (not keywords): self, cpu, gpu, int, float, str,
    bool, i8..i64, u8..u64, f16, f32, f64, bf16, vec2, vec3, vec4, mat4, ...    *)
@@ -419,7 +424,7 @@ seq_pat       = pattern
 (* ---- 8. Changes from v0.3 ------------------------------------------------ *)
 
 (* Python's shape, Vyrn's words.
-   1. Headers end with ":" (fn, if, each, struct, route, main, ...). A body is
+   1. Headers end with ":" (create, if, each, struct, route, main, ...). A body is
       either one statement on the same line, or a block closed by `end`.
    2. `then` is removed. `else if` continues an if chain. The conditional
       expression is Python's `a if cond else b`.
@@ -429,12 +434,13 @@ seq_pat       = pattern
       contextual words `all` and `last` and the `_` new-axis marker are gone.
    6. The postfix `'` transpose is removed in favour of `.T` / `.mT`, which
       frees `'` for single-quoted strings.
-   7. The `fn f(x) = expr` form is removed; write `fn f(x): return expr`.
+   7. The `f(x) = expr` form is removed; write `create f(x): return expr`.
    8. An object may extend one base object: object Enemy(Actor):
-   9. Vyrn's own words: each (for), loop (while), when (match),
+   9. Vyrn's own words: create (fn/def), each (for), loop (while), when (match),
       using (with), attempt/always (try/finally), object (class),
       else if (elif). The `try` expression prefix is removed: a failure
-      passes up to the caller by itself.                                    *)
+      passes up to the caller by itself. Lambdas drop `fn`: `(x) => x * 2`,
+      and function types are written `(int) -> str`.                      *)
 
 
 (* ---- 9. Lexical grammar -------------------------------------------------- *)

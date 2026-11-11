@@ -13,7 +13,7 @@ struct Ball:
     look: str
 end
 
-strict fn step(mut balls: [Ball], dt: float):
+strict create step(mut balls: [Ball], dt: float):
     each mut b in balls:
         b.vy += GRAVITY * dt
         b.x += b.vx * dt
@@ -29,7 +29,7 @@ strict fn step(mut balls: [Ball], dt: float):
     end
 end
 
-fn draw(balls: [Ball], frame: int) -> str:
+create draw(balls: [Ball], frame: int) -> str:
     var rows = [[" " each _ in 0 until WIDTH] each _ in 0 until HEIGHT]
     each b in balls:
         rows[int(b.y)][int(b.x)] = b.look

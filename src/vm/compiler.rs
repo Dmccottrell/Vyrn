@@ -3427,7 +3427,7 @@ impl Compiler {
                 return Err(self.error_hint(
                     "keyword arguments need a function the compiler can see",
                     callee.span,
-                    "call a top-level `fn`, a struct or a builtin by name, or pass the arguments by position",
+                    "call a top-level function, a struct or a builtin by name, or pass the arguments by position",
                 ));
             }
             return Ok(args.into_iter().map(Some).collect());

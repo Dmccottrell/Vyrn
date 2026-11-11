@@ -68,7 +68,7 @@ spelled_enum! {
         Fails => "fails",
         False => "false",
         Always => "always",
-        Fn => "fn",
+        Fn => "create",
         For => "for",
         If => "if",
         Impl => "impl",

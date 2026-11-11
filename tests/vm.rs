@@ -129,7 +129,7 @@ fn logic_short_circuits_and_returns_operands() {
         "x 2 5 3 true\n"
     );
     assert_eq!(
-        main("fn boom(): fail \"evaluated\"\nprint(true or boom(), false and boom())"),
+        main("create boom(): fail \"evaluated\"\nprint(true or boom(), false and boom())"),
         "true false\n"
     );
 }
@@ -216,7 +216,7 @@ fn string_interpolation() {
 #[test]
 fn functions_defaults_and_keywords() {
     assert_eq!(
-        run("fn greet(name, greeting = \"Hello\", punct = \"!\"):\n\
+        run("create greet(name, greeting = \"Hello\", punct = \"!\"):\n\
              \x20   return \"{greeting}, {name}{punct}\"\n\
              end\n\
              main:\n\
@@ -233,7 +233,7 @@ fn functions_defaults_and_keywords() {
 #[test]
 fn recursion() {
     assert_eq!(
-        run("fn fib(n):\n    if n < 2: return n\n    return fib(n - 1) + fib(n - 2)\nend\nmain:\n    print(fib(20))\nend\n"),
+        run("create fib(n):\n    if n < 2: return n\n    return fib(n - 1) + fib(n - 2)\nend\nmain:\n    print(fib(20))\nend\n"),
         "6765\n"
     );
 }
@@ -241,13 +241,13 @@ fn recursion() {
 #[test]
 fn closures_capture_by_value() {
     assert_eq!(
-        run("fn adder(n):\n    return fn(x) => x + n\nend\n\
-             fn twice(f, x):\n    return f(f(x))\nend\n\
+        run("create adder(n):\n    return (x) => x + n\nend\n\
+             create twice(f, x):\n    return f(f(x))\nend\n\
              main:\n\
              \x20   add5 = adder(5)\n\
-             \x20   print(add5(1), twice(add5, 0), twice(fn(s) => s + \"!\", \"hi\"))\n\
+             \x20   print(add5(1), twice(add5, 0), twice((s) => s + \"!\", \"hi\"))\n\
              \x20   base = 100\n\
-             \x20   fn offset(x): return x + base\n\
+             \x20   create offset(x): return x + base\n\
              \x20   print(offset(1))\n\
              \x20   print(5 |> add5, [3, 1, 2] |> sorted)\n\
              end\n"),
@@ -273,8 +273,8 @@ fn structs_are_values() {
 fn classes_are_shared_and_inherit() {
     assert_eq!(
         run(
-            "object Actor:\n    name: str\n    hp = 10\n    fn describe(self): return \"{self.name} ({self.hp})\"\n    fn hit(self, n): self.hp -= n\nend\n\
-             object Boss(Actor):\n    phase = 1\n    fn describe(self): return \"Boss \" + self.name\nend\n\
+            "object Actor:\n    name: str\n    hp = 10\n    create describe(self): return \"{self.name} ({self.hp})\"\n    create hit(self, n): self.hp -= n\nend\n\
+             object Boss(Actor):\n    phase = 1\n    create describe(self): return \"Boss \" + self.name\nend\n\
              main:\n\
              \x20   a = Actor(\"imp\")\n\
              \x20   alias = a\n\
@@ -293,9 +293,9 @@ fn classes_are_shared_and_inherit() {
 fn mut_self_and_mut_arguments_write_back() {
     assert_eq!(
         run(
-            "struct Counter:\n    n: int = 0\n    fn bump(mut self): self.n += 1\nend\n\
+            "struct Counter:\n    n: int = 0\n    create bump(mut self): self.n += 1\nend\n\
              struct Box:\n    counter: Counter\nend\n\
-             fn reset(mut c): c.n = 0\n\
+             create reset(mut c): c.n = 0\n\
              main:\n\
              \x20   c = Counter()\n\
              \x20   c.bump()\n\
@@ -317,7 +317,7 @@ fn mut_self_and_mut_arguments_write_back() {
 fn for_mut_keeps_the_list_whole_when_the_body_fails_or_leaves() {
     assert_eq!(
         run("struct C:\n    n: int\nend\n\
-             fn first_big(mut xs):\n\
+             create first_big(mut xs):\n\
              \x20   each mut x in xs:\n\
              \x20       x.n += 1\n\
              \x20       if x.n > 2: return x.n\n\
@@ -349,7 +349,7 @@ fn enums_and_match() {
     assert_eq!(
         run(
             "enum Shape:\n    Circle(radius: float)\n    Rect(float, float)\n    Empty\n\
-             \x20   fn area(self):\n\
+             \x20   create area(self):\n\
              \x20       when self:\n\
              \x20           is Shape.Circle(r): return 3 * r * r\n\
              \x20           is Shape.Rect(w, h) if w == h: return \"square {w * h}\"\n\
@@ -394,8 +394,8 @@ fn patterns() {
 fn failures_and_handlers() {
     assert_eq!(
         run("struct NotFound:\n    key: str\nend\n\
-             fn lookup(m, k):\n    if k not in m: fail NotFound(k)\n    return m[k]\nend\n\
-             fn risky(log):\n\
+             create lookup(m, k):\n    if k not in m: fail NotFound(k)\n    return m[k]\nend\n\
+             create risky(log):\n\
              \x20   attempt:\n\
              \x20       return lookup({}, \"x\")\n\
              \x20   always:\n\
@@ -429,7 +429,7 @@ fn failures_and_handlers() {
 #[test]
 fn finally_runs_on_every_exit() {
     assert_eq!(
-        run("fn f(log):\n\
+        run("create f(log):\n\
              \x20   each i in 0 until 3:\n\
              \x20       attempt:\n\
              \x20           if i == 0: skip\n\
@@ -469,7 +469,7 @@ fn defer_runs_when_the_block_ends() {
 #[test]
 fn tasks_interleave_while_sleeping() {
     assert_eq!(
-        run("async fn worker(name, delay):\n\
+        run("async create worker(name, delay):\n\
              \x20   print(name, \"start\")\n\
              \x20   await sleep(delay)\n\
              \x20   print(name, \"done\")\n\
@@ -488,7 +488,7 @@ fn tasks_interleave_while_sleeping() {
 #[test]
 fn channels_feed_async_for() {
     assert_eq!(
-        run("async fn produce(ch, n):\n\
+        run("async create produce(ch, n):\n\
              \x20   each i in 0 until n:\n\
              \x20       ch.send(i * i)\n\
              \x20       await sleep(0)\n\
@@ -519,7 +519,7 @@ fn async_for_over_a_list() {
 fn awaiting_a_failed_task_raises_its_error() {
     assert_eq!(
         run("struct Bad:\n    why: str\nend\n\
-             async fn boom():\n\
+             async create boom():\n\
              \x20   await sleep(0)\n\
              \x20   fail Bad(\"bad input\")\n\
              end\n\
@@ -544,7 +544,7 @@ fn waiting_forever_is_a_deadlock() {
 #[test]
 fn unawaited_failures_are_reported() {
     let _ = vyrn::vm::task::take_unobserved();
-    run("async fn boom(): fail \"lost\"\nmain:\n    t = boom()\nend\n");
+    run("async create boom(): fail \"lost\"\nmain:\n    t = boom()\nend\n");
     let warnings = vyrn::vm::task::take_unobserved();
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("boom"), "{warnings:?}");
@@ -571,7 +571,7 @@ fn small_integer_operands_behave_like_any_other() {
 #[test]
 fn spawn_and_await() {
     assert_eq!(
-        run("async fn fetch(id): return id * 10\n\
+        run("async create fetch(id): return id * 10\n\
              main:\n\
              \x20   t = spawn fetch(4)\n\
              \x20   a, b = await join(fetch(1), t)\n\
@@ -584,7 +584,7 @@ fn spawn_and_await() {
 #[test]
 fn constants_and_globals() {
     assert_eq!(
-        run("const SIZE = 4\nconst AREA = SIZE * SIZE\nfn area(): return AREA\nmain:\n    print(SIZE, area())\nend\n"),
+        run("const SIZE = 4\nconst AREA = SIZE * SIZE\ncreate area(): return AREA\nmain:\n    print(SIZE, area())\nend\n"),
         "4 16\n"
     );
 }
@@ -716,7 +716,7 @@ fn small_transformer_block_runs_on_gpus() {
          \x20   w_up: tensor[f16; D, H]\n\
          \x20   w_down: tensor[f16; H, D]\n\
          end\n\
-         kernel fn feed_forward(x: tensor[f32], w: Layer):\n\
+         kernel create feed_forward(x: tensor[f32], w: Layer):\n\
          \x20   let h = gelu(x @ w.w_up)\n\
          \x20   return x + h @ w.w_down\n\
          end\n\
@@ -741,7 +741,7 @@ fn small_transformer_block_runs_on_gpus() {
 
 #[test]
 fn runtime_errors_carry_a_trace() {
-    let e = runtime_error("fn inner(xs):\n    return xs[10]\nend\nfn outer():\n    return inner([1, 2])\nend\nmain:\n    outer()\nend\n");
+    let e = runtime_error("create inner(xs):\n    return xs[10]\nend\ncreate outer():\n    return inner([1, 2])\nend\nmain:\n    outer()\nend\n");
     assert_eq!(e.kind, "IndexError");
     assert_eq!(e.message, "index 10 is out of range for a list of length 2");
     let trace: Vec<(String, u32)> = e
@@ -772,7 +772,8 @@ fn uncaught_user_failures_report_their_type() {
 #[test]
 fn runtime_type_errors() {
     assert_eq!(
-        runtime_error("fn add(a, b): return a + b\nmain:\n    x = add(1, \"a\")\nend\n").message,
+        runtime_error("create add(a, b): return a + b\nmain:\n    x = add(1, \"a\")\nend\n")
+            .message,
         "cannot apply `+` to int and str"
     );
     assert_eq!(
@@ -786,7 +787,7 @@ fn runtime_type_errors() {
     // Known functions are checked at compile time; a call through a variable
     // is checked when it runs.
     assert_eq!(
-        runtime_error("fn f(a): return a\nmain:\n    g = f\n    g()\nend\n").message,
+        runtime_error("create f(a): return a\nmain:\n    g = f\n    g()\nend\n").message,
         "`f` takes 1 argument, got 0"
     );
     assert_eq!(
@@ -797,7 +798,7 @@ fn runtime_type_errors() {
 
 #[test]
 fn deep_recursion_is_caught() {
-    let e = runtime_error("fn down(n): return down(n + 1)\nmain:\n    down(0)\nend\n");
+    let e = runtime_error("create down(n): return down(n + 1)\nmain:\n    down(0)\nend\n");
     assert_eq!(e.kind, "StackOverflow");
 }
 
@@ -808,7 +809,7 @@ fn compile_time_errors() {
         ["`totl` is not defined"]
     );
     assert_eq!(
-        compile_errors("fn f(a): return a\nmain:\n    f()\nend\n"),
+        compile_errors("create f(a): return a\nmain:\n    f()\nend\n"),
         ["`f` is missing the argument `a`"]
     );
     assert_eq!(
@@ -816,11 +817,11 @@ fn compile_time_errors() {
         ["`stop` can only be used inside a loop"]
     );
     assert_eq!(
-        compile_errors("fn f(a, b = 1): return a\nmain:\n    f(c = 1)\nend\n"),
+        compile_errors("create f(a, b = 1): return a\nmain:\n    f(c = 1)\nend\n"),
         ["`f` has no parameter `c`"]
     );
     assert_eq!(
-        compile_errors("fn f(a, b): return a\nmain:\n    f(b = 1)\nend\n"),
+        compile_errors("create f(a, b): return a\nmain:\n    f(b = 1)\nend\n"),
         ["`f` is missing the argument `a`"]
     );
     assert_eq!(
@@ -855,7 +856,7 @@ fn routes_dispatch_and_return_json() {
          \x20       return {\"users\": len(db), \"ok\": true, \"ids\": sorted(db.keys())}\n\
          \x20   end\n\
          end\n\
-         fn seed():\n\
+         create seed():\n\
          \x20   return {1: User(1, \"Ada\", \"ada@example.com\"), 2: User(2, \"Bo\", none)}\n\
          end\n",
     )
@@ -919,8 +920,8 @@ fn main_receives_command_line_arguments() {
 #[test]
 fn hosts_can_finish_background_tasks() {
     let program = compile_source(
-        "async fn later(msg):\n    await sleep(0.01)\n    print(msg)\nend\n\
-         fn start(): later(\"background done\")\n",
+        "async create later(msg):\n    await sleep(0.01)\n    print(msg)\nend\n\
+         create start(): later(\"background done\")\n",
     )
     .unwrap();
     let out = Captured::default();
@@ -1092,8 +1093,8 @@ fn fit_needs_a_budget_or_a_limit() {
 fn keyword_arguments_reach_closures_methods_and_builtins() {
     assert_eq!(
         run(
-            "struct Box:\n    w: float\n    fn scaled(self, factor = 2.0, offset = 0.0): return self.w * factor + offset\nend\n\
-             fn make(): return fn(x, scale = 1, bias = 0) => x * scale + bias\n\
+            "struct Box:\n    w: float\n    create scaled(self, factor = 2.0, offset = 0.0): return self.w * factor + offset\nend\n\
+             create make(): return (x, scale = 1, bias = 0) => x * scale + bias\n\
              main:\n\
              \x20   f = make()\n\
              \x20   print(f(3), f(3, bias = 1), f(x = 2, scale = 10), f(1, 2, bias = 5))\n\
@@ -1106,11 +1107,11 @@ fn keyword_arguments_reach_closures_methods_and_builtins() {
         "3 4 20 7\n3.0 4.0 6.5\ntensor([0.5, 0.5])\n"
     );
     assert_eq!(
-        runtime_error("main:\n    f = fn(x) => x\n    f(1, size = 2)\nend\n").message,
+        runtime_error("main:\n    f = (x) => x\n    f(1, size = 2)\nend\n").message,
         "`<lambda>` has no parameter `size`; its parameters are: x"
     );
     assert_eq!(
-        runtime_error("main:\n    f = fn(x, y) => x\n    f(y = 2)\nend\n").message,
+        runtime_error("main:\n    f = (x, y) => x\n    f(y = 2)\nend\n").message,
         "`<lambda>` is missing the argument `x`"
     );
 }
@@ -1118,16 +1119,16 @@ fn keyword_arguments_reach_closures_methods_and_builtins() {
 #[test]
 fn closures_share_the_variables_they_capture() {
     assert_eq!(
-        run("fn counter():\n\
+        run("create counter():\n\
              \x20   count = 0\n\
-             \x20   fn next():\n\
+             \x20   create next():\n\
              \x20       count += 1\n\
              \x20       return count\n\
              \x20   end\n\
              \x20   return next\n\
              end\n\
-             fn outer(mut xs):\n\
-             \x20   add = fn(x) => xs.append(x)\n\
+             create outer(mut xs):\n\
+             \x20   add = (x) => xs.append(x)\n\
              \x20   add(1)\n\
              \x20   xs = xs + [99]\n\
              \x20   return len(xs)\n\
@@ -1138,15 +1139,15 @@ fn closures_share_the_variables_they_capture() {
              \x20   c()\n\
              \x20   print(c(), counter()())\n\
              \x20   adders = []\n\
-             \x20   each i in 0 until 3: adders.append(fn(x) => x + i)\n\
+             \x20   each i in 0 until 3: adders.append((x) => x + i)\n\
              \x20   print([f(10) each f in adders])\n\
-             \x20   fn fact(n):\n\
+             \x20   create fact(n):\n\
              \x20       if n <= 1: return 1\n\
              \x20       return n * fact(n - 1)\n\
              \x20   end\n\
              \x20   print(fact(10))\n\
              \x20   seen = []\n\
-             \x20   log = fn(m) => seen.append(m)\n\
+             \x20   log = (m) => seen.append(m)\n\
              \x20   log(\"a\")\n\
              \x20   seen = seen + [\"b\"]\n\
              \x20   log(\"c\")\n\
@@ -1162,8 +1163,8 @@ fn closures_share_the_variables_they_capture() {
 fn with_closes_resources_in_reverse_order() {
     assert_eq!(
         run(
-            "object Resource:\n    name: str\n    log: [str]\n    fn close(self): self.log.append(\"closed \" + self.name)\nend\n\
-             fn use_two(log):\n\
+            "object Resource:\n    name: str\n    log: [str]\n    create close(self): self.log.append(\"closed \" + self.name)\nend\n\
+             create use_two(log):\n\
              \x20   using Resource(\"a\", log) as a, Resource(\"b\", log) as b:\n\
              \x20       log.append(\"using {a.name} and {b.name}\")\n\
              \x20       return \"done\"\n\
@@ -1189,8 +1190,8 @@ fn with_closes_resources_in_reverse_order() {
 fn kernels_run_on_numbers_and_on_tensors() {
     assert_eq!(
         run("const SCALE = 2\n\
-             kernel fn leaky(x: f32) -> f32:\n    return x if x > 0.0 else 0.01 * x\nend\n\
-             kernel fn mix(a: f32, b: f32, t: f32) -> f32:\n    let d = b - a\n    return a + d * t * SCALE\nend\n\
+             kernel create leaky(x: f32) -> f32:\n    return x if x > 0.0 else 0.01 * x\nend\n\
+             kernel create mix(a: f32, b: f32, t: f32) -> f32:\n    let d = b - a\n    return a + d * t * SCALE\nend\n\
              main:\n\
              \x20   print(leaky(-2.0), leaky(3.0))\n\
              \x20   let x = arange(4) - 2.0\n\
@@ -1204,7 +1205,7 @@ fn kernels_run_on_numbers_and_on_tensors() {
 #[test]
 fn kernels_that_take_tensors_work_on_whole_tensors() {
     assert_eq!(
-        run("kernel fn scale_rows(x: tensor[f32], k: f32) -> tensor[f32]: return x * k\nmain: print(scale_rows(ones(2), 3.0))\n"),
+        run("kernel create scale_rows(x: tensor[f32], k: f32) -> tensor[f32]: return x * k\nmain: print(scale_rows(ones(2), 3.0))\n"),
         "tensor([3.0, 3.0])\n"
     );
 }
@@ -1212,7 +1213,7 @@ fn kernels_that_take_tensors_work_on_whole_tensors() {
 #[test]
 fn kernels_explain_what_cannot_run_on_tensors() {
     let e = runtime_error(
-        "kernel fn noisy(x: f32) -> f32:\n    print(x)\n    return x\nend\nmain:\n    print(noisy(2.0))\n    noisy(ones(3))\nend\n",
+        "kernel create noisy(x: f32) -> f32:\n    print(x)\n    return x\nend\nmain:\n    print(noisy(2.0))\n    noisy(ones(3))\nend\n",
     );
     assert_eq!(e.kind, "KernelError");
     assert!(
@@ -1222,16 +1223,16 @@ fn kernels_explain_what_cannot_run_on_tensors() {
         e.message
     );
     let e = runtime_error(
-        "kernel fn add(a: f32, b: f32) -> f32: return a + b\nmain: add(ones(2), ones(3))\n",
+        "kernel create add(a: f32, b: f32) -> f32: return a + b\nmain: add(ones(2), ones(3))\n",
     );
     assert_eq!(e.kind, "ShapeError");
     // Known values are checked before running; others when the call runs.
     assert!(compile_source(
-        "kernel fn add(a: f32, b: f32) -> f32: return a + b\nmain: add(ones(2), \"x\")\n"
+        "kernel create add(a: f32, b: f32) -> f32: return a + b\nmain: add(ones(2), \"x\")\n"
     )
     .is_err());
     let e = runtime_error(
-        "kernel fn add(a: f32, b: f32) -> f32: return a + b\nfn text(): return \"x\"\nmain: add(ones(2), text())\n",
+        "kernel create add(a: f32, b: f32) -> f32: return a + b\ncreate text(): return \"x\"\nmain: add(ones(2), text())\n",
     );
     assert_eq!(e.kind, "TypeError");
 }

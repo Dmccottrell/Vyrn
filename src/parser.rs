@@ -432,11 +432,13 @@ impl Parser {
         let line_ends = matches!(next, Tk::Newline | Tk::Eof);
         let names_something = matches!(next, Tk::Ident(_));
         let hint = match word.as_str() {
-            "def" if names_something => "functions start with `fn`: `fn name(args):` ... `end`",
+            "def" | "fn" if names_something => {
+                "functions start with `create`: `create name(args):` ... `end`"
+            }
             "import" if names_something => "write `use module`",
             "from" if names_something => "write `use module (name)`",
             "raise" if names_something => "write `fail error`",
-            "lambda" if names_something || next.is_punct(P::Colon) => "write `fn(x) => expression`",
+            "lambda" if names_something || next.is_punct(P::Colon) => "write `(x) => expression`",
             "except" if names_something || next.is_punct(P::Colon) => {
                 "write `catch ErrorType as e:`"
             }
@@ -628,7 +630,7 @@ impl Parser {
                 "statements run inside `main:` or a function; the top level of a file holds declarations only",
             )
         } else {
-            self.expected("a declaration such as `fn`, `struct`, `route` or `main:`")
+            self.expected("a declaration such as `create`, `struct`, `route` or `main:`")
         }
     }
 
@@ -857,7 +859,7 @@ impl Parser {
             }
             self.bump();
         }
-        self.expect_kw(K::Fn, "`fn`")?;
+        self.expect_kw(K::Fn, "`create`")?;
         if self.at_kw(K::Main) {
             let span = self.span();
             return Err(self.error(
@@ -872,7 +874,7 @@ impl Parser {
         let params = self.params()?;
         let result = self.result_spec()?;
         let body = match mode {
-            FnMode::Body => FnBody::Block(self.suite("fn", header)?),
+            FnMode::Body => FnBody::Block(self.suite("create", header)?),
             FnMode::Signature => {
                 if self.at_p(P::Colon) {
                     let span = self.span();
@@ -1037,7 +1039,7 @@ impl Parser {
         } else {
             Visibility::Private
         };
-        let name = self.expect_ident("a field name or `fn`")?;
+        let name = self.expect_ident("a field name or `create`")?;
         let declared_ty = if self.eat_p(P::Colon) {
             Some(self.type_expr()?)
         } else {
@@ -1081,7 +1083,7 @@ impl Parser {
             Visibility::Private
         };
         if !self.at_fn_decl() {
-            return Err(self.expected("`fn`"));
+            return Err(self.expected("`create`"));
         }
         let decl = self.fn_decl(FnMode::Body)?;
         Ok(Item {
@@ -1986,30 +1988,53 @@ impl Parser {
     }
 
     fn expression(&mut self) -> PResult<Expr> {
-        let is_lambda = match self.kind() {
-            Tk::Keyword(K::Fn) => self.kind_at(1).is_punct(P::LParen),
-            Tk::Keyword(K::Async) => {
-                self.kind_at(1).is_keyword(K::Fn) && self.kind_at(2).is_punct(P::LParen)
-            }
-            _ => false,
-        };
-        if is_lambda {
+        let first = usize::from(self.at_kw(K::Async));
+        if self.lambda_at(first) {
             self.lambda()
         } else {
             self.conditional()
         }
     }
 
+    /// Whether a lambda starts `offset` tokens ahead: `x => ...` or
+    /// `(params) => ...`, found by looking past the matching `)`.
+    fn lambda_at(&self, offset: usize) -> bool {
+        match self.kind_at(offset) {
+            Tk::Ident(_) => self.kind_at(offset + 1).is_punct(P::FatArrow),
+            Tk::Punct(P::LParen) => {
+                let mut depth = 0usize;
+                let mut n = offset;
+                loop {
+                    match self.kind_at(n) {
+                        Tk::Punct(P::LParen | P::LBracket | P::LBrace) => depth += 1,
+                        Tk::Punct(P::RParen | P::RBracket | P::RBrace) => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return self.kind_at(n + 1).is_punct(P::FatArrow);
+                            }
+                        }
+                        Tk::Eof => return false,
+                        _ => {}
+                    }
+                    n += 1;
+                }
+            }
+            _ => false,
+        }
+    }
+
     fn lambda(&mut self) -> PResult<Expr> {
         let start = self.start();
         let is_async = self.eat_kw(K::Async);
-        self.bump();
-        self.bump();
-        let params = self.params()?;
+        let params = if self.eat_p(P::LParen) {
+            self.params()?
+        } else {
+            vec![self.param()?]
+        };
         if !self.eat_p(P::FatArrow) {
             return Err(self.expected_hint(
                 "`=>` after the parameters",
-                "a lambda is written `fn(x) => x * 2`",
+                "a lambda is written `(x) => x * 2`",
             ));
         }
         let body = self.expression()?;
@@ -2728,20 +2753,19 @@ impl Parser {
                 self.expect_p(P::RBrace, "`}`")?;
                 TypeExprKind::Map { key, value }
             }
+            // `(int, str)` is a tuple; `(int) -> str` is a function.
             Tk::Punct(P::LParen) => {
                 self.bump();
-                TypeExprKind::Tuple(self.type_list(P::RParen)?)
-            }
-            Tk::Keyword(K::Fn) => {
-                self.bump();
-                self.expect_p(P::LParen, "`(` after `fn`")?;
-                let params = self.type_list(P::RParen)?;
-                let returns = if self.eat_p(P::Arrow) {
-                    Some(Box::new(self.type_expr()?))
+                let items = self.type_list(P::RParen)?;
+                if self.eat_p(P::Arrow) {
+                    let returns = Some(Box::new(self.type_expr()?));
+                    TypeExprKind::Fn {
+                        params: items,
+                        returns,
+                    }
                 } else {
-                    None
-                };
-                TypeExprKind::Fn { params, returns }
+                    TypeExprKind::Tuple(items)
+                }
             }
             Tk::Keyword(K::Ref | K::Shared | K::Weak | K::Ptr) => {
                 let ownership = match self.bump().kind {
@@ -2996,9 +3020,9 @@ impl Parser {
 /// example for the error message.
 fn python_replacement(word: &str) -> Option<(&'static str, &'static str)> {
     Some(match word {
-        "def" => (
-            "fn",
-            "declare a function with `fn name(args):` and close it with `end`",
+        "def" | "fn" => (
+            "create",
+            "declare a function with `create name(args):` and close it with `end`",
         ),
         "elif" => ("else if", "write `else if condition:`"),
         "while" => (
@@ -3022,7 +3046,7 @@ fn python_replacement(word: &str) -> Option<(&'static str, &'static str)> {
         "raise" => ("fail", "write `fail error`"),
         "break" => ("stop", "write `stop` to leave a loop"),
         "continue" => ("skip", "write `skip` to go to the next round of a loop"),
-        "lambda" => ("fn", "write `fn(x) => x * 2`"),
+        "lambda" => ("=>", "write `(x) => x * 2`"),
         "pass" => ("", "an empty block is just its header and `end`"),
         _ => return None,
     })

@@ -34,7 +34,7 @@ behind an opt-in keyword that beginners never meet.
 
 | Everyone sees | Only those who opt in see |
 |---|---|
-| `x = 1`, `fn`, `if`, `each`, `print`, lists, maps, f-strings | `strict`, `kernel`, `mut`/`own`/`move`, `on gpu[0]`, `region`, `unsafe`, `extern` |
+| `x = 1`, `create`, `if`, `each`, `print`, lists, maps, f-strings | `strict`, `kernel`, `mut`/`own`/`move`, `on gpu[0]`, `region`, `unsafe`, `extern` |
 
 Type annotations are optional. Code without them runs as dynamically as
 Python; adding them buys checking where they are written.
