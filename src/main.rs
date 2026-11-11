@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use vyrn::project::bundle::{Bundle, Recorder};
+use vyrn::project::deploy::{self, Target};
 use vyrn::project::loader::{self, Disk, SourceFile};
 use vyrn::project::manifest::{self, Manifest};
 use vyrn::project::{self, lock, resolve};
@@ -35,7 +36,10 @@ usage: vyrn <command> [arguments]
   fmt [--check] [files]  format code in the one Vyrn style
   add <url>              fetch and lock a module, e.g. github.com/ann/neural@v1
   fetch                  download every locked module, to work offline
-  build [file] [-o out]  make one executable file
+  build [file] [-o out] [--target=T]
+                         make one executable file; T is native (default),
+                         linux-gnu, linux-musl, linux-arm64, macos, windows,
+                         or wasm32-edge for Vercel, Cloudflare and Deno
   bytecode <file>        show the compiled bytecode
   parse <file>           show the syntax tree
   lex <file>             show the tokens";
@@ -516,14 +520,26 @@ fn fetch() -> ExitCode {
 fn build(args: &[String]) -> ExitCode {
     let mut out: Option<PathBuf> = None;
     let mut file = None;
+    let mut target = String::from("native");
     let mut it = args.iter();
     while let Some(a) = it.next() {
         if a == "-o" {
             out = it.next().map(PathBuf::from);
+        } else if a == "--target" {
+            target = it.next().cloned().unwrap_or_default();
+        } else if let Some(t) = a.strip_prefix("--target=") {
+            target = t.to_string();
         } else {
             file = Some(a);
         }
     }
+    let target = match Target::parse(&target) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
     let entry = match entry_file(file) {
         Ok(e) => e,
         Err(e) => {
@@ -573,19 +589,55 @@ fn build(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let bundle = recorder.bundle;
-    let exe_name = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name
-    };
-    let out = out.unwrap_or_else(|| root.join("build").join(exe_name));
-    let base = match std::env::current_exe() {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: cannot find the vyrn executable: {e}");
-            return ExitCode::FAILURE;
+    let base = match &target {
+        Target::WasmEdge => {
+            let wasm = match deploy::wasm_runtime() {
+                Ok(w) => w,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let out = out.unwrap_or_else(|| root.join("build").join("edge"));
+            return match deploy::write_edge(&bundle, &wasm, &out) {
+                Ok(files) => {
+                    println!("built {} for edge platforms:", shown(&out));
+                    for f in files {
+                        println!("    {}", shown(&f));
+                    }
+                    println!(
+                        "\ndeploy to Vercel:  cd {} && vercel deploy\ndeploy elsewhere: worker.mjs is a standard fetch handler (Cloudflare Workers, Deno, Bun)",
+                        shown(&out)
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: cannot write {}: {e}", out.display());
+                    ExitCode::FAILURE
+                }
+            };
         }
+        Target::Triple(triple) => match deploy::native_runtime(triple) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Target::Native => match std::env::current_exe() {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("error: cannot find the vyrn executable: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
     };
+    let windows = match &target {
+        Target::Triple(t) => t.contains("windows"),
+        _ => cfg!(windows),
+    };
+    let exe_name = if windows { format!("{name}.exe") } else { name };
+    let out = out.unwrap_or_else(|| root.join("build").join(exe_name));
     if let Err(e) = bundle.write_executable(&base, &out) {
         eprintln!("error: cannot write {}: {e}", out.display());
         return ExitCode::FAILURE;

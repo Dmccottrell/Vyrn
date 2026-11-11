@@ -7,6 +7,7 @@
 //! - [`loader`]: loading every file a program uses into one namespaced tree
 
 pub mod bundle;
+pub mod deploy;
 pub mod fetch;
 pub mod loader;
 pub mod lock;

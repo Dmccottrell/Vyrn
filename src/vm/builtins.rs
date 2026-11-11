@@ -402,6 +402,9 @@ fn join(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 /// `sleep(seconds)`: a task that finishes after the time has passed.
 /// `await sleep(0.5)` pauses the current task and lets others run.
 fn sleep(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    if cfg!(target_arch = "wasm32") {
+        return Err(no_clock());
+    }
     let seconds = number(&args[0], "the number of seconds")?;
     if !(seconds >= 0.0 && seconds.is_finite()) {
         return Err(err(
@@ -419,6 +422,9 @@ fn sleep(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 /// `Clock(hz = 60, frames = none)`: a fixed-rate clock for game loops.
 /// `frames` stops it after that many ticks.
 fn clock(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    if cfg!(target_arch = "wasm32") {
+        return Err(no_clock());
+    }
     let hz = match opt(args, 0) {
         Some(v) => number(v, "`hz`")?,
         None => 60.0,
@@ -443,6 +449,10 @@ fn clock(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 /// the server runs; other tasks keep running. `requests` stops the server
 /// after that many requests, which is handy in tests.
 fn web_serve(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    if ctx.hosted {
+        // The platform delivers requests through `Vm::handle_request`.
+        return Ok(Value::None);
+    }
     let port = match opt(args, 0) {
         Some(v) => integer(v, "`port`")?,
         None => 8080,
@@ -558,6 +568,14 @@ fn ffi_function(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     }
 }
 
+/// Hosts without a clock (WebAssembly with no imports) cannot time things.
+fn no_clock() -> Value {
+    err(
+        "Unavailable",
+        "this platform has no clock, so `sleep`, `now` and `Clock` are not available here",
+    )
+}
+
 /// `channel()`: a queue for passing values between tasks.
 fn channel(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
     Ok(Value::Channel(Rc::new(RefCell::new(
@@ -567,6 +585,9 @@ fn channel(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
 
 /// Seconds on a monotonic clock, for measuring time.
 fn now(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
+    if cfg!(target_arch = "wasm32") {
+        return Err(no_clock());
+    }
     thread_local! {
         static START: std::time::Instant = std::time::Instant::now();
     }

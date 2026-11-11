@@ -15,6 +15,7 @@ The type checker, borrow checker and native backends do not exist yet.
 - [`docs/principles.md`](docs/principles.md): the five rules every feature is checked against, and what Vyrn takes from each language
 - [`docs/ffi.md`](docs/ffi.md): the Python and C bridges, zero-copy tensors, and the decentralized module resolver
 - [`docs/nn.md`](docs/nn.md): `kernel fn` on tensors, its lowering to WGSL, and tensor memory layout
+- [`docs/deploy.md`](docs/deploy.md): `vyrn build --target=...` for static Linux binaries and edge WebAssembly, and the LLVM backend design
 
 ## Examples
 
@@ -46,7 +47,7 @@ cd hello && vyrn run
 | `vyrn fmt [--check]` | Formats every file in the one Vyrn style |
 | `vyrn add github.com/ann/neural@v1` | Fetches a module and locks its exact commit and content hash in `vyrn.lock` |
 | `vyrn fetch` | Downloads every locked module, to work offline |
-| `vyrn build` | Makes one executable file that runs anywhere, with nothing to install |
+| `vyrn build [--target=T]` | Makes one executable file that runs anywhere, with nothing to install; `--target=linux-musl` for a static Linux binary, `--target=wasm32-edge` for Vercel, Cloudflare and Deno |
 
 Files of a project use each other with `use geo.shapes` (loads `geo/shapes.vyrn`),
 and modules from any git host with `use "github.com/ann/neural@v1"`. There is no

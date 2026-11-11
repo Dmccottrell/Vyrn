@@ -1,0 +1,21 @@
+[package]
+name = "vyrn-wasm"
+version = "0.3.0"
+edition = "2021"
+description = "Vyrn as a WebAssembly module: run programs in the browser, serve routes on edge platforms"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+vyrn = { path = "../..", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

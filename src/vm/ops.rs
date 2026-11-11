@@ -56,6 +56,9 @@ pub struct Ctx {
     /// Set by a builtin that blocks, such as `web.serve`: the calling task
     /// waits for this task before continuing.
     pub block_on: Option<Rc<super::task::TaskHandle>>,
+    /// The host delivers HTTP requests itself (an edge platform), so
+    /// `web.serve` returns at once instead of listening.
+    pub hosted: bool,
 }
 
 impl Ctx {

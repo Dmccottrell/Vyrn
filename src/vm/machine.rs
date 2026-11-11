@@ -200,6 +200,7 @@ impl Vm {
             servers: Vec::new(),
             providers: HashMap::new(),
             block_on: None,
+            hosted: false,
         };
         Vm {
             program,
@@ -217,6 +218,12 @@ impl Vm {
             suspended: HashMap::new(),
             ready: VecDeque::new(),
         }
+    }
+
+    /// Marks the program as hosted: the host delivers HTTP requests through
+    /// [`Vm::handle_request`], and `web.serve` returns at once.
+    pub fn set_hosted(&mut self, hosted: bool) {
+        self.ctx.hosted = hosted;
     }
 
     /// Installs the backend that executes tensor instructions for `gpu[i]`
@@ -450,6 +457,54 @@ impl Vm {
         } else {
             Value::Struct(Rc::new(instance))
         })
+    }
+
+    /// Answers one HTTP request with the program's routes, without a
+    /// socket: for hosts that receive requests themselves, such as edge
+    /// platforms running Vyrn as WebAssembly. The handler runs to
+    /// completion; parameters and responses work as with `web.serve`.
+    pub fn handle_request(
+        &mut self,
+        method: &str,
+        path: &str,
+        query: &str,
+        body: &[u8],
+        content_type: Option<&str>,
+    ) -> web::Response {
+        if let Err(e) = self.init() {
+            return web::Response::error(500, &e.kind, &e.message);
+        }
+        let Some(m) = HttpMethod::from_ident(&method.to_ascii_uppercase()) else {
+            return web::Response::error(
+                405,
+                "MethodNotAllowed",
+                &format!("unknown method {method}"),
+            );
+        };
+        let body = match request_body(body, content_type) {
+            Ok(b) => b,
+            Err(response) => return response,
+        };
+        let query = web::parse_query(query);
+        let path = web::percent_decode(path);
+        let providers = self.ctx.providers.clone();
+        let resolved = match self.resolve_route(m, &path, &query, &providers, body.as_ref()) {
+            Ok(r) => r,
+            Err(e) => {
+                return web::Response::error(
+                    web::status_for(&e.kind),
+                    web::short_kind(&e.kind),
+                    &e.message,
+                )
+            }
+        };
+        let Some((handler, args)) = resolved else {
+            return web::Response::error(404, "NotFound", &format!("no route for {method} {path}"));
+        };
+        match self.call_value(Value::Function(handler), args) {
+            Ok(v) => self.response_for(Ok(v)),
+            Err(e) => self.response_for(Err(e.value)),
+        }
     }
 
     /// The text `print` would show for a value.
@@ -828,26 +883,10 @@ impl Vm {
                 &format!("unknown method {}", request.method),
             ));
         };
-        let body = if request.body.is_empty() {
-            None
-        } else {
-            let text = String::from_utf8_lossy(&request.body).into_owned();
-            let is_json = request
-                .headers
-                .get("content-type")
-                .is_some_and(|t| t.contains("json"));
-            Some(match super::json::parse(&text) {
-                Ok(json) => ops::from_json(&json),
-                Err(e) if is_json => {
-                    return Err(web::Response::error(
-                        400,
-                        "BadRequest",
-                        &format!("invalid JSON: {e}"),
-                    ))
-                }
-                Err(_) => Value::str(text),
-            })
-        };
+        let body = request_body(
+            &request.body,
+            request.headers.get("content-type").map(String::as_str),
+        )?;
         let resolved = self
             .resolve_route(
                 method,
@@ -933,6 +972,11 @@ impl Vm {
     }
 
     fn fire_timers(&mut self) {
+        // Only read the clock when there is a timer: some hosts (WebAssembly
+        // without imports) have none.
+        if self.ctx.timers.is_empty() {
+            return;
+        }
         let now = std::time::Instant::now();
         let mut i = 0;
         while i < self.ctx.timers.len() {
@@ -2354,6 +2398,27 @@ fn waiting_in_callback() -> Value {
         "AsyncError",
         "cannot wait inside a function called by a built-in; await outside the callback",
     )
+}
+
+/// A request body as a value: JSON when it parses (an error when it was
+/// declared JSON and does not), otherwise text.
+fn request_body(body: &[u8], content_type: Option<&str>) -> Result<Option<Value>, web::Response> {
+    if body.is_empty() {
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(body).into_owned();
+    let is_json = content_type.is_some_and(|t| t.contains("json"));
+    Ok(Some(match super::json::parse(&text) {
+        Ok(json) => ops::from_json(&json),
+        Err(e) if is_json => {
+            return Err(web::Response::error(
+                400,
+                "BadRequest",
+                &format!("invalid JSON: {e}"),
+            ))
+        }
+        Err(_) => Value::str(text),
+    }))
 }
 
 /// Splits `argc` call arguments into positional ones and `name = value`

@@ -222,3 +222,43 @@ fn clocks_can_be_stopped() {
     );
     assert!(matches!(out.as_deref(), Ok("3 false\n")), "{out:?}");
 }
+
+#[test]
+fn hosted_programs_answer_requests_without_a_socket() {
+    let program = compile_source(
+        "use std.http\n\
+         struct Item:\n    id: int\n    name: str\nend\n\
+         struct NotFound:\n    id: int\nend\n\
+         route GET \"/items/{id}\" (id: int, db):\n    if id not in db: fail NotFound(id)\n    return db[id]\nend\n\
+         route POST \"/items\" (body: Item, db):\n    db[body.id] = body\n    return 201, body\nend\n\
+         route GET \"/search\" (q: str, limit: int): return \"{q}:{limit}\"\n\
+         main:\n    http.provide(\"db\", {1: Item(1, \"lamp\")})\n    http.serve(port = 1)\n    print(\"main returned\")\nend\n",
+    )
+    .unwrap();
+    let out = Captured::default();
+    let mut vm = Vm::with_output(program, Box::new(out.clone()));
+    vm.set_hosted(true);
+    vm.run_main(&[]).unwrap();
+    assert_eq!(out.text(), "main returned\n");
+    let r = vm.handle_request("GET", "/items/1", "", b"", None);
+    assert_eq!(
+        (r.status, r.body.as_str()),
+        (200, r#"{"id":1,"name":"lamp"}"#)
+    );
+    let r = vm.handle_request(
+        "POST",
+        "/items",
+        "",
+        br#"{"id": 2, "name": "desk"}"#,
+        Some("application/json"),
+    );
+    assert_eq!(r.status, 201);
+    let r = vm.handle_request("GET", "/items/2", "", b"", None);
+    assert_eq!(r.body, r#"{"id":2,"name":"desk"}"#);
+    let r = vm.handle_request("GET", "/items/9", "", b"", None);
+    assert_eq!(r.status, 404);
+    let r = vm.handle_request("GET", "/search", "q=vyrn+lang&limit=3", b"", None);
+    assert_eq!((r.status, r.body.as_str()), (200, "vyrn lang:3"));
+    let r = vm.handle_request("GET", "/nowhere", "", b"", None);
+    assert_eq!(r.status, 404);
+}
