@@ -17,7 +17,7 @@ main:
     let tokens = encode("The capital of France is")
 
     var h = model.embed[tokens]
-    for layer in model.layers:
+    each layer in model.layers:
         on layer.device: h = feed_forward(h, layer)    # run where the weights live
     end
 

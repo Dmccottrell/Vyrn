@@ -1338,7 +1338,7 @@ impl Checker<'_> {
                     ),
                     place.span,
                     format!(
-                        "loop with `for mut {} in ...` to change the elements",
+                        "loop with `each mut {} in ...` to change the elements",
                         root.name
                     ),
                 );
@@ -1381,7 +1381,7 @@ impl Checker<'_> {
         if let Some((_, loop_span)) = self.borrowed.iter().find(|(b, _)| *b == n.name).cloned() {
             self.error_hint(
                 format!(
-                    "`{}` cannot be used here: a `for mut` loop is changing its elements",
+                    "`{}` cannot be used here: an `each mut` loop is changing its elements",
                     n.name
                 ),
                 span,
@@ -1456,7 +1456,7 @@ impl Checker<'_> {
             c => format!("is {c}: ..."),
         };
         self.error_hint(
-            format!("this `match` does not handle {list}{more}"),
+            format!("this `when` does not handle {list}{more}"),
             m.scrutinee.span,
             format!("add `{example}` for each, or an `else:` arm"),
         );

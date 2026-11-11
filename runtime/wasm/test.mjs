@@ -24,7 +24,7 @@ r = vyrn.run("main:\n    let n = 1\n    n = 2\nend\n");
 assert.equal(r.ok, false);
 assert.match(r.output, /cannot assign to `n`: it is declared with `let`/);
 
-r = vyrn.run('main:\n    try:\n        print(now())\n    catch Unavailable:\n        print("no clock")\n    end\nend\n');
+r = vyrn.run('main:\n    attempt:\n        print(now())\n    catch Unavailable:\n        print("no clock")\n    end\nend\n');
 assert.deepEqual(r, { ok: true, output: "no clock\n" });
 
 if (process.env.VYRN_EDGE_DIR) {

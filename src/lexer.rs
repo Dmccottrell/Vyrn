@@ -943,10 +943,10 @@ mod tests {
     }
 
     #[test]
-    fn elif_is_a_keyword_and_then_is_not() {
+    fn each_is_a_keyword_and_then_is_not() {
         assert_eq!(
-            kinds("elif then")[..2],
-            [T::Keyword(K::Elif), ident("then")]
+            kinds("each then")[..2],
+            [T::Keyword(K::Each), ident("then")]
         );
     }
 

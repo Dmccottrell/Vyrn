@@ -156,9 +156,9 @@ mechanism (rule 1):
 ```vyrn
 ## Scores for grouped-query attention: q is [T, D], k is [S, D].
 kernel fn scores(q: tensor[f16; T, D], k: tensor[q8; S, D], scale: f32) -> tensor[f32; T, S]:
-    for t, s in grid(T, S):              # one GPU invocation per output element
+    each t, s in grid(T, S):              # one GPU invocation per output element
         var acc = 0.0
-        for d in 0 until D:              # a loop inside the invocation
+        each d in 0 until D:              # a loop inside the invocation
             acc += q[t, d] * k[s, d]
         end
         out[t, s] = acc * scale if s <= t else -1e30   # causal mask, fused
@@ -176,8 +176,8 @@ How it lowers:
 
 | Vyrn | WGSL |
 |---|---|
-| `for t, s in grid(T, S)` (outermost, once) | the dispatch grid: `global_invocation_id.xy`, with a bounds check |
-| `for d in 0 until D` | a WGSL `for` loop |
+| `each t, s in grid(T, S)` (outermost, once) | the dispatch grid: `global_invocation_id.xy`, with a bounds check |
+| `each d in 0 until D` | a WGSL `for` loop |
 | `q[t, d]` on `f16` / `f32` | `q[t * D + d]` (row-major, section 3), widened to `f32` |
 | `k[s, d]` on `q8` / `q4` | the block decoder the matrix product shader already uses: `load_b(s * D + d)` |
 | `out[t, s] = ...` | the single write of the invocation |

@@ -194,7 +194,7 @@ fn clocks_pace_game_loops() {
         "main:\n\
          \x20   var clock = Clock(hz = 100, frames = 5)\n\
          \x20   var t = 0.0\n\
-         \x20   while clock.running:\n\
+         \x20   loop clock.running:\n\
          \x20       t += clock.tick()\n\
          \x20   end\n\
          \x20   print(clock.frame, round(t, 3), clock.dt)\n\
@@ -213,7 +213,7 @@ fn clocks_can_be_stopped() {
     let out = run_source(
         "main:\n\
          \x20   clock = Clock(hz = 1000)\n\
-         \x20   while clock.running:\n\
+         \x20   loop clock.running:\n\
          \x20       clock.tick()\n\
          \x20       if clock.frame == 3: clock.stop()\n\
          \x20   end\n\

@@ -5,7 +5,7 @@ struct NotFound:
     id: int
 end
 
-class Table:
+object Table:
     rows: {int: any} = {}
 
     async fn find(self, id: int):
@@ -20,14 +20,14 @@ class Table:
 
     async fn count(self, user_id: int) -> int:
         var n = 0
-        for row in self.rows.values():
+        each row in self.rows.values():
             if row.user_id == user_id: n += 1
         end
         return n
     end
 end
 
-class Db:
+object Db:
     users: Table = Table()
     orders: Table = Table()
 end

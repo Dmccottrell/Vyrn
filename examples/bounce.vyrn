@@ -14,7 +14,7 @@ struct Ball:
 end
 
 strict fn step(mut balls: [Ball], dt: float):
-    for mut b in balls:
+    each mut b in balls:
         b.vy += GRAVITY * dt
         b.x += b.vx * dt
         b.y += b.vy * dt
@@ -30,12 +30,12 @@ strict fn step(mut balls: [Ball], dt: float):
 end
 
 fn draw(balls: [Ball], frame: int) -> str:
-    var rows = [[" " for _ in 0 until WIDTH] for _ in 0 until HEIGHT]
-    for b in balls:
+    var rows = [[" " each _ in 0 until WIDTH] each _ in 0 until HEIGHT]
+    each b in balls:
         rows[int(b.y)][int(b.x)] = b.look
     end
     var text = "frame {frame}\n+" + "-" * WIDTH + "+\n"
-    for row in rows:
+    each row in rows:
         text += "|" + "".join(row) + "|\n"
     end
     return text + "+" + "-" * WIDTH + "+"
@@ -49,7 +49,7 @@ main(args):
     ]
     let frames = 90 if len(args) == 0 else int(args[0])
     var clock = Clock(hz = 30, frames = frames)
-    while clock.running:
+    loop clock.running:
         step(mut balls, clock.tick())
         print("\x1b[H\x1b[2J" + draw(balls, clock.frame))
     end

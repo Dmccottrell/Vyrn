@@ -336,7 +336,7 @@ pub enum Op {
         index: u8,
     },
     /// Moves a list element out, leaving `none`, so it can be changed
-    /// without a copy. Used by `for mut`, which has the list to itself
+    /// without a copy. Used by `each mut`, which has the list to itself
     /// until it puts the element back.
     TakeIndex {
         dst: u8,

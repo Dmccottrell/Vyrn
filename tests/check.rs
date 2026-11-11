@@ -57,8 +57,8 @@ fn returns_match_the_signature() {
         one("fn sign(x: int) -> int:\n    if x > 0: return 1\n    if x < 0: return -1\nend\n"),
         "`sign` can reach its end without returning a int"
     );
-    ok("fn sign(x: int) -> int:\n    if x > 0:\n        return 1\n    elif x < 0:\n        return -1\n    else:\n        return 0\n    end\nend\n");
-    ok("fn first(xs: [int]) -> int:\n    for x in xs: return x\n    fail \"empty\"\nend\n");
+    ok("fn sign(x: int) -> int:\n    if x > 0:\n        return 1\n    else if x < 0:\n        return -1\n    else:\n        return 0\n    end\nend\n");
+    ok("fn first(xs: [int]) -> int:\n    each x in xs: return x\n    fail \"empty\"\nend\n");
 }
 
 #[test]
@@ -101,9 +101,9 @@ fn struct_fields_must_exist() {
 
 #[test]
 fn inherited_fields_are_found() {
-    ok("class Actor:\n    hp: int = 10\nend\nclass Enemy(Actor):\n    damage: int = 2\nend\nmain:\n    e = Enemy()\n    let x: Enemy = e\n    print(x.hp + x.damage)\nend\n");
+    ok("object Actor:\n    hp: int = 10\nend\nobject Enemy(Actor):\n    damage: int = 2\nend\nmain:\n    e = Enemy()\n    let x: Enemy = e\n    print(x.hp + x.damage)\nend\n");
     let found = errors(
-        "class Actor:\n    hp: int = 10\nend\nmain:\n    let a = Actor()\n    print(a.mana)\nend\n",
+        "object Actor:\n    hp: int = 10\nend\nmain:\n    let a = Actor()\n    print(a.mana)\nend\n",
     );
     assert_eq!(found, ["`Actor` has no field `mana`"]);
 }
@@ -195,7 +195,7 @@ fn moved_values_are_not_used() {
         "`xs` may have been moved"
     );
     assert_eq!(
-        one("fn keep(own xs): return xs\nmain:\n    xs = [1]\n    for i in 0 until 3:\n        keep(move xs)\n    end\nend\n"),
+        one("fn keep(own xs): return xs\nmain:\n    xs = [1]\n    each i in 0 until 3:\n        keep(move xs)\n    end\nend\n"),
         "`xs` may have been moved"
     );
     // Assigning gives the variable a new value.
@@ -237,14 +237,14 @@ fn mut_parameters_need_mut_arguments() {
 #[test]
 fn for_mut_has_the_list_to_itself() {
     assert_eq!(
-        one("main:\n    var xs = [1, 2]\n    for mut x in xs:\n        x += len(xs)\n    end\nend\n"),
-        "`xs` cannot be used here: a `for mut` loop is changing its elements"
+        one("main:\n    var xs = [1, 2]\n    each mut x in xs:\n        x += len(xs)\n    end\nend\n"),
+        "`xs` cannot be used here: an `each mut` loop is changing its elements"
     );
     assert_eq!(
-        one("main:\n    let xs = [1, 2]\n    for mut x in xs: x += 1\nend\n"),
+        one("main:\n    let xs = [1, 2]\n    each mut x in xs: x += 1\nend\n"),
         "cannot change the elements of `xs`: it is declared with `let`"
     );
-    ok("main:\n    var xs = [1, 2]\n    for mut x in xs: x += 1\n    print(xs)\nend\n");
+    ok("main:\n    var xs = [1, 2]\n    each mut x in xs: x += 1\n    print(xs)\nend\n");
 }
 
 #[test]
@@ -252,12 +252,12 @@ fn changing_a_loop_copy_is_reported() {
     let src = "struct E:\n    hp: int\nend\n";
     assert_eq!(
         one(&format!(
-            "{src}fn heal(es: [E]):\n    for e in es: e.hp = 10\nend\n"
+            "{src}fn heal(es: [E]):\n    each e in es: e.hp = 10\nend\n"
         )),
         "this changes a copy: `e` is a copy of the element"
     );
     ok(&format!(
-        "{src}fn heal(mut es: [E]):\n    for mut e in es: e.hp = 10\nend\n"
+        "{src}fn heal(mut es: [E]):\n    each mut e in es: e.hp = 10\nend\n"
     ));
 }
 
@@ -370,23 +370,23 @@ const SHAPE: &str =
 #[test]
 fn matches_handle_every_case() {
     assert_eq!(
-        one(&format!("{SHAPE}fn area(s: Shape) -> float:\n    match s:\n        is Shape.Circle(r): return 3.14 * r * r\n        is Shape.Rect(w, h): return w * h\n    end\n    return 0.0\nend\n")),
-        "this `match` does not handle `Shape.Empty`"
+        one(&format!("{SHAPE}fn area(s: Shape) -> float:\n    when s:\n        is Shape.Circle(r): return 3.14 * r * r\n        is Shape.Rect(w, h): return w * h\n    end\n    return 0.0\nend\n")),
+        "this `when` does not handle `Shape.Empty`"
     );
     // A partial pattern or a guard does not count.
     assert_eq!(
-        one(&format!("{SHAPE}fn f(s: Shape):\n    match s:\n        is Shape.Circle(r) if r > 0.0: print(r)\n        is Shape.Rect(0.0, h): print(h)\n        is Shape.Empty: print(0)\n    end\nend\n")),
-        "this `match` does not handle `Shape.Circle`, `Shape.Rect`"
+        one(&format!("{SHAPE}fn f(s: Shape):\n    when s:\n        is Shape.Circle(r) if r > 0.0: print(r)\n        is Shape.Rect(0.0, h): print(h)\n        is Shape.Empty: print(0)\n    end\nend\n")),
+        "this `when` does not handle `Shape.Circle`, `Shape.Rect`"
     );
     assert_eq!(
-        one("fn f(b: bool):\n    match b:\n        is true: print(1)\n    end\nend\n"),
-        "this `match` does not handle `false`"
+        one("fn f(b: bool):\n    when b:\n        is true: print(1)\n    end\nend\n"),
+        "this `when` does not handle `false`"
     );
-    ok(&format!("{SHAPE}fn f(s: Shape):\n    match s:\n        is Shape.Circle(r): print(r)\n        is Shape.Rect(_, _) or Shape.Empty: print(0)\n    end\nend\n"));
-    ok(&format!("{SHAPE}fn f(s: Shape):\n    match s:\n        is Shape.Circle(r): print(r)\n        else: print(0)\n    end\nend\n"));
-    ok(&format!("{SHAPE}fn f(s: Shape):\n    match s:\n        is Shape.Empty: print(0)\n        is other: print(other)\n    end\nend\n"));
+    ok(&format!("{SHAPE}fn f(s: Shape):\n    when s:\n        is Shape.Circle(r): print(r)\n        is Shape.Rect(_, _) or Shape.Empty: print(0)\n    end\nend\n"));
+    ok(&format!("{SHAPE}fn f(s: Shape):\n    when s:\n        is Shape.Circle(r): print(r)\n        else: print(0)\n    end\nend\n"));
+    ok(&format!("{SHAPE}fn f(s: Shape):\n    when s:\n        is Shape.Empty: print(0)\n        is other: print(other)\n    end\nend\n"));
     // Unknown types are not checked.
-    ok("fn f(x):\n    match x:\n        is 1: print(1)\n    end\nend\n");
+    ok("fn f(x):\n    when x:\n        is 1: print(1)\n    end\nend\n");
 }
 
 // ---- generics ---------------------------------------------------------------------

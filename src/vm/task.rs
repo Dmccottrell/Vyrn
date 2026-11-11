@@ -1,5 +1,5 @@
 //! Tasks and channels: the shared state behind `spawn`, `await`, `sleep`
-//! and `async for`.
+//! and `async each`.
 //!
 //! Tasks are *stackful*: each one owns its registers and call frames, kept
 //! by the VM while the task is suspended. That is why any function can

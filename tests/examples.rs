@@ -61,7 +61,7 @@ fn all_sources_tokenize() {
 }
 
 /// In the examples, every header that opens a block (a `:` at the end of a
-/// line) has exactly one `end`. The examples use no elif/else/catch chains,
+/// line) has exactly one `end`. The examples use no else/catch chains,
 /// whose clauses share their chain's `end`, so the counts must match exactly.
 /// This is a cheap stand-in for parsing until the parser exists.
 #[test]

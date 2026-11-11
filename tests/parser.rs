@@ -97,10 +97,7 @@ fn placement_pipeline_and_conditional() {
 
 #[test]
 fn prefix_operators() {
-    assert_eq!(
-        ex("try await db.find(id)"),
-        "(try (await (call (. db find) id)))"
-    );
+    assert_eq!(ex("await db.find(id)"), "(await (call (. db find) id))");
     assert_eq!(
         ex("spawn step(move batch)"),
         "(spawn (call step (move batch)))"
@@ -149,16 +146,16 @@ fn literals_and_collections() {
 #[test]
 fn comprehensions_and_lambdas() {
     assert_eq!(
-        ex("[x * 2 for x in xs if x > 0]"),
-        "(list-comp (* x 2) (for x xs) (if (> x 0)))"
+        ex("[x * 2 each x in xs if x > 0]"),
+        "(list-comp (* x 2) (each x xs) (if (> x 0)))"
     );
     assert_eq!(
-        ex("[a + b for a in xs for b in ys]"),
-        "(list-comp (+ a b) (for a xs) (for b ys))"
+        ex("[a + b each a in xs each b in ys]"),
+        "(list-comp (+ a b) (each a xs) (each b ys))"
     );
     assert_eq!(
-        ex("{k: v for k, v in pairs}"),
-        "(map-comp k v (for (k, v) pairs))"
+        ex("{k: v each k, v in pairs}"),
+        "(map-comp k v (each (k, v) pairs))"
     );
     assert_eq!(ex("fn(x) => x * 2"), "(fn (x) (* x 2))");
     assert_eq!(
@@ -208,12 +205,12 @@ fn one_line_and_block_bodies() {
     assert_eq!(
         stmts(
             "if lives == 0: stop\n\
-             for e in es: e.update(dt)\n\
-             while running:\n    tick()\nend"
+             each e in es: e.update(dt)\n\
+             loop running:\n    tick()\nend"
         ),
         "if (== lives 0)\n  stop\n\
-         for e in es\n  (call (. e update) dt)\n\
-         while running\n  (call tick)\n"
+         each e in es\n  (call (. e update) dt)\n\
+         loop running\n  (call tick)\n"
     );
 }
 
@@ -222,14 +219,14 @@ fn if_chains_share_one_end() {
     assert_eq!(
         stmts(
             "if a:\n    x = 1\n\
-             elif b: x = 2\n\
-             elif c:\n    x = 3\n    y = 4\n\
+             else if b: x = 2\n\
+             else if c:\n    x = 3\n    y = 4\n\
              else: x = 0\n\
              end"
         ),
         "if a\n  x = 1\n\
-         elif b\n  x = 2\n\
-         elif c\n  x = 3\n  y = 4\n\
+         else if b\n  x = 2\n\
+         else if c\n  x = 3\n  y = 4\n\
          else\n  x = 0\n"
     );
 }
@@ -238,8 +235,8 @@ fn if_chains_share_one_end() {
 fn nested_blocks_close_in_order() {
     assert_eq!(
         stmts(
-            "for row in grid:\n\
-             \x20   for cell in row:\n\
+            "each row in grid:\n\
+             \x20   each cell in row:\n\
              \x20       if cell.alive:\n\
              \x20           count += 1\n\
              \x20       end\n\
@@ -247,8 +244,8 @@ fn nested_blocks_close_in_order() {
              end\n\
              print(count)"
         ),
-        "for row in grid\n\
-         \x20 for cell in row\n\
+        "each row in grid\n\
+         \x20 each cell in row\n\
          \x20   if (. cell alive)\n\
          \x20     count += 1\n\
          (call print count)\n"
@@ -259,14 +256,14 @@ fn nested_blocks_close_in_order() {
 fn loops_of_every_kind() {
     assert_eq!(
         stmts(
-            "for mut e in world: e.x += 1\n\
-             par for dev, batch in zip(devices, data): run(batch)\n\
-             async for event in stream: handle(event)\n\
+            "each mut e in world: e.x += 1\n\
+             par each dev, batch in zip(devices, data): run(batch)\n\
+             async each event in stream: handle(event)\n\
              loop: skip"
         ),
-        "for mut e in world\n  (. e x) += 1\n\
-         par for (dev, batch) in (call zip devices data)\n  (call run batch)\n\
-         async for event in stream\n  (call handle event)\n\
+        "each mut e in world\n  (. e x) += 1\n\
+         par each (dev, batch) in (call zip devices data)\n  (call run batch)\n\
+         async each event in stream\n  (call handle event)\n\
          loop\n  skip\n"
     );
 }
@@ -275,7 +272,7 @@ fn loops_of_every_kind() {
 fn match_arms() {
     assert_eq!(
         stmts(
-            "match shape:\n\
+            "when shape:\n\
              \x20   is Shape.Circle(r): return r\n\
              \x20   is Shape.Rect(w, h) if w > 0:\n\
              \x20       return w * h\n\
@@ -285,7 +282,7 @@ fn match_arms() {
              \x20   else: return -1\n\
              end"
         ),
-        "match shape\n\
+        "when shape\n\
          \x20 is Shape.Circle(r)\n    return r\n\
          \x20 is Shape.Rect(w, h) if (> w 0)\n    return (* w h)\n\
          \x20 is 1 to 9 or 20 as n\n    return n\n\
@@ -299,20 +296,20 @@ fn match_arms() {
 fn try_with_on_region() {
     assert_eq!(
         stmts(
-            "try:\n    risky()\n\
+            "attempt:\n    risky()\n\
              catch IoError as e: log(e)\n\
              catch: fail Unknown()\n\
-             finally: close()\n\
+             always: close()\n\
              end\n\
-             with open(p) as f, lock: f.read()\n\
+             using open(p) as f, lock: f.read()\n\
              on gpu[1]: y = x @ w\n\
              region frame:\n    let tmp: [u8] on frame = scratch()\nend"
         ),
-        "try\n  (call risky)\n\
+        "attempt\n  (call risky)\n\
          catch IoError as e\n  (call log e)\n\
          catch\n  fail (call Unknown)\n\
-         finally\n  (call close)\n\
-         with (call open p) as f, lock\n  (call (. f read))\n\
+         always\n  (call close)\n\
+         using (call open p) as f, lock\n  (call (. f read))\n\
          on (index gpu 1)\n  y = (@ x w)\n\
          region frame\n  let tmp: [u8] on frame = (call scratch)\n"
     );
@@ -341,12 +338,12 @@ fn functions_with_modifiers_and_results() {
     assert_eq!(
         tree(
             "pub strict fn step(mut world: [Entity], dt: f32 = 0.016):\n    pass_through()\nend\n\
-             async fn fetch(id: u64) -> User fails NotFound: return try await db.find(id)\n\
+             async fn fetch(id: u64) -> User fails NotFound: return await db.find(id)\n\
              export \"wasm\" fn render(own scene: Scene) -> int:\n    return 0\nend\n\
              kernel fn mm[T](a: tensor[T; M, K], b: tensor[T; K, N]) -> tensor[T; M, N]: return a @ b\n"
         ),
         "pub strict fn step(mut world: [Entity], dt: f32 = 0.016)\n  (call pass_through)\n\
-         async fn fetch(id: u64) -> User fails NotFound\n  return (try (await (call (. db find) id)))\n\
+         async fn fetch(id: u64) -> User fails NotFound\n  return (await (call (. db find) id))\n\
          export \"wasm\" fn render(own scene: Scene) -> int\n  return 0\n\
          kernel fn mm[T](a: tensor[T; M, K], b: tensor[T; K, N]) -> tensor[T; M, N]\n  return (@ a b)\n"
     );
@@ -390,7 +387,7 @@ fn structs_classes_and_enums() {
              \x20       self.health -= n\n\
              \x20   end\n\
              end\n\
-             class Enemy(Actor):\n    speed = 2\nend\n\
+             object Enemy(Actor):\n    speed = 2\nend\n\
              enum Shape:\n    Circle(radius: f32)\n    Rect(f32, f32)\n    Empty\n    Big = 10\nend\n"
         ),
         "struct Entity\n\
@@ -399,7 +396,7 @@ fn structs_classes_and_enums() {
          \x20 pub name = \"hero\"\n\
          \x20 fn damage(mut self, n: f32)\n\
          \x20   (. self health) -= n\n\
-         class Enemy(Actor)\n  speed = 2\n\
+         object Enemy(Actor)\n  speed = 2\n\
          enum Shape\n  Circle(radius: f32)\n  Rect(f32, f32)\n  Empty\n  Big = 10\n"
     );
 }
@@ -427,7 +424,7 @@ fn traits_impls_and_externs() {
 #[test]
 fn routes_and_groups() {
     let module = parse(
-        "route GET \"/users/{id}\" (id: u64, db: Db) -> User fails NotFound:\n    return try await db.find(id)\nend\n\
+        "route GET \"/users/{id}\" (id: u64, db: Db) -> User fails NotFound:\n    return await db.find(id)\nend\n\
          routes \"/admin\":\n    @require(role = \"admin\")\n    route DELETE \"/users/{id}\" (id: u64): return 204\n    routes \"/v2\":\n        route GET \"/health\": return \"ok\"\n    end\nend\n",
     )
     .unwrap();
@@ -446,7 +443,7 @@ fn routes_and_groups() {
     assert_eq!(routes[2].path.template(), "/health");
     assert_eq!(
         pretty::module(&module),
-        "route GET \"/users/{id}\" (id: u64, db: Db) -> User fails NotFound\n  return (try (await (call (. db find) id)))\n\
+        "route GET \"/users/{id}\" (id: u64, db: Db) -> User fails NotFound\n  return (await (call (. db find) id))\n\
          routes \"/admin\"\n  @require(role=\"admin\")\n  route DELETE \"/users/{id}\" (id: u64)\n    return 204\n  routes \"/v2\"\n    route GET \"/health\" ()\n      return \"ok\"\n"
     );
 }
@@ -552,9 +549,9 @@ fn assignment_in_a_condition_gets_a_hint() {
 
 #[test]
 fn unclosed_block_points_at_its_header() {
-    let e = one_error("main:\n    for x in xs:\n        print(x)\n");
+    let e = one_error("main:\n    each x in xs:\n        print(x)\n");
     // The `for` is reported, not `main`, because it is the innermost block.
-    assert_eq!(e.message, "this `for` block is never closed");
+    assert_eq!(e.message, "this `each` block is never closed");
     assert_eq!((e.span.start.line, e.span.start.column), (2, 5));
 }
 
@@ -606,16 +603,13 @@ fn stray_end() {
 #[test]
 fn one_line_if_cannot_take_else() {
     let e = one_error("main:\n    if a: x = 1\n    else: x = 2\nend\n");
-    assert_eq!(
-        e.message,
-        "a one-line `if` cannot continue with `elif` or `else`"
-    );
+    assert_eq!(e.message, "a one-line `if` cannot continue with `else`");
 }
 
 #[test]
 fn compound_statement_after_a_colon() {
-    let e = one_error("main:\n    if a: for x in xs: go()\nend\n");
-    assert_eq!(e.message, "`for` cannot follow `:` on the same line");
+    let e = one_error("main:\n    if a: each x in xs: go()\nend\n");
+    assert_eq!(e.message, "`each` cannot follow `:` on the same line");
 }
 
 #[test]
@@ -628,12 +622,12 @@ fn python_spellings_get_vyrn_hints() {
         ),
         ("import os\n", "`import` is not a Vyrn keyword", "use"),
         (
-            "main:\n    for x in xs:\n        break\n    end\nend\n",
+            "main:\n    each x in xs:\n        break\n    end\nend\n",
             "`break` is not a Vyrn keyword",
             "stop",
         ),
         (
-            "main:\n    for x in xs:\n        continue\n    end\nend\n",
+            "main:\n    each x in xs:\n        continue\n    end\nend\n",
             "`continue` is not a Vyrn keyword",
             "skip",
         ),
@@ -648,7 +642,7 @@ fn python_spellings_get_vyrn_hints() {
             "",
         ),
         (
-            "main:\n    match x:\n        case 1: stop\n    end\nend\n",
+            "main:\n    when x:\n        case 1: stop\n    end\nend\n",
             "`case` is not a Vyrn keyword",
             "is",
         ),
@@ -672,14 +666,75 @@ fn python_spellings_get_vyrn_hints() {
 }
 
 #[test]
-fn else_if_suggests_elif() {
+fn else_if_chains() {
     let (module, errors) = parse_recovering(
-        "main:\n    if a:\n        x = 1\n    else if b:\n        x = 2\n    end\nend\n",
+        "main:\n    if a:\n        x = 1\n    else if b:\n        x = 2\n    else:\n        x = 3\n    end\nend\n",
     );
-    assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0].message, "write `elif` instead of `else if`");
-    // The branch is still kept.
-    assert!(pretty::module(&module).contains("elif b"));
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(pretty::module(&module).contains("else if b"));
+}
+
+#[test]
+fn python_habits_are_explained() {
+    let cases = [
+        (
+            "main:\n    while x < 3:\n        x += 1\n    end\nend\n",
+            "while",
+            "`loop condition:`",
+        ),
+        (
+            "main:\n    for x in xs:\n        print(x)\n    end\nend\n",
+            "for",
+            "`each item in items:`",
+        ),
+        (
+            "main:\n    if a:\n        x = 1\n    elif b:\n        x = 2\n    end\nend\n",
+            "elif",
+            "`else if condition:`",
+        ),
+        (
+            "main:\n    match x:\n        is 1: print(1)\n    end\nend\n",
+            "match",
+            "`when value:`",
+        ),
+        (
+            "main:\n    try:\n        risky()\n    catch:\n        print(1)\n    end\nend\n",
+            "try",
+            "`attempt:`",
+        ),
+        ("class Point:\n    x: int\nend\n", "class", "`object Name:`"),
+        (
+            "main:\n    with open(p) as f:\n        print(f)\n    end\nend\n",
+            "with",
+            "`using resource as name:`",
+        ),
+    ];
+    let (_, errors) = parse_recovering("main:\n    print([x * 2 for x in xs])\nend\n");
+    assert!(
+        errors[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("each x in xs")),
+        "{errors:?}"
+    );
+    for (src, word, hint) in cases {
+        let (_, errors) = parse_recovering(src);
+        let message = format!("`{word}` is not a Vyrn keyword");
+        let found = errors.iter().find(|e| e.message == message);
+        assert!(
+            found.is_some_and(|e| e.hint.as_deref().is_some_and(|h| h.contains(hint))),
+            "{src}\nexpected {message:?} with a hint mentioning {hint}, got {:?}",
+            errors
+                .iter()
+                .map(|e| (&e.message, &e.hint))
+                .collect::<Vec<_>>()
+        );
+    }
+    // The same words are fine as names.
+    let (_, errors) = parse_recovering(
+        "main:\n    match = 1\n    with = [match]\n    class = with[0]\n    print(class)\nend\n",
+    );
+    assert!(errors.is_empty(), "{errors:?}");
 }
 
 #[test]
@@ -756,16 +811,16 @@ fn lexical_errors_are_not_repeated_as_syntax_errors() {
 
 #[test]
 fn rendered_parse_error() {
-    let src = "main:\n    for x in xs\n        print(x)\n    end\nend\n";
+    let src = "main:\n    each x in xs\n        print(x)\n    end\nend\n";
     let rendered = errors(src)[0].render("loop.vyrn", src);
     assert_eq!(
         rendered,
         "\
-error: expected `:` to end the `for` line, found the end of the line
- --> loop.vyrn:2:16
+error: expected `:` to end the `each` line, found the end of the line
+ --> loop.vyrn:2:17
   |
-2 |     for x in xs
-  |                ^
+2 |     each x in xs
+  |                 ^
   = help: a header line ends with `:`, followed by one statement or by a block closed with `end`
 "
     );

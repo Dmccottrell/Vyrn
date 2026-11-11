@@ -37,7 +37,7 @@ declaration   = const_decl
               | type_alias
               | fn_decl
               | struct_decl
-              | class_decl
+              | object_decl
               | enum_decl
               | trait_decl
               | impl_decl
@@ -65,7 +65,7 @@ block         = { statement } ;
 suite         = ":" ( simple_stmt NEWLINE
                     | NEWLINE block "end" NEWLINE ) ;
 
-(* A clause body inside a chain (elif, else, is, catch, finally). The chain
+(* A clause body inside a chain (else if, else, is, catch, always). The chain
    as a whole closes with one `end`, so a clause has no `end` of its own.     *)
 clause_body   = simple_stmt NEWLINE
               | NEWLINE block ;
@@ -102,10 +102,10 @@ generic_params = "[" generic_param { "," generic_param } "]" ;
 generic_param  = IDENT [ ":" type { "+" type } ] ;
 
 (* struct: value type, statically sized, stored inline. No inheritance.
-   class:  reference type, heap allocated, automatically reference counted.
-           May extend one base class: class Enemy(Actor):                    *)
+   object: reference type, heap allocated, automatically reference counted.
+           May extend one base object: object Enemy(Actor):                  *)
 struct_decl   = "struct" IDENT [ generic_params ] ":" NEWLINE { member } "end" NEWLINE ;
-class_decl    = "class" IDENT [ generic_params ] [ "(" type ")" ] ":" NEWLINE
+object_decl   = "object" IDENT [ generic_params ] [ "(" type ")" ] ":" NEWLINE
                 { member } "end" NEWLINE ;
 member        = field_decl
               | method_decl ;
@@ -178,22 +178,21 @@ fail_stmt     = "fail" expression ;
 defer_stmt    = "defer" expression ;
 
 compound_stmt = if_stmt
-              | while_stmt
               | loop_stmt
-              | for_stmt
-              | match_stmt
-              | try_stmt
-              | with_stmt
+              | each_stmt
+              | when_stmt
+              | attempt_stmt
+              | using_stmt
               | on_stmt
               | region_stmt
               | unsafe_stmt
               | { decorator } fn_decl ;
 
 (* Two forms.
-     One line, no `end`, no elif/else:      if lives == 0: stop
+     One line, no `end`, no else:           if lives == 0: stop
      A chain closed by a single `end`:      if a:
                                                 ...
-                                            elif b: return 2
+                                            else if b: return 2
                                             else:
                                                 ...
                                             end
@@ -203,36 +202,38 @@ compound_stmt = if_stmt
 if_stmt       = "if" condition ":"
                 ( simple_stmt NEWLINE
                 | NEWLINE block
-                  { "elif" condition ":" clause_body }
+                  { "else" "if" condition ":" clause_body }
                   [ "else" ":" clause_body ]
                   "end" NEWLINE ) ;
 condition     = expression
               | "let" pattern "=" expression ;
 
-while_stmt    = "while" condition suite ;
-loop_stmt     = "loop" suite ;
+(* `loop cond:` repeats while the condition holds; `loop:` repeats until
+   `stop` or `return`.                                                         *)
+loop_stmt     = "loop" [ condition ] suite ;
 
 (* `in` is used for iteration and membership only.
-   `for mut e in xs` borrows each element mutably; `for own e in xs` consumes
-   the collection. `par for` runs iterations in parallel; `async for` awaits
-   an async stream.                                                            *)
-for_stmt      = [ "async" | "par" ] "for" [ pass_mode ] bind_target
+   `each mut e in xs` borrows each element mutably; `each own e in xs`
+   consumes the collection. `par each` runs iterations in parallel;
+   `async each` awaits an async stream.                                        *)
+each_stmt     = [ "async" | "par" ] "each" [ pass_mode ] bind_target
                 "in" expression suite ;
 
 (* Arms run until the next `is`, `else` or `end`. No arm falls through. *)
-match_stmt    = "match" expression ":" NEWLINE
-                { match_arm }
+when_stmt     = "when" expression ":" NEWLINE
+                { when_arm }
                 [ "else" ":" clause_body ]
                 "end" NEWLINE ;
-match_arm     = "is" pattern [ "if" expression ] ":" clause_body ;
+when_arm      = "is" pattern [ "if" expression ] ":" clause_body ;
 
-try_stmt      = "try" ":" NEWLINE block
+(* `always` runs on every way out: normal end, `return`, `stop`, failure. *)
+attempt_stmt  = "attempt" ":" NEWLINE block
                 { "catch" [ type [ "as" IDENT ] ] ":" clause_body }
-                [ "finally" ":" clause_body ]
+                [ "always" ":" clause_body ]
                 "end" NEWLINE ;
 
-with_stmt     = [ "async" ] "with" with_item { "," with_item } suite ;
-with_item     = expression [ "as" IDENT ] ;
+using_stmt    = [ "async" ] "using" using_item { "," using_item } suite ;
+using_item    = expression [ "as" IDENT ] ;
 
 (* `on` is the single placement keyword. Its target is either a device
    (cpu, gpu[0], gpu[0 to 3]) or a memory region (frame). Inside the block,
@@ -323,7 +324,6 @@ term          = unary { ( "*" | "/" | "//" | "%" | "@" ) unary } ;
 unary         = ( "-" | "+" | "~" ) unary
               | "await" unary
               | "spawn" unary
-              | "try" unary
               | "move" unary
               | power ;
 power         = postfix [ "**" unary ] ;
@@ -366,8 +366,8 @@ atom          = IDENT
 map_items     = map_item { "," map_item } [ "," ] ;
 map_item      = expression ":" expression ;
 
-comp_clauses  = comp_for { comp_for | comp_if } ;
-comp_for      = "for" bind_target "in" pipeline ;
+comp_clauses  = comp_each { comp_each | comp_if } ;
+comp_each     = "each" bind_target "in" pipeline ;
 comp_if       = "if" pipeline ;
 
 literal       = INT | FLOAT | STRING | "true" | "false" | "none" ;
@@ -396,11 +396,15 @@ seq_pat       = pattern
 (* ---- 7. Reserved words --------------------------------------------------- *)
 
 (* Hard keywords:
-     and any as async await by catch class const defer elif else end enum
-     export extern fail fails false finally fn for if impl in is kernel let
-     loop main match move mut none not on or own par ptr pub ref region return
+     always and any as async attempt await by catch const defer each else end
+     enum export extern fail fails false fn for if impl in is kernel let loop
+     main move mut none not object on or own par ptr pub ref region return
      route routes shared skip spawn stop strict struct tensor to trait true
-     try type unsafe until use var weak while with
+     type unsafe until use using var weak when
+
+   `for` appears only in `impl Trait for Type`. Python's words (def, elif,
+   while, match, class, with, try, finally, pass, ...) are ordinary names;
+   used as statement headers, the parser names the Vyrn word instead.
 
    A word directly after `.` or `?.` is always an identifier, so fields and
    methods may use these names (range.end, player.move).
@@ -415,9 +419,9 @@ seq_pat       = pattern
 (* ---- 8. Changes from v0.3 ------------------------------------------------ *)
 
 (* Python's shape, Vyrn's words.
-   1. Headers end with ":" (fn, if, for, struct, route, main, ...). A body is
+   1. Headers end with ":" (fn, if, each, struct, route, main, ...). A body is
       either one statement on the same line, or a block closed by `end`.
-   2. `then` is removed. `elif` continues an if chain. The conditional
+   2. `then` is removed. `else if` continues an if chain. The conditional
       expression is Python's `a if cond else b`.
    3. `returns T` becomes `-> T`; `fails E` follows it with no comma.
    4. `div` and `mod` become `//` and `%`.
@@ -426,7 +430,11 @@ seq_pat       = pattern
    6. The postfix `'` transpose is removed in favour of `.T` / `.mT`, which
       frees `'` for single-quoted strings.
    7. The `fn f(x) = expr` form is removed; write `fn f(x): return expr`.
-   8. A class may extend one base class: class Enemy(Actor):              *)
+   8. An object may extend one base object: object Enemy(Actor):
+   9. Vyrn's own words: each (for), loop (while), when (match),
+      using (with), attempt/always (try/finally), object (class),
+      else if (elif). The `try` expression prefix is removed: a failure
+      passes up to the caller by itself.                                    *)
 
 
 (* ---- 9. Lexical grammar -------------------------------------------------- *)

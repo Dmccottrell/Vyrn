@@ -44,11 +44,11 @@ main:
 
     ages = {"Ada": 36, "Alan": 41}
     ages["Grace"] = 85
-    for name, age in ages.items():
+    each name, age in ages.items():
         print("{name} is {age}")
     end
 
-    squares = [n * n for n in 1 to 5]
+    squares = [n * n each n in 1 to 5]
     print(squares)
 end
 ```
@@ -63,9 +63,9 @@ Grace is 85
 [1, 4, 9, 16, 25]
 ```
 
-`[...]` is a list and `{...}` a map. `for` walks through anything you can
+`[...]` is a list and `{...}` a map. `each` walks through anything you can
 loop over; `1 to 5` counts from 1 to 5 inclusive (`0 until 5` stops before
-5). `[n * n for n in ...]` builds a list in one line.
+5). `[n * n each n in ...]` builds a list in one line.
 
 ## 3. Functions, `let` and `var`
 
@@ -84,7 +84,7 @@ main:
 
     let limit = 10      # `let` never changes
     var count = 0       # `var` can
-    while count < limit:
+    loop count < limit:
         count += 3
     end
     print(count)
@@ -105,7 +105,7 @@ call passes the wrong kind of value, before the program runs. `let` names a
 value that never changes; `var` one that can. Plain `x = 1` works too, as in
 Python.
 
-## 4. Choices: `if` and `match`
+## 4. Choices: `if` and `when`
 
 ```vyrn
 enum Shape:
@@ -115,7 +115,7 @@ enum Shape:
 end
 
 fn area(s: Shape) -> float:
-    match s:
+    when s:
         is Shape.Circle(r): return 3.14159 * r * r
         is Shape.Rect(w, h): return w * h
         is Shape.Empty: return 0.0
@@ -125,7 +125,7 @@ end
 fn size(n: int) -> str:
     if n < 10:
         return "small"
-    elif n < 100:
+    else if n < 100:
         return "medium"
     else:
         return "large"
@@ -145,11 +145,11 @@ It prints:
 small medium large
 ```
 
-An `enum` lists the forms a value can take, and `match` handles each one.
+An `enum` lists the forms a value can take, and `when` handles each one.
 Leave a case out and `vyrn check` tells you which:
 
 ```text
-error: this `match` does not handle `Shape.Empty`
+error: this `when` does not handle `Shape.Empty`
   = help: add `is Shape.Empty: ...` for each, or an `else:` arm
 ```
 
@@ -165,7 +165,7 @@ struct Point:
     end
 end
 
-class Counter:
+object Counter:
     count: int = 0
 
     fn add(self, n: int):
@@ -193,7 +193,7 @@ It prints:
 5
 ```
 
-A `struct` is a value, like a number: assigning it copies it. A `class` is
+A `struct` is a value, like a number: assigning it copies it. An `object` is
 shared: two names can refer to the same object. Methods take `self` first.
 
 ## 6. Missing values and errors
@@ -218,7 +218,7 @@ end
 main:
     print(find("Ada"), find("Bob"))
     print(find("Bob") ?? 0)
-    try:
+    attempt:
         print(age_of("Alan"))
         print(age_of("Bob"))
     catch NotFound as e:
@@ -238,7 +238,7 @@ no one called Bob
 
 `int?` means "an int, or `none`". Vyrn will not let you use it as an `int`
 until you have checked: after `if age == none: fail ...`, it knows `age` is
-an int. `??` gives a default. `fail` stops with an error, and `try` /
+an int. `??` gives a default. `fail` stops with an error, and `attempt` /
 `catch` handles it; any struct can be an error.
 
 ## 7. Doing several things at once
@@ -259,7 +259,7 @@ main:
     jobs.send(1)
     jobs.send(2)
     jobs.close()
-    async for job in jobs:
+    async each job in jobs:
         print("job", job)
     end
 end

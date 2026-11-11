@@ -13,7 +13,7 @@ enum Shape:
     Empty
 
     fn area(self) -> f32:
-        match self:
+        when self:
             is Shape.Circle(r): return 3.14 * r ** 2
             is Shape.Rect(w, h) if w > 0.0:
                 return w * h
@@ -31,11 +31,11 @@ impl Drawable for Shape:
     end
 end
 
-class Actor:
+object Actor:
     name = "actor"
 end
 
-class Node[T: Ord + Hash](Actor):
+object Node[T: Ord + Hash](Actor):
     value: T
     next: shared Node[T]?
     parent: weak Node[T]
@@ -51,8 +51,8 @@ extern "c" fn puts(s: ptr u8) -> i32
 fn square(x): return x * x
 
 export "wasm" fn render(own scene: Scene, canvas: ref mut Canvas) -> int fails RenderError:
-    let xs = [x * 2 for x in 0 until 10 if x % 2 == 0]
-    let m = {k: v for k, v in pairs}
+    let xs = [x * 2 each x in 0 until 10 if x % 2 == 0]
+    let m = {k: v each k, v in pairs}
     let f = fn(a, b = 1) => a + b
     var y = xs |> sum
     let name = user?.name ?? 'anon'
@@ -60,23 +60,23 @@ export "wasm" fn render(own scene: Scene, canvas: ref mut Canvas) -> int fails R
     let half = range.end // 2
     if let Shape.Circle(r) = shape:
         log("r={r} \{literal\}")
-    elif y in 0 to 5:
+    else if y in 0 to 5:
         y -= 1
-    elif y > 100: y = 100
+    else if y > 100: y = 100
     else:
         fail Bad(r"raw {text}")
     end
-    try:
-        with open(p) as fh, lock:
+    attempt:
+        using open(p) as fh, lock:
             defer fh.close()
         end
     catch IoError as e:
         return -1
     catch: return -2
-    finally:
+    always:
         y = 0
     end
-    match command:
+    when command:
         is "n" or "north": y += 1
         is 1 to 9 as digit: y = digit
         is [first, ...rest]: y = first
@@ -95,14 +95,14 @@ export "wasm" fn render(own scene: Scene, canvas: ref mut Canvas) -> int fails R
 end
 
 async fn train(model, data, w: tensor[f32; ..., _, 3] on gpu[0 to 3]):
-    par for dev, batch in zip(gpu[0 until 4], data):
+    par each dev, batch in zip(gpu[0 until 4], data):
         on dev:
             let t = spawn step(mut model, move batch)
             var loss = await t
             loss **= 2
         end
     end
-    async for ev in stream: x[1:9:2, ..., none] @= w[mask].mT
+    async each ev in stream: x[1:9:2, ..., none] @= w[mask].mT
     let total = 1.5e-3f32 +
         2f64 +
         0b1010 + 0o17 + 1_000_000

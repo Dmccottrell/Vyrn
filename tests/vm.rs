@@ -65,7 +65,8 @@ fn locals_are_operands_without_copies() {
 #[test]
 fn counted_loops_cost_one_instruction_per_iteration() {
     let program =
-        compile_source("main:\n    total = 0\n    for i in 0 until 10: total += i\nend\n").unwrap();
+        compile_source("main:\n    total = 0\n    each i in 0 until 10: total += i\nend\n")
+            .unwrap();
     let main = &program.protos[program.main.unwrap()];
     let body: Vec<&Op> = main
         .code
@@ -137,16 +138,16 @@ fn logic_short_circuits_and_returns_operands() {
 fn control_flow() {
     assert_eq!(
         main(
-            "for n in [3, 8, 15]:\n\
+            "each n in [3, 8, 15]:\n\
              \x20   if n % 15 == 0:\n\
              \x20       print(\"fizzbuzz\")\n\
-             \x20   elif n % 3 == 0:\n\
+             \x20   else if n % 3 == 0:\n\
              \x20       print(\"fizz\")\n\
              \x20   else: print(n)\n\
              \x20   end\n\
              end\n\
              i = 0\n\
-             while i < 10:\n\
+             loop i < 10:\n\
              \x20   i += 1\n\
              \x20   if i % 2 == 0: skip\n\
              \x20   if i > 7: stop\n\
@@ -166,10 +167,10 @@ fn control_flow() {
 fn ranges_and_counted_loops() {
     assert_eq!(
         main(
-            "total = 0\nfor i in 1 to 100: total += i\nprint(total)\n\
-             print([i for i in 10 until 0 by -3], len(0 until 10 by 3), 5 in 0 to 5, 5 in 0 until 5)\n\
-             for _ in 0 until 0: print(\"never\")\n\
-             r = 2 to 4\nprint([x * x for x in r], r)"
+            "total = 0\neach i in 1 to 100: total += i\nprint(total)\n\
+             print([i each i in 10 until 0 by -3], len(0 until 10 by 3), 5 in 0 to 5, 5 in 0 until 5)\n\
+             each _ in 0 until 0: print(\"never\")\n\
+             r = 2 to 4\nprint([x * x each x in r], r)"
         ),
         "5050\n[10, 7, 4, 1] 4 true false\n[4, 9, 16] 2 until 5\n"
     );
@@ -196,9 +197,9 @@ fn collections() {
 fn comprehensions() {
     assert_eq!(
         main(
-            "print([x * 2 for x in 0 until 5 if x % 2 == 0])\n\
-             print([(a, b) for a in [1, 2] for b in \"xy\"])\n\
-             print({k: v * 10 for k, v in [(\"a\", 1), (\"b\", 2)]})"
+            "print([x * 2 each x in 0 until 5 if x % 2 == 0])\n\
+             print([(a, b) each a in [1, 2] each b in \"xy\"])\n\
+             print({k: v * 10 each k, v in [(\"a\", 1), (\"b\", 2)]})"
         ),
         "[0, 4, 8]\n[(1, \"x\"), (1, \"y\"), (2, \"x\"), (2, \"y\")]\n{\"a\": 10, \"b\": 20}\n"
     );
@@ -272,8 +273,8 @@ fn structs_are_values() {
 fn classes_are_shared_and_inherit() {
     assert_eq!(
         run(
-            "class Actor:\n    name: str\n    hp = 10\n    fn describe(self): return \"{self.name} ({self.hp})\"\n    fn hit(self, n): self.hp -= n\nend\n\
-             class Boss(Actor):\n    phase = 1\n    fn describe(self): return \"Boss \" + self.name\nend\n\
+            "object Actor:\n    name: str\n    hp = 10\n    fn describe(self): return \"{self.name} ({self.hp})\"\n    fn hit(self, n): self.hp -= n\nend\n\
+             object Boss(Actor):\n    phase = 1\n    fn describe(self): return \"Boss \" + self.name\nend\n\
              main:\n\
              \x20   a = Actor(\"imp\")\n\
              \x20   alias = a\n\
@@ -302,8 +303,8 @@ fn mut_self_and_mut_arguments_write_back() {
              \x20   b = Box(Counter())\n\
              \x20   b.counter.bump()\n\
              \x20   items = [Counter(), Counter()]\n\
-             \x20   for mut item in items: item.bump()\n\
-             \x20   print(c.n, b.counter.n, [i.n for i in items])\n\
+             \x20   each mut item in items: item.bump()\n\
+             \x20   print(c.n, b.counter.n, [i.n each i in items])\n\
              \x20   reset(mut c)\n\
              \x20   print(c.n)\n\
              end\n"
@@ -317,27 +318,27 @@ fn for_mut_keeps_the_list_whole_when_the_body_fails_or_leaves() {
     assert_eq!(
         run("struct C:\n    n: int\nend\n\
              fn first_big(mut xs):\n\
-             \x20   for mut x in xs:\n\
+             \x20   each mut x in xs:\n\
              \x20       x.n += 1\n\
              \x20       if x.n > 2: return x.n\n\
              \x20   end\n\
              end\n\
              main:\n\
              \x20   xs = [C(1), C(2), C(3)]\n\
-             \x20   try:\n\
-             \x20       for mut x in xs:\n\
+             \x20   attempt:\n\
+             \x20       each mut x in xs:\n\
              \x20           x.n *= 10\n\
              \x20           if x.n == 20: fail \"stop here\"\n\
              \x20       end\n\
              \x20   catch: print(\"failed\")\n\
              \x20   end\n\
-             \x20   print([x.n for x in xs])\n\
-             \x20   for mut x in xs:\n\
+             \x20   print([x.n each x in xs])\n\
+             \x20   each mut x in xs:\n\
              \x20       if x.n == 20: stop\n\
              \x20       x.n = 0\n\
              \x20   end\n\
-             \x20   print([x.n for x in xs])\n\
-             \x20   print(first_big(mut xs), [x.n for x in xs])\n\
+             \x20   print([x.n each x in xs])\n\
+             \x20   print(first_big(mut xs), [x.n each x in xs])\n\
              end\n"),
         "failed\n[10, 20, 3]\n[0, 20, 3]\n21 [1, 21, 3]\n"
     );
@@ -349,7 +350,7 @@ fn enums_and_match() {
         run(
             "enum Shape:\n    Circle(radius: float)\n    Rect(float, float)\n    Empty\n\
              \x20   fn area(self):\n\
-             \x20       match self:\n\
+             \x20       when self:\n\
              \x20           is Shape.Circle(r): return 3 * r * r\n\
              \x20           is Shape.Rect(w, h) if w == h: return \"square {w * h}\"\n\
              \x20           is Shape.Rect(w, h): return w * h\n\
@@ -358,7 +359,7 @@ fn enums_and_match() {
              \x20   end\n\
              end\n\
              main:\n\
-             \x20   for s in [Shape.Circle(1.0), Shape.Rect(2.0, 3.0), Shape.Rect(2.0, 2.0), Shape.Empty]:\n\
+             \x20   each s in [Shape.Circle(1.0), Shape.Rect(2.0, 3.0), Shape.Rect(2.0, 2.0), Shape.Empty]:\n\
              \x20       print(s, s.area())\n\
              \x20   end\n\
              \x20   print(Shape.Empty == Shape.Empty, Shape.Circle(radius = 2.0))\n\
@@ -372,8 +373,8 @@ fn enums_and_match() {
 fn patterns() {
     assert_eq!(
         main(
-            "for v in [0, 7, 42, \"n\", \"south\", (1, 2), [1, 2, 3, 4], none]:\n\
-             \x20   match v:\n\
+            "each v in [0, 7, 42, \"n\", \"south\", (1, 2), [1, 2, 3, 4], none]:\n\
+             \x20   when v:\n\
              \x20       is 0: print(\"zero\")\n\
              \x20       is 1 to 9 as d: print(\"digit\", d)\n\
              \x20       is \"n\" or \"north\": print(\"north\")\n\
@@ -395,27 +396,27 @@ fn failures_and_handlers() {
         run("struct NotFound:\n    key: str\nend\n\
              fn lookup(m, k):\n    if k not in m: fail NotFound(k)\n    return m[k]\nend\n\
              fn risky(log):\n\
-             \x20   try:\n\
+             \x20   attempt:\n\
              \x20       return lookup({}, \"x\")\n\
-             \x20   finally:\n\
+             \x20   always:\n\
              \x20       log.append(\"cleanup\")\n\
              \x20   end\n\
              end\n\
              main:\n\
-             \x20   try:\n\
+             \x20   attempt:\n\
              \x20       print(lookup({\"a\": 1}, \"a\"))\n\
              \x20       print(lookup({\"a\": 1}, \"b\"))\n\
              \x20       print(\"not reached\")\n\
              \x20   catch NotFound as e:\n\
              \x20       print(\"missing\", e.key)\n\
              \x20   end\n\
-             \x20   try:\n\
+             \x20   attempt:\n\
              \x20       print(1 // 0)\n\
              \x20   catch IndexError: print(\"wrong\")\n\
              \x20   catch DivisionByZero as e: print(\"caught\", e.kind)\n\
              \x20   end\n\
              \x20   log = []\n\
-             \x20   try:\n\
+             \x20   attempt:\n\
              \x20       risky(log)\n\
              \x20   catch: print(\"risky failed\")\n\
              \x20   end\n\
@@ -429,12 +430,12 @@ fn failures_and_handlers() {
 fn finally_runs_on_every_exit() {
     assert_eq!(
         run("fn f(log):\n\
-             \x20   for i in 0 until 3:\n\
-             \x20       try:\n\
+             \x20   each i in 0 until 3:\n\
+             \x20       attempt:\n\
              \x20           if i == 0: skip\n\
              \x20           if i == 2: return \"returned\"\n\
              \x20           log.append(\"body {i}\")\n\
-             \x20       finally:\n\
+             \x20       always:\n\
              \x20           log.append(\"finally {i}\")\n\
              \x20       end\n\
              \x20   end\n\
@@ -453,7 +454,7 @@ fn defer_runs_when_the_block_ends() {
     assert_eq!(
         main(
             "log = []\n\
-             try:\n\
+             attempt:\n\
              \x20   defer log.append(\"closed\")\n\
              \x20   log.append(\"opened\")\n\
              \x20   x = [][0]\n\
@@ -488,7 +489,7 @@ fn tasks_interleave_while_sleeping() {
 fn channels_feed_async_for() {
     assert_eq!(
         run("async fn produce(ch, n):\n\
-             \x20   for i in 0 until n:\n\
+             \x20   each i in 0 until n:\n\
              \x20       ch.send(i * i)\n\
              \x20       await sleep(0)\n\
              \x20   end\n\
@@ -498,7 +499,7 @@ fn channels_feed_async_for() {
              \x20   ch = channel()\n\
              \x20   producer = produce(ch, 4)\n\
              \x20   total = 0\n\
-             \x20   async for x in ch:\n\
+             \x20   async each x in ch:\n\
              \x20       print(\"got\", x)\n\
              \x20       total += x\n\
              \x20   end\n\
@@ -511,7 +512,7 @@ fn channels_feed_async_for() {
 
 #[test]
 fn async_for_over_a_list() {
-    assert_eq!(main("async for x in [1, 2, 3]: print(x)"), "1\n2\n3\n");
+    assert_eq!(main("async each x in [1, 2, 3]: print(x)"), "1\n2\n3\n");
 }
 
 #[test]
@@ -524,7 +525,7 @@ fn awaiting_a_failed_task_raises_its_error() {
              end\n\
              main:\n\
              \x20   t = boom()\n\
-             \x20   try:\n\
+             \x20   attempt:\n\
              \x20       await t\n\
              \x20   catch Bad as e:\n\
              \x20       print(\"caught\", e.why)\n\
@@ -639,7 +640,7 @@ fn device_placement() {
              end\n\
              print(zeros(1).device)\n\
              layers = [ones(1), ones(1), ones(1), ones(1)] on gpu[0 to 1]\n\
-             print([l.device for l in layers])"
+             print([l.device each l in layers])"
         ),
         "cpu gpu:1\ngpu:0 gpu:0\ncpu\n[gpu:0, gpu:0, gpu:1, gpu:1]\n"
     );
@@ -720,9 +721,9 @@ fn small_transformer_block_runs_on_gpus() {
          \x20   return x + h @ w.w_down\n\
          end\n\
          main:\n\
-         \x20   layers = [Layer(rand(4, 8) * 0.1, rand(8, 4) * 0.1) for _ in 0 until 4] on gpu[0 to 1]\n\
+         \x20   layers = [Layer(rand(4, 8) * 0.1, rand(8, 4) * 0.1) each _ in 0 until 4] on gpu[0 to 1]\n\
          \x20   var h = rand(2, 3, 4)\n\
-         \x20   for layer in layers:\n\
+         \x20   each layer in layers:\n\
          \x20       on layer.w_up.device:\n\
          \x20           h = feed_forward(h on layer.w_up.device, layer)\n\
          \x20       end\n\
@@ -937,7 +938,7 @@ fn tensors_store_lower_precision_weights() {
     assert_eq!(
         main(
             "w = ones(64, 64)\n\
-             for dtype in [f32, f16, bf16, q8, q4]:\n\
+             each dtype in [f32, f16, bf16, q8, q4]:\n\
              \x20   packed = w.to(dtype)\n\
              \x20   print(packed.dtype, packed.nbytes, (ones(1, 64) @ packed).sum())\n\
              end\n\
@@ -976,7 +977,7 @@ fn loads_safetensors_written_by_the_reference_library() {
     assert_eq!(
         main(&format!(
             "w = load_weights(\"{}\")\n\
-             for name in sorted(w.keys()): print(name, w[name].shape, w[name].dtype, w[name])\n\
+             each name in sorted(w.keys()): print(name, w[name].shape, w[name].dtype, w[name])\n\
              print(load_weights(\"{}\", q4)[\"layer.0.weight\"].dtype)",
             fixture("weights.safetensors"),
             fixture("weights.safetensors")
@@ -998,7 +999,7 @@ fn weights_round_trip_through_a_file() {
             "save_weights(\"{path}\", {{\"w\": tensor([[1.5, -2.0]]), \"h\": tensor([0.1, 7.0], f16), \"b\": tensor([3.0], bf16)}})\n\
              back = load_weights(\"{path}\")\n\
              print(back[\"w\"], back[\"h\"], back[\"b\"])\n\
-             try:\n\
+             attempt:\n\
              \x20   save_weights(\"{path}\", {{\"q\": ones(32).to(q4)}})\n\
              catch IoError as e: print(\"refused\")\n\
              end"
@@ -1048,23 +1049,23 @@ fn device_memory_is_accounted_and_limited() {
     assert_eq!(
         run("struct Layer:\n    w: tensor[f32; D, D]\nend\n\
              main:\n\
-             \x20   layers = [Layer(rand(256, 256)) for _ in 0 until 8]\n\
-             \x20   small = [Layer(l.w.to(q4)) for l in layers]\n\
+             \x20   layers = [Layer(rand(256, 256)) each _ in 0 until 8]\n\
+             \x20   small = [Layer(l.w.to(q4)) each l in layers]\n\
              \x20   print(format_bytes(memory(layers)), format_bytes(memory(small)))\n\
              \x20   set_memory_limit(gpu[0], 1 * MB)\n\
-             \x20   try:\n\
+             \x20   attempt:\n\
              \x20       big = layers on gpu[0]\n\
              \x20   catch OutOfMemory as e: print(\"refused\")\n\
              \x20   end\n\
              \x20   print(memory_used(gpu[0]))\n\
              \x20   placed = fit(layers, gpu[0])\n\
-             \x20   print([l.w.device for l in placed], format_bytes(memory_used(gpu[0])))\n\
+             \x20   print([l.w.device each l in placed], format_bytes(memory_used(gpu[0])))\n\
              \x20   placed = none\n\
              \x20   print(memory_used(gpu[0]))\n\
              \x20   resident = small on gpu[0]\n\
              \x20   print(format_bytes(memory_used(gpu[0])))\n\
              \x20   halves = fit(layers, gpu[1], 3 * 256 * KB)\n\
-             \x20   print(len([l for l in halves if l.w.device == gpu[1]]))\n\
+             \x20   print(len([l each l in halves if l.w.device == gpu[1]]))\n\
              end\n"),
         "2.0 MB 288.0 KB\n\
          refused\n\
@@ -1137,8 +1138,8 @@ fn closures_share_the_variables_they_capture() {
              \x20   c()\n\
              \x20   print(c(), counter()())\n\
              \x20   adders = []\n\
-             \x20   for i in 0 until 3: adders.append(fn(x) => x + i)\n\
-             \x20   print([f(10) for f in adders])\n\
+             \x20   each i in 0 until 3: adders.append(fn(x) => x + i)\n\
+             \x20   print([f(10) each f in adders])\n\
              \x20   fn fact(n):\n\
              \x20       if n <= 1: return 1\n\
              \x20       return n * fact(n - 1)\n\
@@ -1161,9 +1162,9 @@ fn closures_share_the_variables_they_capture() {
 fn with_closes_resources_in_reverse_order() {
     assert_eq!(
         run(
-            "class Resource:\n    name: str\n    log: [str]\n    fn close(self): self.log.append(\"closed \" + self.name)\nend\n\
+            "object Resource:\n    name: str\n    log: [str]\n    fn close(self): self.log.append(\"closed \" + self.name)\nend\n\
              fn use_two(log):\n\
-             \x20   with Resource(\"a\", log) as a, Resource(\"b\", log) as b:\n\
+             \x20   using Resource(\"a\", log) as a, Resource(\"b\", log) as b:\n\
              \x20       log.append(\"using {a.name} and {b.name}\")\n\
              \x20       return \"done\"\n\
              \x20   end\n\
@@ -1171,8 +1172,8 @@ fn with_closes_resources_in_reverse_order() {
              main:\n\
              \x20   log = []\n\
              \x20   print(use_two(log))\n\
-             \x20   try:\n\
-             \x20       with Resource(\"c\", log): fail \"boom\"\n\
+             \x20   attempt:\n\
+             \x20       using Resource(\"c\", log): fail \"boom\"\n\
              \x20   catch: log.append(\"caught\")\n\
              \x20   end\n\
              \x20   print(log)\n\

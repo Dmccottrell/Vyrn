@@ -97,7 +97,6 @@ enum Prefix {
     Unary(UnaryOp),
     Await,
     Spawn,
-    Try,
     Move,
 }
 
@@ -273,7 +272,52 @@ impl Parser {
     }
 
     fn expected(&mut self, what: &str) -> Fail {
+        // `[x for x in xs]`: a comprehension written the Python way.
+        if self.at_kw(K::For) {
+            return self.expected_with(
+                what,
+                Some("Vyrn comprehensions use `each`: `[x * 2 each x in xs]`"),
+            );
+        }
         self.expected_with(what, None)
+    }
+
+    /// Whether a statement starting with the name `word` is a Python header
+    /// (`while x < 3:`, `def f():`, `try:`) rather than code using a
+    /// variable that happens to have that name (`match = 1`, `with(x)`).
+    fn is_python_header(&self, word: &str) -> bool {
+        if python_replacement(word).is_none() {
+            return false;
+        }
+        match self.kind_at(1) {
+            // Used as a value: `match = 3`, `with.x`, `try(1)`, `pass[0]`.
+            Tk::Punct(
+                P::Eq
+                | P::Dot
+                | P::LParen
+                | P::LBracket
+                | P::Comma
+                | P::RParen
+                | P::PlusEq
+                | P::MinusEq
+                | P::StarEq
+                | P::SlashEq,
+            ) => false,
+            Tk::Newline | Tk::Eof => matches!(word, "pass" | "break" | "continue"),
+            _ => true,
+        }
+    }
+
+    /// Explains the Vyrn word for a Python habit.
+    fn python_word(&mut self, word: &str) -> Fail {
+        let span = self.span();
+        let (vyrn, example) = python_replacement(word).unwrap_or(("", ""));
+        let _ = vyrn;
+        self.error(
+            format!("`{word}` is not a Vyrn keyword"),
+            span,
+            Some(example),
+        )
     }
 
     fn expected_hint(&mut self, what: &str, hint: &str) -> Fail {
@@ -521,7 +565,7 @@ impl Parser {
             Tk::Keyword(K::Main) => ItemKind::Main(self.main_decl()?),
             Tk::Keyword(K::Const) => ItemKind::Const(self.const_decl()?),
             Tk::Keyword(K::Type) => ItemKind::TypeAlias(self.type_alias()?),
-            Tk::Keyword(K::Struct | K::Class) => ItemKind::Aggregate(self.aggregate_decl()?),
+            Tk::Keyword(K::Struct | K::Object) => ItemKind::Aggregate(self.aggregate_decl()?),
             Tk::Keyword(K::Enum) => ItemKind::Enum(self.enum_decl()?),
             Tk::Keyword(K::Trait) => ItemKind::Trait(self.trait_decl()?),
             Tk::Keyword(K::Impl) => ItemKind::Impl(self.impl_decl()?),
@@ -553,6 +597,12 @@ impl Parser {
                 Some("remove it, or look for an extra `end` in the block above"),
             );
         }
+        if let Tk::Ident(word) = self.kind() {
+            if self.is_python_header(word) {
+                let word = word.clone();
+                return self.python_word(&word);
+            }
+        }
         let statement_like = matches!(
             self.kind(),
             Tk::Ident(_)
@@ -560,14 +610,13 @@ impl Parser {
                     K::Let
                         | K::Var
                         | K::If
-                        | K::For
+                        | K::Each
                         | K::Par
-                        | K::While
                         | K::Loop
-                        | K::Match
+                        | K::When
                         | K::Return
-                        | K::Try
-                        | K::With
+                        | K::Attempt
+                        | K::Using
                         | K::On
                         | K::Region
                         | K::Await
@@ -922,7 +971,7 @@ impl Parser {
         };
         let what = match kind {
             AggregateKind::Struct => "struct",
-            AggregateKind::Class => "class",
+            AggregateKind::Class => "object",
         };
         let name = self.expect_ident(&format!("a {what} name"))?;
         let generics = self.opt_generics()?;
@@ -937,7 +986,7 @@ impl Parser {
                 self.error(
                     "a struct cannot extend another type",
                     span,
-                    Some("only a `class` can have a base class; give the struct a field of that type instead"),
+                    Some("only an `object` can have a base; give the struct a field of that type instead"),
                 );
             } else {
                 base = Some(ty);
@@ -1459,17 +1508,23 @@ impl Parser {
         let start = self.start();
         let kind = match self.kind() {
             Tk::Keyword(K::If) => self.if_stmt()?,
-            Tk::Keyword(K::While) => self.while_stmt()?,
-            Tk::Keyword(K::Loop) => {
+            // `loop:` runs until `stop`; `loop condition:` while it holds.
+            Tk::Keyword(K::Loop) if self.kind_at(1).is_punct(P::Colon) => {
                 let header = self.bump().span;
                 StmtKind::Loop(self.suite("loop", header)?)
             }
-            Tk::Keyword(K::For | K::Par) => self.for_stmt()?,
-            Tk::Keyword(K::Async) if self.kind_at(1).is_keyword(K::For) => self.for_stmt()?,
-            Tk::Keyword(K::Async) if self.kind_at(1).is_keyword(K::With) => self.with_stmt()?,
-            Tk::Keyword(K::With) => self.with_stmt()?,
-            Tk::Keyword(K::Match) => self.match_stmt()?,
-            Tk::Keyword(K::Try) if self.kind_at(1).is_punct(P::Colon) => self.try_stmt()?,
+            Tk::Keyword(K::Loop) => self.while_stmt()?,
+            Tk::Keyword(K::Each | K::Par) => self.for_stmt()?,
+            Tk::Keyword(K::Async) if self.kind_at(1).is_keyword(K::Each) => self.for_stmt()?,
+            Tk::Keyword(K::Async) if self.kind_at(1).is_keyword(K::Using) => self.with_stmt()?,
+            Tk::Keyword(K::Using) => self.with_stmt()?,
+            Tk::Keyword(K::When) => self.match_stmt()?,
+            Tk::Keyword(K::Attempt) if self.kind_at(1).is_punct(P::Colon) => self.try_stmt()?,
+            Tk::Keyword(K::For) => return Err(self.python_word("for")),
+            Tk::Ident(word) if self.is_python_header(word) => {
+                let word = word.clone();
+                return Err(self.python_word(&word));
+            }
             Tk::Keyword(K::On) => {
                 let header = self.bump().span;
                 let target = self.coalesce()?;
@@ -1544,12 +1599,11 @@ impl Parser {
             }
             Tk::Keyword(
                 keyword @ (K::If
-                | K::While
                 | K::Loop
-                | K::For
+                | K::Each
                 | K::Par
-                | K::Match
-                | K::With
+                | K::When
+                | K::Using
                 | K::On
                 | K::Region
                 | K::Unsafe),
@@ -1562,10 +1616,10 @@ impl Parser {
                     Some("a one-line body holds one simple statement; start a new line and close the block with `end`"),
                 ))
             }
-            Tk::Keyword(K::Try) if self.kind_at(1).is_punct(P::Colon) => {
+            Tk::Keyword(K::Attempt) if self.kind_at(1).is_punct(P::Colon) => {
                 let span = self.span();
                 Err(self.error(
-                    "`try` cannot follow `:` on the same line",
+                    "`attempt` cannot follow `:` on the same line",
                     span,
                     Some("a one-line body holds one simple statement; start a new line and close the block with `end`"),
                 ))
@@ -1651,28 +1705,26 @@ impl Parser {
             let body = self.inline_body()?;
             let mut branches = vec![(condition, body)];
             let mut else_body = None;
-            if self.at_kw(K::Elif) || self.at_kw(K::Else) {
+            if self.at_kw(K::Else) {
                 let span = self.span();
                 self.error(
-                    "a one-line `if` cannot continue with `elif` or `else`",
+                    "a one-line `if` cannot continue with `else`",
                     span,
                     Some("start the chain with a block (`if condition:` and a new line) closed by `end`, or use `a if condition else b`"),
                 );
                 // Read the rest of the chain anyway, so that one mistake
                 // produces one message.
                 let mut needs_end = false;
-                loop {
-                    if self.eat_kw(K::Elif) {
+                while self.eat_kw(K::Else) {
+                    if self.eat_kw(K::If) {
                         let condition = self.condition()?;
-                        self.header_colon("elif")?;
+                        self.header_colon("else if")?;
                         needs_end |= self.at_newline();
                         branches.push((condition, self.clause_body()?));
-                    } else if self.eat_kw(K::Else) {
+                    } else {
                         self.header_colon("else")?;
                         needs_end |= self.at_newline();
                         else_body = Some(self.clause_body()?);
-                        break;
-                    } else {
                         break;
                     }
                 }
@@ -1689,28 +1741,16 @@ impl Parser {
         self.bump();
         let mut branches = vec![(condition, self.block())];
         let mut else_body = None;
-        loop {
-            if self.eat_kw(K::Elif) {
+        while self.eat_kw(K::Else) {
+            if self.eat_kw(K::If) {
                 let condition = self.condition()?;
-                self.header_colon("elif")?;
+                self.header_colon("else if")?;
                 branches.push((condition, self.clause_body()?));
-            } else if self.at_kw(K::Else) {
-                let else_span = self.bump().span;
-                if self.at_kw(K::If) {
-                    let span = else_span.to(self.span());
-                    self.error("write `elif` instead of `else if`", span, None);
-                    self.bump();
-                    let condition = self.condition()?;
-                    self.header_colon("elif")?;
-                    branches.push((condition, self.clause_body()?));
-                    continue;
-                }
-                self.header_colon("else")?;
-                else_body = Some(self.clause_body()?);
-                break;
-            } else {
-                break;
+                continue;
             }
+            self.header_colon("else")?;
+            else_body = Some(self.clause_body()?);
+            break;
         }
         self.expect_end("if", header)?;
         Ok(StmtKind::If(IfStmt {
@@ -1719,10 +1759,11 @@ impl Parser {
         }))
     }
 
+    /// `loop condition:`: repeats while the condition holds.
     fn while_stmt(&mut self) -> PResult<StmtKind> {
         let header = self.bump().span;
         let condition = self.condition()?;
-        let body = self.suite("while", header)?;
+        let body = self.suite("loop", header)?;
         Ok(StmtKind::While { condition, body })
     }
 
@@ -1735,14 +1776,14 @@ impl Parser {
         } else {
             ForMode::Sequential
         };
-        self.expect_kw(K::For, "`for`")?;
+        self.expect_kw(K::Each, "`each`")?;
         let pass = self.pass_mode();
         let target = self.bind_target()?;
         if !self.eat_kw(K::In) {
-            return Err(self.expected_hint("`in`", "a loop is written `for item in items:`"));
+            return Err(self.expected_hint("`in`", "a loop is written `each item in items:`"));
         }
         let iter = self.expression()?;
-        let body = self.suite("for", header)?;
+        let body = self.suite("each", header)?;
         Ok(StmtKind::For(ForStmt {
             mode,
             pass,
@@ -1756,7 +1797,7 @@ impl Parser {
     fn with_stmt(&mut self) -> PResult<StmtKind> {
         let header = self.span();
         let is_async = self.eat_kw(K::Async);
-        self.expect_kw(K::With, "`with`")?;
+        self.expect_kw(K::Using, "`using`")?;
         let mut items = Vec::new();
         loop {
             let value = self.expression()?;
@@ -1770,7 +1811,7 @@ impl Parser {
                 break;
             }
         }
-        let body = self.suite("with", header)?;
+        let body = self.suite("using", header)?;
         Ok(StmtKind::With {
             is_async,
             items,
@@ -1781,8 +1822,8 @@ impl Parser {
     fn match_stmt(&mut self) -> PResult<StmtKind> {
         let header = self.bump().span;
         let scrutinee = self.expression()?;
-        self.header_colon("match")?;
-        self.expect_block_start("match")?;
+        self.header_colon("when")?;
+        self.expect_block_start("when")?;
         let mut arms = Vec::new();
         let mut else_body = None;
         loop {
@@ -1802,11 +1843,11 @@ impl Parser {
             } else {
                 return Err(self.expected_hint(
                     "`is`, `else` or `end`",
-                    "each arm of a `match` starts with `is pattern:`",
+                    "each arm of a `when` starts with `is pattern:`",
                 ));
             }
         }
-        self.expect_end("match", header)?;
+        self.expect_end("when", header)?;
         Ok(StmtKind::Match(MatchStmt {
             scrutinee,
             arms,
@@ -1835,8 +1876,8 @@ impl Parser {
 
     fn try_stmt(&mut self) -> PResult<StmtKind> {
         let header = self.bump().span;
-        self.header_colon("try")?;
-        self.expect_block_start("try")?;
+        self.header_colon("attempt")?;
+        self.expect_block_start("attempt")?;
         let body = self.block();
         let mut catches = Vec::new();
         while self.at_kw(K::Catch) {
@@ -1861,16 +1902,20 @@ impl Parser {
                 body,
             });
         }
-        let finally = if self.eat_kw(K::Finally) {
-            self.header_colon("finally")?;
+        let finally = if self.eat_kw(K::Always) {
+            self.header_colon("always")?;
             Some(self.clause_body()?)
         } else {
             None
         };
         if catches.is_empty() && finally.is_none() {
-            self.error("a `try` block needs a `catch` or a `finally`", header, None);
+            self.error(
+                "an `attempt` block needs a `catch` or an `always`",
+                header,
+                None,
+            );
         }
-        self.expect_end("try", header)?;
+        self.expect_end("attempt", header)?;
         Ok(StmtKind::Try(TryStmt {
             body,
             catches,
@@ -2238,7 +2283,6 @@ impl Parser {
             Tk::Punct(P::Tilde) => Prefix::Unary(UnaryOp::BitNot),
             Tk::Keyword(K::Await) => Prefix::Await,
             Tk::Keyword(K::Spawn) => Prefix::Spawn,
-            Tk::Keyword(K::Try) => Prefix::Try,
             Tk::Keyword(K::Move) => Prefix::Move,
             _ => return self.power(),
         };
@@ -2248,7 +2292,6 @@ impl Parser {
             Prefix::Unary(op) => ExprKind::Unary { op, operand },
             Prefix::Await => ExprKind::Await(operand),
             Prefix::Spawn => ExprKind::Spawn(operand),
-            Prefix::Try => ExprKind::Try(operand),
             Prefix::Move => ExprKind::Move(operand),
         };
         Ok(self.mk(kind, start))
@@ -2496,7 +2539,7 @@ impl Parser {
             return Ok(self.mk(ExprKind::List(Vec::new()), start));
         }
         let first = self.expression()?;
-        if self.at_kw(K::For) {
+        if self.at_kw(K::Each) {
             let clauses = self.comp_clauses()?;
             self.expect_p(P::RBracket, "`]` to close the comprehension")?;
             return Ok(self.mk(
@@ -2527,7 +2570,7 @@ impl Parser {
         let key = self.expression()?;
         self.expect_p(P::Colon, "`:` between a key and its value")?;
         let value = self.expression()?;
-        if self.at_kw(K::For) {
+        if self.at_kw(K::Each) {
             let clauses = self.comp_clauses()?;
             self.expect_p(P::RBrace, "`}` to close the comprehension")?;
             return Ok(self.mk(
@@ -2555,7 +2598,7 @@ impl Parser {
 
     fn comp_clauses(&mut self) -> PResult<Vec<CompClause>> {
         let mut clauses = Vec::new();
-        while self.eat_kw(K::For) {
+        while self.eat_kw(K::Each) {
             let target = self.bind_target()?;
             self.expect_kw(K::In, "`in`")?;
             let iter = self.pipeline()?;
@@ -2949,12 +2992,48 @@ impl Parser {
 
 // ==== helpers ==============================================================
 
+/// Python's words that Vyrn spells differently: the Vyrn word, and an
+/// example for the error message.
+fn python_replacement(word: &str) -> Option<(&'static str, &'static str)> {
+    Some(match word {
+        "def" => (
+            "fn",
+            "declare a function with `fn name(args):` and close it with `end`",
+        ),
+        "elif" => ("else if", "write `else if condition:`"),
+        "while" => (
+            "loop",
+            "write `loop condition:`; plain `loop:` repeats until `stop`",
+        ),
+        "for" => ("each", "write `each item in items:`"),
+        "match" => ("when", "write `when value:` with `is pattern:` arms"),
+        "with" => ("using", "write `using resource as name:`"),
+        "try" => (
+            "attempt",
+            "write `attempt:`, then `catch Error as e:` and `always:`, closed by `end`",
+        ),
+        "except" => ("catch", "write `catch Error as e:`"),
+        "finally" => ("always", "write `always:`"),
+        "class" => (
+            "object",
+            "write `object Name:` (or `struct Name:` for a value that is copied)",
+        ),
+        "import" | "from" => ("use", "write `use module` or `use module (name, other)`"),
+        "raise" => ("fail", "write `fail error`"),
+        "break" => ("stop", "write `stop` to leave a loop"),
+        "continue" => ("skip", "write `skip` to go to the next round of a loop"),
+        "lambda" => ("fn", "write `fn(x) => x * 2`"),
+        "pass" => ("", "an empty block is just its header and `end`"),
+        _ => return None,
+    })
+}
+
 /// Tokens that end a block: `end`, the clause keywords of a chain, and the
 /// end of the file.
 fn is_closer(kind: &Tk) -> bool {
     matches!(
         kind,
-        Tk::Eof | Tk::Keyword(K::End | K::Elif | K::Else | K::Is | K::Catch | K::Finally)
+        Tk::Eof | Tk::Keyword(K::End | K::Else | K::Is | K::Catch | K::Always)
     )
 }
 
@@ -3017,7 +3096,7 @@ fn line_effect(line: &[Token]) -> i32 {
     };
     match first {
         Tk::Keyword(K::End) => return -1,
-        Tk::Keyword(K::Elif | K::Else | K::Is | K::Catch | K::Finally) => return 0,
+        Tk::Keyword(K::Else | K::Is | K::Catch | K::Always) => return 0,
         _ => {}
     }
     if kinds.last().is_some_and(|k| k.is_punct(P::Colon)) {
@@ -3037,18 +3116,17 @@ fn line_effect(line: &[Token]) -> i32 {
     let opens = match first {
         Tk::Keyword(
             K::If
-            | K::While
-            | K::For
+            | K::Each
             | K::Par
             | K::Loop
-            | K::Match
-            | K::With
+            | K::When
+            | K::Using
             | K::On
             | K::Region
             | K::Unsafe
             | K::Main
             | K::Struct
-            | K::Class
+            | K::Object
             | K::Enum
             | K::Trait
             | K::Impl
@@ -3060,14 +3138,14 @@ fn line_effect(line: &[Token]) -> i32 {
         ) => true,
         Tk::Keyword(K::Fn) => matches!(second, Some(Tk::Ident(_))),
         Tk::Keyword(K::Async) => {
-            matches!(second, Some(Tk::Keyword(K::For | K::With | K::Fn)))
+            matches!(second, Some(Tk::Keyword(K::Each | K::Using | K::Fn)))
         }
         Tk::Keyword(K::Pub) => matches!(
             second,
             Some(Tk::Keyword(
                 K::Fn
                     | K::Struct
-                    | K::Class
+                    | K::Object
                     | K::Enum
                     | K::Trait
                     | K::Strict

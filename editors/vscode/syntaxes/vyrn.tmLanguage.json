@@ -48,7 +48,7 @@
           }
         },
         {
-          "match": "\\b(struct|class|enum|trait|type)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "match": "\\b(struct|object|enum|trait|type)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": { "name": "storage.type.vyrn" },
             "2": { "name": "entity.name.type.vyrn" }
@@ -126,11 +126,11 @@
     "keyword": {
       "patterns": [
         {
-          "match": "\\b(if|elif|else|for|while|loop|match|is|stop|skip|return|fail|fails|try|catch|finally|with|defer|await|spawn|async|in|to|until|by|on|region|unsafe|main)\\b",
+          "match": "\\b(if|else|each|loop|when|is|stop|skip|return|fail|fails|attempt|catch|always|using|defer|await|spawn|async|in|to|until|by|on|region|unsafe|main)\\b",
           "name": "keyword.control.vyrn"
         },
         {
-          "match": "\\b(use|as|pub|export|extern|impl|route|routes)\\b",
+          "match": "\\b(use|as|pub|export|extern|impl|for|route|routes)\\b",
           "name": "keyword.other.vyrn"
         },
         {

@@ -11,14 +11,14 @@ main:
     scores = [92, 78, 85, 61]
     total = 0
 
-    for score in scores:
+    each score in scores:
         total += score
     end
 
     average = total / len(scores)
     print("Average: {average}, grade {letter_for(average)}")
 
-    for score in scores:
+    each score in scores:
         if score < 70: print("{score} needs another try")
     end
 end

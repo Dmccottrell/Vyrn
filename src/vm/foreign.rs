@@ -71,7 +71,7 @@ pub trait Foreign: Any {
         ))
     }
 
-    /// The items of `for item in x`.
+    /// The items of `each item in x`.
     fn items(&self) -> VmResult<Vec<Value>> {
         Err(err(
             "TypeError",

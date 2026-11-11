@@ -81,7 +81,7 @@ enum Cleanup {
     Handler,
     /// Leave a `try` and run its `finally` block.
     Finally(Rc<Vec<Stmt>>),
-    /// Leave a `for mut` loop: drop its handler and put the element being
+    /// Leave an `each mut` loop: drop its handler and put the element being
     /// changed back into the list.
     WriteBack {
         list: u8,
@@ -715,7 +715,7 @@ impl Compiler {
             }
             if cyclic {
                 let name = self.symbols.name(self.types[ty as usize].name).to_string();
-                self.error(format!("class `{name}` inherits from itself"), self.span);
+                self.error(format!("object `{name}` inherits from itself"), self.span);
                 self.types[ty as usize].parent = None;
                 chain.truncate(1);
             }
@@ -2277,14 +2277,14 @@ impl Compiler {
         Ok(())
     }
 
-    /// `for mut item in list`: each element is moved out of the list,
+    /// `each mut item in list`: each element is moved out of the list,
     /// changed by the body, and moved back. Moving rather than copying
     /// means a struct element is changed in place, with no copy on write;
     /// the loop has the list to itself, so nothing else can observe the
     /// gap. If the body fails, a handler puts the element back first.
     fn for_mut(&mut self, stmt: &ForStmt) -> CResult<()> {
         let BindTarget::Name(ident) = &stmt.target else {
-            return Err(self.error("`for mut` takes a single name", self.span));
+            return Err(self.error("`each mut` takes a single name", self.span));
         };
         self.push_scope();
         let regs = self.alloc_n(7)?;

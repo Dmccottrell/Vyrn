@@ -18,7 +18,7 @@ end
 
 # `mut world` borrows the pool exclusively; `for mut e` edits each entity in place.
 strict fn step(mut world: [Entity; MAX_ENTITIES], dt: f32):
-    for mut e in world:
+    each mut e in world:
         if not e.alive: skip
         e.vel += GRAVITY * dt
         e.pos += e.vel * dt
@@ -33,7 +33,7 @@ main:
     var world: [Entity; MAX_ENTITIES] = load_level("arena")
     var clock = Clock(hz = 120)
 
-    while clock.running:
+    loop clock.running:
         region frame:
             # Scratch data lives on the frame arena and is released at `end`.
             let contacts: [Contact] on frame = find_contacts(world)

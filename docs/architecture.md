@@ -159,10 +159,10 @@ dominates interpreter time. Lua 5 made the same move for the same reason.
 | Structs copied on write (`Rc::make_mut`) | Value semantics without copying on every assignment |
 | Sliding register windows | A callee's parameters are the caller's argument registers; arguments are never copied, and `mut` parameters write back for free |
 | Non-recursive dispatch loop | Deep Vyrn recursion cannot overflow the Rust stack; the limit is a clean `StackOverflow` error at 10,000 frames |
-| Counted loops (`ForPrep`/`ForLoop`) | `for i in 0 until n` costs one instruction per iteration |
-| `TakeIndex` for `for mut` | The element is moved out of the list and back, so struct elements change in place with no copy |
+| Counted loops (`ForPrep`/`ForLoop`) | `each i in 0 until n` costs one instruction per iteration |
+| `TakeIndex` for `each mut` | The element is moved out of the list and back, so struct elements change in place with no copy |
 | Dedicated `MatMul`, `Place`, `PushDevice`/`PopDevice` | Tensor work is dispatched to a `TensorBackend` per device; the VM never does tensor math itself |
-| Failures unwind through handler records | `fail`/`catch`/`finally` and `defer` cost nothing until something fails |
+| Failures unwind through handler records | `fail`/`catch`/`always` and `defer` cost nothing until something fails |
 
 **Tensor backends.** `ReferenceBackend` runs every tensor instruction on the
 CPU and is installed for all devices by default, so GPU-targeted code runs
@@ -185,7 +185,7 @@ so assignments are seen on both sides and nested functions can recurse;
 loop variables are new in each iteration, so each closure keeps its own.
 Keyword arguments are matched at compile time when the callee is known and
 by a `CallKw` instruction at run time otherwise (closures, methods, values
-passed around). `with` closes its resources in reverse order on every exit.
+passed around). `using` closes its resources in reverse order on every exit.
 
 **Tensor storage.** Tensors store `f32`, `f16`, `bf16`, or block-quantized
 `q8`/`q4` (llama.cpp's Q8_0/Q4_0 layout). Compute is `f32`; matrix products
@@ -200,7 +200,7 @@ its registers and call frames, so any function can `await`. Calling an
 JavaScript); the caller gets a task handle. `await` takes a task, a
 channel, or a tuple or list of tasks (`join(a, b)` builds one).
 `sleep(seconds)` and `channel()` (with `send`, `close`, `len`) are
-built in, and `async for x in ch` reads a channel until it is closed.
+built in, and `async each x in ch` reads a channel until it is closed.
 The scheduler is a single-threaded ready queue plus timers; when every
 task waits on something that can never happen, the program stops with a
 `Deadlock` error. A task that fails and is never awaited is reported as a
@@ -268,11 +268,11 @@ expected gain:
 | `x: T` parameter | Shared read-only borrow | None |
 | `mut x: T` parameter | Exclusive borrow | None |
 | `own x: T` parameter | Ownership moves to the callee | None |
-| `class` / `shared T` | Reference counted | Count updates, mostly elided statically |
+| `object` / `shared T` | Reference counted | Count updates, mostly elided statically |
 | `weak T` | Non-owning reference to a shared value | Checked upgrade |
 | `ptr T` | Raw pointer, only in `unsafe` | None |
 
-There is no tracing collector. Cycles among `class` instances must be broken with
+There is no tracing collector. Cycles among `object` instances must be broken with
 `weak`; the dev tier reports cycles that leak.
 
 **Regions.** A region is a bump allocator with a scope. Everything allocated
@@ -292,14 +292,14 @@ based on where it is stored.
 | `[T]` or `[T; N]` where `T` is a struct | **Struct of arrays**: one contiguous, 64-byte-aligned column per field |
 | `bool` column | Bitset |
 | Nested struct field (e.g. `pos: vec3`) | Kept together as one column of `vec3`; splitting is opt-in |
-| `class` instance | Heap object with header; never SoA |
+| `object` instance | Heap object with header; never SoA |
 
 Opt-outs are explicit: `@layout(aos)` for collections accessed mostly by random
 whole-element lookup, `@layout(c)` to fix field order for FFI.
 
 Consequences:
 
-- **Element references are row handles.** `for mut e in world` binds `e` to
+- **Element references are row handles.** `each mut e in world` binds `e` to
   (collection, index). `e.pos` compiles to an indexed load from the `pos` column.
   The loop reads and writes only the columns it mentions, so untouched fields
   never enter the cache.
@@ -309,7 +309,7 @@ Consequences:
 - **Columns are tensors.** `world.pos` is a zero-copy `tensor[f32; N, 3]` view.
   The same bytes can be iterated by game code, passed to a `kernel fn`, or
   uploaded to a GPU buffer without conversion.
-- **Parallelism falls out of the layout.** `par for mut e in world` splits by
+- **Parallelism falls out of the layout.** `par each mut e in world` splits by
   index range. The borrow checker proves iterations touch disjoint rows.
 
 ### 3.3 Game entity example
@@ -326,7 +326,7 @@ struct Entity:
 end
 
 strict fn step(mut world: [Entity], dt: f32):
-    for mut e in world:
+    each mut e in world:
         if not e.alive: skip
         e.vel += GRAVITY * dt
         e.pos += e.vel * dt
@@ -351,14 +351,14 @@ No layout annotation appears in the source.
 
 OOP is supported, with defaults chosen so that it does not undo the layout model.
 
-- `class` gives identity, encapsulation (`pub`), methods and reference semantics.
+- `object` gives identity, encapsulation (`pub`), methods and reference semantics.
 - Polymorphism is through `trait`. Calls on a concrete type are static. Calls
   through a trait-typed value use a vtable, and the release tier devirtualizes
   them when the set of implementers is known.
-- **Single implementation inheritance for `class` only, no inheritance for
+- **Single implementation inheritance for `object` only, no inheritance for
   `struct`.** Struct layouts stay flat and predictable; classes keep the
   modelling tool people expect. Grammar v0.4 spells it as in Python:
-  `class Enemy(Actor):`.
+  `object Enemy(Actor):`.
 - Guidance enforced by lints, not by the type system: classes for long-lived
   objects with identity (scenes, services, connections), structs in collections
   for anything that exists in the thousands.
@@ -467,7 +467,7 @@ end
 
 strict fn generate(model: Model on gpu[0 to 3], prompt: tensor[i32; B, T]) -> tensor[i32; B]:
     var h = model.embed[prompt]
-    for layer in model.layers:
+    each layer in model.layers:
         on layer.device: h = layer.forward(h)
     end
     return argmax(h[:, -1] @ model.unembed, axis = -1) on cpu
@@ -522,7 +522,7 @@ common causes statically and detects the rest.
 | Cause | Handling |
 |---|---|
 | Holding a lock across `await` | Compile error |
-| Acquiring two locks in inconsistent order | `with a.lock(), b.lock():` acquires in a canonical order. Nested acquisition of two `Mutex` values requires declared lock levels, checked at compile time |
+| Acquiring two locks in inconsistent order | `using a.lock(), b.lock():` acquires in a canonical order. Nested acquisition of two `Mutex` values requires declared lock levels, checked at compile time |
 | Re-locking a held mutex | Compile error when visible in one function; dev-tier trap otherwise |
 | Tasks waiting on each other through channels | Not prevented statically. The dev tier maintains a wait-for graph and reports the cycle with task backtraces |
 | Forgotten task that never completes | Prevented by structured concurrency |
@@ -546,7 +546,7 @@ code that compiles, and channel deadlocks diagnosed in development.
 
 ```vyrn
 route GET "/users/{id}" (id: u64, db: Db) -> User fails NotFound:
-    return try await db.users.find(id)
+    return await db.users.find(id)
 end
 
 route POST "/generate" (req: Prompt, model: Model) -> Completion:
@@ -604,18 +604,18 @@ Python and annotations buy static errors where they are written.
 | No use after `move`, including "may have been moved" across branches and loop iterations | `keep(move xs)` then `print(xs)` |
 | A `mut` argument is the only use of that variable in the call | `swap(mut xs, mut xs)`, `add(mut xs, xs)` |
 | An argument for a `mut` parameter says `mut` | `reset(xs)` where `reset(mut xs)` |
-| The list a `for mut` loop changes is not used inside it | `for mut x in xs: x += len(xs)` |
-| Changing a field of a plain `for` loop's struct copy, which is lost | `for e in es: e.hp = 10` |
+| The list an `each mut` loop changes is not used inside it | `each mut x in xs: x += len(xs)` |
+| Changing a field of a plain `each` loop's struct copy, which is lost | `each e in es: e.hp = 10` |
 | A `T?` is checked before it is used as a `T`: narrowed by `if x != none:`, an early `return`, `and`, `??`, `?.` or `if let` | `u.name` where `u: User?` |
-| A `match` over an enum declared here, a `bool` or a `T?` handles every case or has `else:` | a `match` on `Shape` without `Shape.Empty` |
+| A `when` over an enum declared here, a `bool` or a `T?` handles every case or has `else:` | a `when` on `Shape` without `Shape.Empty` |
 | Generic functions infer their type parameters at each call | `pair(1, "a")` for `fn pair[T](a: T, b: T)` |
 | C functions that pass or return pointers are called in `unsafe:` | `accel_add(h, x, n)` outside `unsafe:` |
 
-The `for mut` rule is what makes the interpreter's in-place loop sound: the
+The `each mut` rule is what makes the interpreter's in-place loop sound: the
 loop moves each element out of the list while the body runs, so any other
 use of the list inside could see the gap. What is not checked yet: generic
 structs, trait conformance, borrows through aliases (`ys = xs` then a use of
-`ys` inside `for mut x in xs`), and references stored in other values.
+`ys` inside `each mut x in xs`), and references stored in other values.
 
 ## 7. Build order
 

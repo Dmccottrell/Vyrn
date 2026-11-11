@@ -631,7 +631,7 @@ pub struct Binding {
     pub place: PlaceSlot,
 }
 
-/// The names introduced by a binding or a `for` loop.
+/// The names introduced by a binding or an `each` loop.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BindTarget {
     Name(Ident),
@@ -690,7 +690,7 @@ pub enum ForMode {
     Sequential,
     /// `par for`: iterations may run in parallel.
     Parallel,
-    /// `async for`: each item is awaited from a stream.
+    /// `async each`: each item is awaited from a stream.
     Async,
 }
 

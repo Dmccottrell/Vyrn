@@ -377,7 +377,7 @@ impl Printer {
             ItemKind::Aggregate(a) => {
                 let keyword = match a.kind {
                     AggregateKind::Struct => "struct",
-                    AggregateKind::Class => "class",
+                    AggregateKind::Class => "object",
                 };
                 let base = a
                     .base
@@ -561,7 +561,7 @@ impl Printer {
             StmtKind::Skip => self.line("skip"),
             StmtKind::If(i) => {
                 for (n, (cond, body)) in i.branches.iter().enumerate() {
-                    let keyword = if n == 0 { "if" } else { "elif" };
+                    let keyword = if n == 0 { "if" } else { "else if" };
                     self.line(format!("{keyword} {}", condition(cond)));
                     self.block(body);
                 }
@@ -571,7 +571,7 @@ impl Printer {
                 }
             }
             StmtKind::While { condition: c, body } => {
-                self.line(format!("while {}", condition(c)));
+                self.line(format!("loop {}", condition(c)));
                 self.block(body);
             }
             StmtKind::Loop(body) => {
@@ -585,7 +585,7 @@ impl Printer {
                     ForMode::Async => "async ",
                 };
                 self.line(format!(
-                    "{mode}for {}{} in {}",
+                    "{mode}each {}{} in {}",
                     pass_mode(f.pass),
                     bind_target(&f.target),
                     expr(&f.iter)
@@ -593,7 +593,7 @@ impl Printer {
                 self.block(&f.body);
             }
             StmtKind::Match(m) => {
-                self.line(format!("match {}", expr(&m.scrutinee)));
+                self.line(format!("when {}", expr(&m.scrutinee)));
                 self.nested(|p| {
                     for arm in &m.arms {
                         let guard = arm
@@ -611,7 +611,7 @@ impl Printer {
                 });
             }
             StmtKind::Try(t) => {
-                self.line("try");
+                self.line("attempt");
                 self.block(&t.body);
                 for c in &t.catches {
                     let ty = c
@@ -628,7 +628,7 @@ impl Printer {
                     self.block(&c.body);
                 }
                 if let Some(body) = &t.finally {
-                    self.line("finally");
+                    self.line("always");
                     self.block(body);
                 }
             }
@@ -645,7 +645,7 @@ impl Printer {
                     ", ",
                 );
                 let prefix = if *is_async { "async " } else { "" };
-                self.line(format!("{prefix}with {items}"));
+                self.line(format!("{prefix}using {items}"));
                 self.block(body);
             }
             StmtKind::On(on) => {
@@ -795,7 +795,7 @@ fn comp_clauses(clauses: &[CompClause]) -> String {
     for clause in clauses {
         match clause {
             CompClause::For { target, iter } => {
-                out.push_str(&format!(" (for {} {})", bind_target(target), expr(iter)))
+                out.push_str(&format!(" (each {} {})", bind_target(target), expr(iter)))
             }
             CompClause::If(cond) => out.push_str(&format!(" (if {})", expr(cond))),
         }

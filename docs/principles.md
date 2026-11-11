@@ -16,8 +16,13 @@ not add a second option for it.
 
 - Module paths use dots everywhere: `use std.http`, `use python.numpy`,
   `use app.storage`. There is no `::`, and no second spelling.
-- Errors use `fail` and `try`. There are no exceptions plus result types
+- Errors use `fail`, `attempt` and `catch`. There are no exceptions plus result types
   plus error codes.
+- Each keyword names what the line does: `each` item, `loop` while a
+  condition holds, `when` a value is this, `using` a resource, `attempt`
+  something and `always` clean up, make an `object`. Python's shape is
+  kept, but Vyrn has its own words, and the parser explains the Vyrn word
+  when a Python one is typed out of habit.
 - Blocks end with `end`. Indentation is for people, `end` is for the parser,
   so a lost tab cannot change what a program does.
 - One formatter (`vyrn fmt`) with no options, so style never needs arguing.
@@ -29,7 +34,7 @@ behind an opt-in keyword that beginners never meet.
 
 | Everyone sees | Only those who opt in see |
 |---|---|
-| `x = 1`, `fn`, `if`, `for`, `print`, lists, maps, f-strings | `strict`, `kernel`, `mut`/`own`/`move`, `on gpu[0]`, `region`, `unsafe`, `extern` |
+| `x = 1`, `fn`, `if`, `each`, `print`, lists, maps, f-strings | `strict`, `kernel`, `mut`/`own`/`move`, `on gpu[0]`, `region`, `unsafe`, `extern` |
 
 Type annotations are optional. Code without them runs as dynamically as
 Python; adding them buys checking where they are written.
@@ -85,8 +90,8 @@ one program, so the ecosystem never splits the way Python 2 and 3 did.
 
 | From | Vyrn takes | And leaves behind |
 |---|---|---|
-| Python | Readable syntax, comprehensions, `with`, f-strings, the library ecosystem (through `use python.x`) | Speed, packaging, the GIL |
-| Rust | Memory safety without a garbage collector, `match`, enums with data, cargo-style tooling, editions, teaching errors | Lifetime annotations: borrows stay inside one function |
+| Python | Readable syntax, comprehensions, `with` (spelled `using`), f-strings, the library ecosystem (through `use python.x`) | Speed, packaging, the GIL |
+| Rust | Memory safety without a garbage collector, `match` (spelled `when`), enums with data, cargo-style tooling, editions, teaching errors | Lifetime annotations: borrows stay inside one function |
 | Go | One formatter, single-file deploys, easy concurrency, fast builds, URL imports | `if err != nil` on every line |
 | TypeScript | Types you add gradually | A type system too clever to read |
 | Kotlin and Swift | Null safety with `T?`, `?.` and `??` | Needing an IDE to write code |

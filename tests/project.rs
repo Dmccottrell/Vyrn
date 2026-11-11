@@ -223,7 +223,7 @@ fn local_modules_have_their_own_namespaces() {
     );
     let main = dir.write(
         "main.vyrn",
-        "use geo.shapes\nuse geo.shapes (Point as P)\nuse store\n\nmain:\n    let load = 7\n    print(shapes.load(), store.load(), load)\n    print(shapes.norm(P(3.0, 4.0)))\n    match P(0.0, 1.0):\n        is shapes.Point(x, y): print(x, y)\n    end\nend\n",
+        "use geo.shapes\nuse geo.shapes (Point as P)\nuse store\n\nmain:\n    let load = 7\n    print(shapes.load(), store.load(), load)\n    print(shapes.norm(P(3.0, 4.0)))\n    when P(0.0, 1.0):\n        is shapes.Point(x, y): print(x, y)\n    end\nend\n",
     );
     let host = FakeHost::default();
     let mut resolver = Resolver::new(&host, dir.0.join("cache"), Lockfile::default());

@@ -130,7 +130,7 @@ impl Foreign for PyValue {
 | Python object | the object itself | a Python object |
 
 Python containers stay Python objects on the way back: `len`, `x[i]`,
-`for`, attributes and operators work on them directly, and nothing is
+`each`, attributes and operators work on them directly, and nothing is
 converted until the program asks (rule 4). A Python exception becomes a
 Vyrn failure of kind `PythonError` whose message starts with the Python
 class: `catch PythonError as e`. A missing module says how to install it:

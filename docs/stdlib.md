@@ -65,7 +65,7 @@ Vyrn's spelling as follows:
 | Conversion | `str`, `int`, `float` | runs today |
 | Sequences | `len`, `range`, `enumerate`, `zip`, `sorted`, `min`, `max`, `sum` | runs today |
 | Math | `abs`, `round`, `sqrt`, `exp`, `tanh` | runs today |
-| Files | `open(path, mode = "r")` returning a `File` (`read`, `lines`, `write`, `close`) for use with `with`; `read_text`, `write_text` | `read_text`/`write_text` run today, `open` is design |
+| Files | `open(path, mode = "r")` returning a `File` (`read`, `lines`, `write`, `close`) for use with `using`; `read_text`, `write_text` | `read_text`/`write_text` run today, `open` is design |
 | Data | `parse_json`, `to_json` | runs today |
 | Tasks | `sleep`, `channel`, `join`, `now` | runs today |
 | Games | `Clock(hz, frames)` | runs today |
@@ -74,17 +74,17 @@ Vyrn's spelling as follows:
 | Devices | `cpu`, `gpu` (indexed: `gpu[0]`, `gpu[0 to 3]`) | runs today |
 
 `open` belongs in the Prelude because reading a file is part of a first
-script, and `with` already makes it safe:
+script, and `using` already makes it safe:
 
 ```vyrn
-with open("scores.txt") as f:
-    for line in f.lines():
+using open("scores.txt") as f:
+    each line in f.lines():
         print(line)
     end
 end
 ```
 
-`with` calls `close()` on every way out of the block, including failures
+`using` calls `close()` on every way out of the block, including failures
 (**runs today** for any value with a `close` method).
 
 ## 3. `std.http`: a FastAPI-style async router
@@ -165,8 +165,8 @@ use std.fs
 
 fn count_errors(path: str) -> int:
     var errors = 0
-    with fs.map(path) as data:
-        for line in data.lines():
+    using fs.map(path) as data:
+        each line in data.lines():
             if line.startswith("ERROR"): errors += 1
         end
     end
@@ -180,7 +180,7 @@ until it is touched, and nothing is copied:
 
 - `data.lines()` yields each line as a `str` **view** into the mapping. A
   view is a borrowed slice: the borrow checker keeps it from outliving the
-  `with` block. Store a line with `str(line)` to copy it out.
+  `using` block. Store a line with `str(line)` to copy it out.
 - `data.bytes(start, end)` is a `[u8]` view of a byte range.
 - `fs.tensor_view(data, dtype, shape, offset)` is a read-only tensor whose
   storage is the mapping itself.
@@ -194,7 +194,7 @@ and on a 32 GB machine nothing is held twice.
 | API | Behaviour |
 |---|---|
 | `fs.map(path) -> Mapped` | Read-only mapping; `fails IoError` |
-| `fs.map_mut(path, size) -> MappedMut` | Writable mapping; changes reach the file on `flush()` or at the end of `with` |
+| `fs.map_mut(path, size) -> MappedMut` | Writable mapping; changes reach the file on `flush()` or at the end of `using` |
 | `fs.read(path) -> [u8]`, `fs.write(path, data)` | Whole-file helpers |
 | `fs.walk(dir)`, `fs.glob(pattern)`, `fs.stat(path)`, `fs.remove`, `fs.rename` | Directory work |
 | `fs.watch(path)` | A `Channel` of change events, for `async for` |
@@ -225,10 +225,10 @@ async fn crawl(urls: [str]) -> [str]:
     var pages = []
     # Structured concurrency: the group outlives none of its tasks. Leaving
     # the block waits for all of them, and the first failure cancels the rest.
-    with task.group() as g:
-        for url in urls: g.spawn(fetch(url))
+    using task.group() as g:
+        each url in urls: g.spawn(fetch(url))
     end
-    for t in g.tasks(): pages.append(await t)
+    each t in g.tasks(): pages.append(await t)
     return pages
 end
 ```
@@ -283,7 +283,7 @@ functions. They move to `std.nn` as `nn.load_weights`, `nn.save_weights` and
 
 ### 7.1 A first script: no `use` at all
 
-Everything here is Prelude: types, `open`, `with`, string methods, lists,
+Everything here is Prelude: types, `open`, `using`, string methods, lists,
 maps, tensors.
 
 ```vyrn
@@ -291,8 +291,8 @@ maps, tensors.
 
 main:
     scores = {}
-    with open("grades.csv") as f:
-        for line in f.lines():
+    using open("grades.csv") as f:
+        each line in f.lines():
             let parts = line.split(",")
             scores[parts[0]] = float(parts[1])
         end
@@ -302,7 +302,7 @@ main:
     print("students: {len(scores)}")
     print("average:  {round(values.sum() / len(scores), 1)}")
 
-    for name, score in scores.items():
+    each name, score in scores.items():
         let grade = "A" if score >= 90 else "B" if score >= 80 else "C"
         print("{name}: {score} ({grade})")
     end
@@ -349,7 +349,7 @@ routes "/v1":
     @require_key
     route SSE "/stream" (body: Prompt, model, tokenizer, stream):
         let tokens = tokenizer.encode(body.text)
-        async for token in nn.generate(model, tokens, body.max_tokens):
+        async each token in nn.generate(model, tokens, body.max_tokens):
             await stream.send(tokenizer.decode([token]))
         end
     end

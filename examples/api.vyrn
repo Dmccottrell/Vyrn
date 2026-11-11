@@ -11,7 +11,7 @@ end
 
 # `id` comes from the URL, `db` from a registered provider.
 route GET "/users/{id}" (id: u64, db: Db) -> User fails NotFound:
-    return try await db.users.find(id)
+    return await db.users.find(id)
 end
 
 route GET "/users/{id}/summary" (id: u64, db: Db):
@@ -31,7 +31,7 @@ end
 routes "/admin":
     @require(role = "admin")
     route POST "/users" (body: User, db: Db) -> (int, User):
-        let created = try await db.users.insert(body)
+        let created = await db.users.insert(body)
         return 201, created
     end
 end

@@ -142,7 +142,7 @@ source ─▶ syntax tree ─▶ checker (src/check.rs) ─▶ VIR ─▶ LLVM I
 1. **VIR** (Vyrn IR, `docs/architecture.md` section 2) is built from the
    checked tree: SSA form, a type on every value, reference-count
    increments and decrements made explicit (and then removed where the
-   borrow checker proves them unnecessary), and `match` lowered to
+   borrow checker proves them unnecessary), and `when` lowered to
    decision trees, which the exhaustiveness check makes total.
 2. **Types decide representation.** What the checker knows statically
    becomes LLVM's own types; what it does not (`any`, unannotated code)
@@ -154,7 +154,7 @@ source ─▶ syntax tree ─▶ checker (src/check.rs) ─▶ VIR ─▶ LLVM I
    |---|---|
    | `int`, `i32`, `f32`, `float`, `bool` | `i64`, `i32`, `float`, `double`, `i1` |
    | `struct` (value type) | an LLVM struct, passed by value or pointer |
-   | `class`, `[T]`, `{K: V}`, `str` | pointer to a reference-counted runtime object |
+   | `object`, `[T]`, `{K: V}`, `str` | pointer to a reference-counted runtime object |
    | `T?` | `{ i1, T }`, or a nullable pointer for reference types |
    | `tensor` | pointer to the runtime's `DeviceTensor` |
    | `any` | `{ i64 tag, i64 payload }` with runtime helpers |
@@ -178,7 +178,7 @@ source ─▶ syntax tree ─▶ checker (src/check.rs) ─▶ VIR ─▶ LLVM I
 ```vyrn
 strict fn dot(a: [f32], b: [f32]) -> f32:
     var acc: f32 = 0.0
-    for i in 0 until len(a):
+    each i in 0 until len(a):
         acc += a[i] * b[i]
     end
     return acc

@@ -1,7 +1,7 @@
 //! `vyrn fmt`: one style for every Vyrn file, with no options.
 //!
 //! The formatter re-indents each line from the block structure (four
-//! spaces per level), aligns `elif`, `else`, `catch`, `finally`, `is` arms
+//! spaces per level), aligns `else if`, `else`, `catch`, `always`, `is` arms
 //! and `end` with the line that opened their block, indents lines inside
 //! brackets one level past the line they started on, removes trailing
 //! spaces and tabs, allows at most two blank lines in a row, and ends the
@@ -17,9 +17,9 @@ const INDENT: &str = "    ";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Frame {
-    /// A block whose body is one level in: `fn`, `if`, `for`, ...
+    /// A block whose body is one level in: `fn`, `if`, `each`, ...
     Block(usize),
-    /// `match`: its `is` arms are one level in, their bodies two.
+    /// `when`: its `is` arms are one level in, their bodies two.
     Match(usize),
     /// An `is` arm, at this depth.
     Arm(usize),
@@ -143,9 +143,7 @@ pub fn format(src: &str) -> Result<String, String> {
                 }
                 arm
             }
-            Tk::Keyword(K::Elif | K::Else | K::Catch | K::Finally) => {
-                stack.last().map_or(0, |f| f.depth())
-            }
+            Tk::Keyword(K::Else | K::Catch | K::Always) => stack.last().map_or(0, |f| f.depth()),
             Tk::Keyword(K::Is) if matches!(stack.last(), Some(Frame::Arm(_) | Frame::Match(_))) => {
                 if let Some(Frame::Arm(_)) = stack.last() {
                     stack.pop();
@@ -156,7 +154,7 @@ pub fn format(src: &str) -> Result<String, String> {
                 }
                 arm
             }
-            Tk::Keyword(K::Match) if opens => {
+            Tk::Keyword(K::When) if opens => {
                 stack.push(Frame::Match(body));
                 body
             }
@@ -224,8 +222,8 @@ mod tests {
 
     #[test]
     fn blocks_are_reindented() {
-        let src = "fn f(x):\n  if x > 1:   \n        return 1\n  elif x < 0:\n   return -1\n  else:\n     return 0\n  end\nend\n\n\n\n\nmain:\n\tprint(f(2))  # two\nend";
-        let want = "fn f(x):\n    if x > 1:\n        return 1\n    elif x < 0:\n        return -1\n    else:\n        return 0\n    end\nend\n\n\nmain:\n    print(f(2))  # two\nend\n";
+        let src = "fn f(x):\n  if x > 1:   \n        return 1\n  else if x < 0:\n   return -1\n  else:\n     return 0\n  end\nend\n\n\n\n\nmain:\n\tprint(f(2))  # two\nend";
+        let want = "fn f(x):\n    if x > 1:\n        return 1\n    else if x < 0:\n        return -1\n    else:\n        return 0\n    end\nend\n\n\nmain:\n    print(f(2))  # two\nend\n";
         assert_eq!(format(src).unwrap(), want);
         // Formatting is stable.
         assert_eq!(format(want).unwrap(), want);
@@ -233,15 +231,15 @@ mod tests {
 
     #[test]
     fn match_arms_try_and_brackets() {
-        let src = "main:\nmatch x:\nis 1:\nprint(\"one\")\nis _: print(\"other\")\nend\ntry:\nrisky()\ncatch:\n# handled\nprint(\"no\")\nend\nxs = [\n1,\n2,\n]\nend\n";
-        let want = "main:\n    match x:\n        is 1:\n            print(\"one\")\n        is _: print(\"other\")\n    end\n    try:\n        risky()\n    catch:\n        # handled\n        print(\"no\")\n    end\n    xs = [\n        1,\n        2,\n    ]\nend\n";
+        let src = "main:\nwhen x:\nis 1:\nprint(\"one\")\nis _: print(\"other\")\nend\nattempt:\nrisky()\ncatch:\n# handled\nprint(\"no\")\nend\nxs = [\n1,\n2,\n]\nend\n";
+        let want = "main:\n    when x:\n        is 1:\n            print(\"one\")\n        is _: print(\"other\")\n    end\n    attempt:\n        risky()\n    catch:\n        # handled\n        print(\"no\")\n    end\n    xs = [\n        1,\n        2,\n    ]\nend\n";
         assert_eq!(format(src).unwrap(), want);
     }
 
     #[test]
     fn match_else_and_operator_continuations() {
-        let src = "## Doc.\nfn f(x):\n match x:\n  is 1: return 1\n  else:\n   return 0\n end\nend\nmain:\n let total = 1 +\n         2 +\n 3\nend\n";
-        let want = "## Doc.\nfn f(x):\n    match x:\n        is 1: return 1\n        else:\n            return 0\n    end\nend\nmain:\n    let total = 1 +\n        2 +\n        3\nend\n";
+        let src = "## Doc.\nfn f(x):\n when x:\n  is 1: return 1\n  else:\n   return 0\n end\nend\nmain:\n let total = 1 +\n         2 +\n 3\nend\n";
+        let want = "## Doc.\nfn f(x):\n    when x:\n        is 1: return 1\n        else:\n            return 0\n    end\nend\nmain:\n    let total = 1 +\n        2 +\n        3\nend\n";
         assert_eq!(format(src).unwrap(), want);
     }
 
