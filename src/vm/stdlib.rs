@@ -1343,6 +1343,38 @@ pub fn fs_append_text(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     Ok(Value::None)
 }
 
+/// `read_bytes("photo.png")`: the file's bytes, as a list of numbers from
+/// 0 to 255.
+pub fn fs_read_bytes(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let path = text_arg(args, 0, "the path")?;
+    let data = std::fs::read(path).map_err(|e| io_error(&format!("cannot read {path}"), e))?;
+    Ok(Value::list(
+        data.into_iter().map(|b| Value::Int(i64::from(b))).collect(),
+    ))
+}
+
+/// `write_bytes("copy.png", data)`: `data` is a list of numbers from 0 to
+/// 255 (or text, written as UTF-8).
+pub fn fs_write_bytes(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let path = text_arg(args, 0, "the path")?;
+    let data: Vec<u8> = match args.get(1) {
+        Some(Value::Str(s)) => s.as_bytes().to_vec(),
+        Some(v) => ops::collect(v)?
+            .iter()
+            .map(|b| match b {
+                Value::Int(i) if (0..=255).contains(i) => Ok(*i as u8),
+                other => Err(err(
+                    "ValueError",
+                    format!("a byte is a number from 0 to 255, not {other:?}"),
+                )),
+            })
+            .collect::<VmResult<_>>()?,
+        None => return Err(err("CallError", "`write_bytes` needs the data to write")),
+    };
+    std::fs::write(path, data).map_err(|e| io_error(&format!("cannot write {path}"), e))?;
+    Ok(Value::None)
+}
+
 /// `path.join("a", "b", "c.txt")`
 pub fn path_join(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let mut p = std::path::PathBuf::new();

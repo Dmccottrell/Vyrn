@@ -363,3 +363,22 @@ fn sending_mail() {
     let e = error("use vyrn.mail\nmain: mail.send(to = \"not an address\", sender = \"me@example.com\", server = \"x\")\n");
     assert!(e.contains("is not an email address"), "{e}");
 }
+
+#[test]
+fn databases_store_records_without_sql() {
+    let out = run("use vyrn.db\n\
+         struct Pet:\n    name: str\n    age: int\nend\n\
+         main:\n\
+         \x20   let conn = db.open(\":memory:\")\n\
+         \x20   conn.create_table(\"pets\", {\"name\": \"text\", \"age\": \"int\"})\n\
+         \x20   conn.insert(\"pets\", Pet(\"Rex\", 3))\n\
+         \x20   let id = conn.insert(\"pets\", {\"name\": \"Tom\", \"age\": 5})\n\
+         \x20   conn.update(\"pets\", {\"id\": id}, {\"age\": 6})\n\
+         \x20   print(conn.find_one(\"pets\", {\"name\": \"Tom\"}))\n\
+         \x20   print(conn.delete(\"pets\", {\"name\": \"Rex\"}), conn.all(\"pets\"))\n\
+         end\n");
+    assert_eq!(
+        out,
+        "{\"id\": 2, \"name\": \"Tom\", \"age\": 6}\n1 [{\"id\": 2, \"name\": \"Tom\", \"age\": 6}]\n"
+    );
+}

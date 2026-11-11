@@ -166,6 +166,11 @@ pub static NATIVES: &[Native] = &[
     fixed("fs.read_text", &["path"], 1, read_text),
     fixed("fs.write_text", &["path", "text"], 2, write_text),
     fixed("fs.append_text", &["path", "text"], 2, S::fs_append_text),
+    fixed("fs.read_bytes", &["path"], 1, S::fs_read_bytes),
+    fixed("fs.write_bytes", &["path", "data"], 2, S::fs_write_bytes),
+    fixed("read_bytes", &["path"], 1, S::fs_read_bytes),
+    fixed("write_bytes", &["path", "data"], 2, S::fs_write_bytes),
+    fixed("append_text", &["path", "text"], 2, S::fs_append_text),
     fixed("fs.read_lines", &["path"], 1, S::fs_read_lines),
     // ---- vyrn.path ----
     variadic("path.join", S::path_join),

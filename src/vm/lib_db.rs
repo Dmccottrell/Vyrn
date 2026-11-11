@@ -174,6 +174,194 @@ mod imp {
         }
     }
 
+    /// A table or column name: letters, digits and `_`, so it can go in
+    /// SQL safely.
+    fn ident(name: &str, what: &str) -> VmResult<String> {
+        let ok = name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !ok {
+            return Err(err(
+                "ValueError",
+                format!("{what} {name:?} must be letters, digits and `_`"),
+            ));
+        }
+        Ok(format!("\"{name}\""))
+    }
+
+    /// A record's columns and values: a map, or a struct or object.
+    fn fields_of(ctx: &Ctx, record: &Value) -> VmResult<Vec<(String, Value)>> {
+        let named = |ty: u16, values: &[Value]| -> Vec<(String, Value)> {
+            ctx.program.types[ty as usize]
+                .fields
+                .iter()
+                .zip(values)
+                .map(|(f, v)| (ctx.program.symbols.name(*f).to_string(), v.clone()))
+                .collect()
+        };
+        match record {
+            Value::Map(m) => m
+                .borrow()
+                .entries()
+                .iter()
+                .map(|(k, v)| match k {
+                    Value::Str(k) => Ok((k.to_string(), v.clone())),
+                    other => Err(type_error(format!(
+                        "column names are strings, not {}",
+                        other.type_name()
+                    ))),
+                })
+                .collect(),
+            Value::Struct(inst) => Ok(named(inst.ty, &inst.fields)),
+            Value::Object(o) => {
+                let o = o.borrow();
+                Ok(named(o.ty, &o.fields))
+            }
+            other => Err(type_error(format!(
+                "a record is a map or a struct, not {}",
+                other.type_name()
+            ))),
+        }
+    }
+
+    /// `where a = ? and b = ?` for a map of conditions, and its values.
+    fn condition(ctx: &Ctx, filter: Option<&Value>) -> VmResult<(String, Vec<Value>)> {
+        let Some(filter) = filter.filter(|f| !matches!(f, Value::None | Value::Missing)) else {
+            return Ok((String::new(), Vec::new()));
+        };
+        let fields = fields_of(ctx, filter)?;
+        if fields.is_empty() {
+            return Ok((String::new(), Vec::new()));
+        }
+        let mut parts = Vec::new();
+        let mut values = Vec::new();
+        for (k, v) in fields {
+            parts.push(format!("{} = ?", ident(&k, "a column name")?));
+            values.push(v);
+        }
+        Ok((format!(" where {}", parts.join(" and ")), values))
+    }
+
+    fn sql_type(v: &Value) -> &'static str {
+        match v {
+            Value::Int(_) | Value::Bool(_) => "integer",
+            Value::Float(_) => "real",
+            Value::Str(s) => match s.as_str() {
+                "int" | "integer" | "bool" => "integer",
+                "float" | "real" => "real",
+                _ => "text",
+            },
+            _ => "text",
+        }
+    }
+
+    impl Database {
+        /// Records without SQL: `create_table`, `insert`, `all`, `find`,
+        /// `find_one`, `update`, `delete`. `None` for other methods.
+        fn records(&self, ctx: &Ctx, name: &str, args: &[Value]) -> Option<VmResult<Value>> {
+            if !matches!(
+                name,
+                "create_table" | "insert" | "all" | "find" | "find_one" | "update" | "delete"
+            ) {
+                return None;
+            }
+            Some((|| {
+                let table = ident(text_arg(args, 0, "the table name")?, "the table name")?;
+                match name {
+                    // `conn.create_table("pets", {"name": "text", "age": "int"})`,
+                    // or an example record. Each row also gets an `id`.
+                    "create_table" => {
+                        let columns = fields_of(ctx, args.get(1).unwrap_or(&Value::None))?;
+                        let mut cols = vec!["\"id\" integer primary key autoincrement".to_string()];
+                        for (k, v) in &columns {
+                            if k == "id" {
+                                continue;
+                            }
+                            cols.push(format!("{} {}", ident(k, "a column name")?, sql_type(v)));
+                        }
+                        let sql =
+                            format!("create table if not exists {table} ({})", cols.join(", "));
+                        self.with(|c| c.execute_batch(&sql).map(|_| Value::None).map_err(db_error))
+                    }
+                    // `conn.insert("pets", {"name": "Rex"})`: the new row's id.
+                    "insert" => {
+                        let fields = fields_of(ctx, args.get(1).unwrap_or(&Value::None))?;
+                        let names: Vec<String> = fields
+                            .iter()
+                            .map(|(k, _)| ident(k, "a column name"))
+                            .collect::<VmResult<_>>()?;
+                        let marks = vec!["?"; fields.len()].join(", ");
+                        let sql = format!(
+                            "insert into {table} ({}) values ({marks})",
+                            names.join(", ")
+                        );
+                        let params = Value::list(fields.into_iter().map(|(_, v)| v).collect());
+                        self.with(|c| {
+                            run(c, &sql, Some(&params), |stmt| stmt.raw_execute())?;
+                            Ok(Value::Int(c.last_insert_rowid()))
+                        })
+                    }
+                    // `conn.all("pets")` and `conn.find("pets", {"age": 3})`.
+                    "all" | "find" | "find_one" => {
+                        let (filter, values) = condition(ctx, args.get(1))?;
+                        let limit = if name == "find_one" { " limit 1" } else { "" };
+                        let sql = format!("select * from {table}{filter}{limit}");
+                        let params = Value::list(values);
+                        self.with(|c| {
+                            let found = rows(c, &sql, Some(&params), None)?;
+                            Ok(if name == "find_one" {
+                                found.into_iter().next().unwrap_or(Value::None)
+                            } else {
+                                Value::list(found)
+                            })
+                        })
+                    }
+                    // `conn.update("pets", {"id": 1}, {"age": 4})`: which rows,
+                    // then what changes. Gives how many changed.
+                    "update" => {
+                        let (filter, mut values) = condition(ctx, args.get(1))?;
+                        let changes = fields_of(ctx, args.get(2).unwrap_or(&Value::None))?;
+                        let mut sets = Vec::new();
+                        let mut params = Vec::new();
+                        for (k, v) in changes {
+                            sets.push(format!("{} = ?", ident(&k, "a column name")?));
+                            params.push(v);
+                        }
+                        if sets.is_empty() {
+                            return Ok(Value::Int(0));
+                        }
+                        params.append(&mut values);
+                        let sql = format!("update {table} set {}{filter}", sets.join(", "));
+                        let params = Value::list(params);
+                        self.with(|c| {
+                            run(c, &sql, Some(&params), |stmt| stmt.raw_execute())
+                                .map(|n| Value::Int(n as i64))
+                        })
+                    }
+                    // `conn.delete("pets", {"id": 1})`. Without a filter, it
+                    // refuses rather than empty the table.
+                    _ => {
+                        let (filter, values) = condition(ctx, args.get(1))?;
+                        if filter.is_empty() {
+                            return Err(err(
+                                "ValueError",
+                                "say which rows to delete, as in `conn.delete(\"pets\", {\"id\": 1})`; to empty a table use `conn.execute(\"delete from pets\")`",
+                            ));
+                        }
+                        let sql = format!("delete from {table}{filter}");
+                        let params = Value::list(values);
+                        self.with(|c| {
+                            run(c, &sql, Some(&params), |stmt| stmt.raw_execute())
+                                .map(|n| Value::Int(n as i64))
+                        })
+                    }
+                }
+            })())
+        }
+    }
+
     impl Foreign for Database {
         fn type_name(&self) -> &'static str {
             "Database"
@@ -185,11 +373,14 @@ mod imp {
 
         fn call_method(
             &self,
-            _: &mut Ctx,
+            ctx: &mut Ctx,
             name: &str,
             args: &[Value],
             _: &[(String, Value)],
         ) -> VmResult<Value> {
+            if let Some(result) = self.records(ctx, name, args) {
+                return result;
+            }
             match name {
                 // `conn.execute(sql, params)`: how many rows changed.
                 "execute" => {

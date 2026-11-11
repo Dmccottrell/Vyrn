@@ -279,6 +279,7 @@ All **run today** (`src/vm/stdlib.rs`).
 
 | Module | Functions |
 |---|---|
+| (built in) | `read_text`, `write_text`, `append_text`, `read_bytes` / `write_bytes` (lists of 0 to 255), `open(path, mode)` |
 | `vyrn.os` | `os.args()` (the arguments after the file name), `os.env(name, default)`, `os.set_env`, `os.environ()`, `os.cwd()`, `os.chdir`, `os.exit(code)`, `os.platform()`, `os.run(command, input)`: a list (`["git", "status"]`) or a shell line; gives `code`, `ok`, `out`, `err` |
 | `vyrn.path` | `path.join(a, b, ...)`, `path.name`, `path.stem`, `path.ext`, `path.parent`, `path.absolute`, `path.home()` |
 | `vyrn.time` | `time.now()` (seconds since 1970), `time.format(t, "%Y-%m-%d %H:%M:%S")`, `time.parse(text, pattern)`, `time.date(t)` (year, month, day, hour, minute, second, weekday), `time.monotonic()`, `time.sleep`. Times are UTC |
@@ -318,6 +319,10 @@ end
 | `conn.query_one(...)`, `conn.value(...)` | The first row, or its first column; `none` when there is none |
 | `conn.last_id()`, `conn.tables()` | The last inserted row id; the table names |
 | `conn.begin()`, `conn.commit()`, `conn.rollback()`, `conn.close()` | Transactions; `using` closes |
+| `conn.create_table(name, columns)` | A table from `{"name": "text", "age": "int"}`, plus an `id` column |
+| `conn.insert(table, record)` | Adds a map or struct as a row; gives its `id` |
+| `conn.all(table)`, `conn.find(table, where)`, `conn.find_one(table, where)` | Rows matching every `column: value` in `where` |
+| `conn.update(table, where, changes)`, `conn.delete(table, where)` | How many rows changed; `delete` needs a `where` |
 
 Params are a list for `?` or a map for `:name`, always bound separately
 from the SQL, so input cannot change a statement. Errors are
