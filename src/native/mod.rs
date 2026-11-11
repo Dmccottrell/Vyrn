@@ -233,6 +233,83 @@ extern "C" fn rt_list_push_f(list: ListPtr, v: f64) -> i64 {
     0
 }
 
+/// Where a list's item pointer and length are inside the `RefCell<Vec<Value>>`
+/// the VM passes, and where an `int`'s or `float`'s payload is inside a
+/// `Value`. Rust does not promise these layouts, so they are measured once
+/// and checked; if anything is ambiguous, list items go through the
+/// runtime calls above instead.
+#[derive(Clone, Copy, Debug)]
+struct ListLayout {
+    data: i32,
+    len: i32,
+    int_payload: i32,
+    float_payload: i32,
+}
+
+fn list_layout() -> Option<ListLayout> {
+    use crate::vm::value::Value as V;
+    use std::cell::RefCell;
+    static LAYOUT: std::sync::OnceLock<Option<ListLayout>> = std::sync::OnceLock::new();
+    *LAYOUT.get_or_init(|| {
+        if std::mem::size_of::<V>() != 16
+            || std::mem::size_of::<usize>() != 8
+            || std::mem::size_of::<Vec<V>>() != 24
+        {
+            return None;
+        }
+        // Where the `Vec` sits in the `RefCell`, from the cell's own
+        // pointer to it; then which of the `Vec`'s three words (all of
+        // them initialized) hold the item pointer and the length.
+        let find = |len: usize, cap: usize| -> Option<(i32, i32)> {
+            let mut v: Vec<V> = Vec::with_capacity(cap);
+            for _ in 0..len {
+                v.push(V::Int(0));
+            }
+            let data = v.as_ptr() as u64;
+            let cell = RefCell::new(v);
+            let base = &cell as *const RefCell<Vec<V>> as usize;
+            let vec_at = cell.as_ptr() as usize - base;
+            // SAFETY: a `Vec` is three initialized words.
+            let words: [u64; 3] = unsafe { std::ptr::read(cell.as_ptr() as *const [u64; 3]) };
+            let one = |x: u64| {
+                let hits: Vec<usize> = (0..3).filter(|i| words[*i] == x).collect();
+                (hits.len() == 1).then(|| (vec_at + hits[0] * 8) as i32)
+            };
+            Some((one(data)?, one(len as u64)?))
+        };
+        let (data, len) = find(3, 7)?;
+        if find(5, 11)? != (data, len) || find(0, 4)?.1 != len {
+            return None;
+        }
+        // The payloads, from references into the values themselves.
+        let int_value = V::Int(0x0A0B_0C0D_0E0F_1011);
+        let int_payload = match &int_value {
+            V::Int(x) => x as *const i64 as usize - &int_value as *const V as usize,
+            _ => return None,
+        };
+        let float_value = V::Float(-2.75);
+        let float_payload = match &float_value {
+            V::Float(x) => x as *const f64 as usize - &float_value as *const V as usize,
+            _ => return None,
+        };
+        if int_payload % 8 != 0 || float_payload % 8 != 0 || int_payload > 8 || float_payload > 8 {
+            return None;
+        }
+        Some(ListLayout {
+            data,
+            len,
+            int_payload: int_payload as i32,
+            float_payload: float_payload as i32,
+        })
+    })
+}
+
+/// Whether list items are read and written directly (the layout check
+/// passed), rather than through runtime calls.
+pub fn direct_list_access() -> bool {
+    list_layout().is_some()
+}
+
 /// Float functions of one argument, by their Vyrn name.
 const FLOAT1: &[(&str, &str)] = &[
     ("exp", "vyrn_exp"),
@@ -649,6 +726,7 @@ impl Jit {
                 err,
                 ret: c.ret,
                 line: c.decl.name.span.start.line,
+                layout: list_layout(),
             };
             for (p, (v, ty)) in c.decl.params.iter().zip(args.iter().zip(&c.params)) {
                 let var = lower.b.declare_var(cl_type(*ty));
@@ -756,6 +834,7 @@ struct Lower<'a, 'f> {
     err: Value,
     ret: NTy,
     line: u32,
+    layout: Option<ListLayout>,
 }
 
 impl Lower<'_, '_> {
@@ -1192,6 +1271,92 @@ impl Lower<'_, '_> {
         Ok((list, lt, i))
     }
 
+    fn list_len(&mut self, list: Value) -> Value {
+        if let Some(l) = self.layout {
+            return self
+                .b
+                .ins()
+                .load(types::I64, MemFlagsData::trusted(), list, l.len);
+        }
+        let f = self.func_ref(self.helpers["vyrn_list_len"]);
+        let call = self.b.ins().call(f, &[list]);
+        self.b.inst_results(call)[0]
+    }
+
+    /// The address of item `i` (negative counts from the end), failing
+    /// with the interpreter's `IndexError` when it is out of range.
+    fn item_address(&mut self, list: Value, i: Value, l: ListLayout, elem: NTy) -> Value {
+        let len = self
+            .b
+            .ins()
+            .load(types::I64, MemFlagsData::trusted(), list, l.len);
+        let negative = self.b.ins().icmp_imm_s(IntCC::SignedLessThan, i, 0);
+        let wrapped = self.b.ins().iadd(i, len);
+        let at = self.b.ins().select(negative, wrapped, i);
+        // One unsigned comparison covers both ends.
+        let inside = self.b.ins().icmp(IntCC::UnsignedLessThan, at, len);
+        let bad = self.b.create_block();
+        let ok = self.b.create_block();
+        self.b.ins().brif(inside, ok, &[], bad, &[]);
+        self.b.switch_to_block(bad);
+        self.b.ins().store(MemFlagsData::trusted(), i, self.err, 16);
+        self.b
+            .ins()
+            .store(MemFlagsData::trusted(), len, self.err, 24);
+        self.fail_now(crate::vm::native_abi::ERR_INDEX, 0);
+        let z = self.zero(self.ret);
+        self.b.ins().return_(&[z]);
+        self.b.switch_to_block(ok);
+        let data = self
+            .b
+            .ins()
+            .load(types::I64, MemFlagsData::trusted(), list, l.data);
+        let offset = self.b.ins().ishl_imm_s(at, 4);
+        let item = self.b.ins().iadd(data, offset);
+        let payload = if elem == NTy::Int {
+            l.int_payload
+        } else {
+            l.float_payload
+        };
+        self.b.ins().iadd_imm_s(item, i64::from(payload))
+    }
+
+    fn list_get(&mut self, list: Value, i: Value, elem: NTy) -> Value {
+        if let Some(l) = self.layout {
+            let at = self.item_address(list, i, l, elem);
+            return self
+                .b
+                .ins()
+                .load(cl_type(elem), MemFlagsData::trusted(), at, 0);
+        }
+        let get = if elem == NTy::Int {
+            "vyrn_list_get_i"
+        } else {
+            "vyrn_list_get_f"
+        };
+        let f = self.func_ref(self.helpers[get]);
+        let call = self.b.ins().call(f, &[list, i, self.err]);
+        let v = self.b.inst_results(call)[0];
+        self.check_err_with_line();
+        v
+    }
+
+    fn list_set(&mut self, list: Value, i: Value, v: Value, elem: NTy) {
+        if let Some(l) = self.layout {
+            let at = self.item_address(list, i, l, elem);
+            self.b.ins().store(MemFlagsData::trusted(), v, at, 0);
+            return;
+        }
+        let set = if elem == NTy::Int {
+            "vyrn_list_set_i"
+        } else {
+            "vyrn_list_set_f"
+        };
+        let f = self.func_ref(self.helpers[set]);
+        self.b.ins().call(f, &[list, i, v, self.err]);
+        self.check_err_with_line();
+    }
+
     fn assign_item(
         &mut self,
         base: &Expr,
@@ -1208,15 +1373,7 @@ impl Lower<'_, '_> {
         let (v, t) = match op {
             AssignOp::Assign => self.expr(value)?,
             op => {
-                let get = if elem == NTy::Int {
-                    "vyrn_list_get_i"
-                } else {
-                    "vyrn_list_get_f"
-                };
-                let f = self.func_ref(self.helpers[get]);
-                let call = self.b.ins().call(f, &[list, i, self.err]);
-                let current = self.b.inst_results(call)[0];
-                self.check_err_with_line();
+                let current = self.list_get(list, i, elem);
                 let (rhs, rt) = self.expr(value)?;
                 let bop = assign_op(op).ok_or("this compound assignment")?;
                 if bop == BinaryOp::Pow
@@ -1235,14 +1392,7 @@ impl Lower<'_, '_> {
                 ty_name(elem)
             ));
         }
-        let set = if elem == NTy::Int {
-            "vyrn_list_set_i"
-        } else {
-            "vyrn_list_set_f"
-        };
-        let f = self.func_ref(self.helpers[set]);
-        self.b.ins().call(f, &[list, i, v, self.err]);
-        self.check_err_with_line();
+        self.list_set(list, i, v, elem);
         Ok(())
     }
 
@@ -1283,10 +1433,10 @@ impl Lower<'_, '_> {
     /// `each x in xs`: by position, reading the length each time round, as
     /// the interpreter does, so items appended in the loop are visited.
     fn each_item(&mut self, name: &str, list: Value, lt: NTy, body: &AstBlock) -> Res<()> {
-        let (elem, get) = if lt == NTy::ListInt {
-            (NTy::Int, "vyrn_list_get_i")
+        let elem = if lt == NTy::ListInt {
+            NTy::Int
         } else {
-            (NTy::Float, "vyrn_list_get_f")
+            NTy::Float
         };
         let counter = self.b.declare_var(types::I64);
         let zero = self.b.ins().iconst(types::I64, 0);
@@ -1298,15 +1448,11 @@ impl Lower<'_, '_> {
         self.b.ins().jump(header, &[]);
         self.b.switch_to_block(header);
         let i = self.b.use_var(counter);
-        let len_f = self.func_ref(self.helpers["vyrn_list_len"]);
-        let call = self.b.ins().call(len_f, &[list]);
-        let len = self.b.inst_results(call)[0];
+        let len = self.list_len(list);
         let go = self.b.ins().icmp(IntCC::SignedLessThan, i, len);
         self.b.ins().brif(go, inside, &[], exit, &[]);
         self.b.switch_to_block(inside);
-        let get_f = self.func_ref(self.helpers[get]);
-        let call = self.b.ins().call(get_f, &[list, i, self.err]);
-        let item = self.b.inst_results(call)[0];
+        let item = self.list_get(list, i, elem);
         self.scopes.push(Vec::new());
         self.declare(name, item, elem);
         self.loops.push((next, exit));
@@ -1444,16 +1590,12 @@ impl Lower<'_, '_> {
             ExprKind::Call { callee, args } => self.call(callee, args)?,
             ExprKind::Index { base, subscripts } => {
                 let (list, lt, i) = self.list_and_index(base, subscripts)?;
-                let (helper, t) = if lt == NTy::ListInt {
-                    ("vyrn_list_get_i", NTy::Int)
+                let t = if lt == NTy::ListInt {
+                    NTy::Int
                 } else {
-                    ("vyrn_list_get_f", NTy::Float)
+                    NTy::Float
                 };
-                let f = self.func_ref(self.helpers[helper]);
-                let call = self.b.ins().call(f, &[list, i, self.err]);
-                let v = self.b.inst_results(call)[0];
-                self.check_err_with_line();
-                (v, t)
+                (self.list_get(list, i, t), t)
             }
             _ => return Err("this kind of expression".into()),
         })
@@ -1748,9 +1890,7 @@ impl Lower<'_, '_> {
                 if !a[0].1.is_list() {
                     return Err("`len` of something that is not a list".into());
                 }
-                let f = self.func_ref(self.helpers["vyrn_list_len"]);
-                let call = self.b.ins().call(f, &[a[0].0]);
-                (self.b.inst_results(call)[0], NTy::Int)
+                (self.list_len(a[0].0), NTy::Int)
             }
             "abs" => {
                 let a = self.args(args, 1)?;

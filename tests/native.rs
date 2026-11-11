@@ -383,3 +383,10 @@ fn list_failures_are_the_same() {
         assert!(out.contains(&format!("<error {kind}")), "{src}\n{out}");
     }
 }
+
+#[test]
+fn list_items_are_accessed_directly() {
+    // The measured layout of lists and values was confirmed, so compiled
+    // code reads items itself; the tests above then exercise that path.
+    assert!(vyrn::native::direct_list_access());
+}
