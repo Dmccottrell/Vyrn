@@ -1,0 +1,317 @@
+<title>Vyrn Playground</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+/* Layout: a two-pane workbench (source left, output right) under one toolbar; stacks at phone width. */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --line: #d9dee6;
+  --fg: #18202b;
+  --muted: #5b6676;
+  --accent: #0e7c74;
+  --accent-fg: #ffffff;
+  --error: #b42318;
+  --kw: #6a3fb5;
+  --str: #0f6b3f;
+  --num: #a35400;
+  --comment: #7b8594;
+  --fn: #1f5fbf;
+  --font-display: "Space Grotesk", "Inter", system-ui, sans-serif;
+  --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-code: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f141b; --surface: #151c25; --line: #283342; --fg: #e3e8ef; --muted: #93a0b2;
+    --accent: #3cc4b6; --accent-fg: #062521; --error: #ff8a7a; --kw: #c4a3ff; --str: #7fd6a2;
+    --num: #f2b36b; --comment: #7c8899; --fn: #8ab4ff; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f141b; --surface: #151c25; --line: #283342; --fg: #e3e8ef; --muted: #93a0b2;
+  --accent: #3cc4b6; --accent-fg: #062521; --error: #ff8a7a; --kw: #c4a3ff; --str: #7fd6a2;
+  --num: #f2b36b; --comment: #7c8899; --fn: #8ab4ff; color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 14px;
+  gap: 12px;
+  box-sizing: border-box;
+}
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+h1 { font-family: var(--font-display); font-weight: 600; font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+h1 span { color: var(--accent); }
+.tagline { color: var(--muted); margin: 0; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+label.pick { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+select, button {
+  font: inherit;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--fg);
+  padding: 6px 10px;
+}
+button { cursor: pointer; font-weight: 600; }
+button.run { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); padding-inline: 16px; }
+button:disabled { opacity: 0.55; cursor: default; }
+button:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.status { color: var(--muted); font-variant-numeric: tabular-nums; margin-left: auto; }
+.keys { color: var(--muted); font-size: 12px; }
+kbd { font-family: var(--font-code); font-size: 11px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: var(--surface); }
+main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 12px; }
+.pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.pane h2 { font-family: var(--font-ui); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.editor { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: auto 1fr; overflow: hidden; }
+.gutter, .code, textarea {
+  font-family: var(--font-code);
+  font-size: 13.5px;
+  line-height: 1.55;
+  tab-size: 4;
+  /* Show `!=` and `->` as typed. */
+  font-variant-ligatures: none;
+}
+.gutter { padding: 12px 10px 12px 12px; color: var(--comment); text-align: right; user-select: none; white-space: pre; overflow: hidden; border-right: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.stack { position: relative; min-width: 0; overflow: hidden; }
+.code, textarea { margin: 0; padding: 12px 14px; white-space: pre; overflow-wrap: normal; box-sizing: border-box; border: 0; }
+.code { position: absolute; inset: 0; pointer-events: none; overflow: hidden; color: var(--fg); }
+textarea { position: absolute; inset: 0; width: 100%; height: 100%; resize: none; background: transparent; color: transparent; caret-color: var(--fg); outline: none; overflow: auto; }
+textarea::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+.t-kw { color: var(--kw); font-weight: 600; }
+.t-str { color: var(--str); }
+.t-num { color: var(--num); }
+.t-com { color: var(--comment); font-style: italic; }
+.t-fn { color: var(--fn); }
+.t-type { color: var(--accent); }
+#output { flex: 1; min-height: 0; margin: 0; padding: 12px 14px; overflow: auto; font-variant-ligatures: none; font-family: var(--font-code); font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+#output .err { color: var(--error); font-weight: 600; }
+#output .help { color: var(--accent); }
+#output .dim { color: var(--muted); }
+#output .placeholder { color: var(--muted); font-family: var(--font-ui); }
+footer { color: var(--muted); font-size: 12px; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+footer code { font-family: var(--font-code); }
+@media (max-width: 760px) {
+  main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(320px, 1.2fr) minmax(200px, 1fr); }
+  .status { margin-left: 0; width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<header>
+  <h1>Vyrn <span>Playground</span></h1>
+  <p class="tagline">Write a program and run it in your browser. Nothing to install, nothing sent anywhere.</p>
+</header>
+
+<div class="toolbar">
+  <label class="pick" for="example">Example
+    <select id="example"></select>
+  </label>
+  <button id="run" class="run" type="button" disabled>Run</button>
+  <button id="stop" type="button" hidden>Stop</button>
+  <span class="keys"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> runs · <kbd>Tab</kbd> indents · <kbd>Esc</kbd> then <kbd>Tab</kbd> leaves the editor</span>
+  <span id="status" class="status" role="status">Loading Vyrn…</span>
+</div>
+
+<main>
+  <section class="pane" aria-label="Program">
+    <h2>main.vyrn</h2>
+    <div class="editor">
+      <div class="gutter" id="gutter" aria-hidden="true">1</div>
+      <div class="stack">
+        <pre class="code" id="highlight" aria-hidden="true"></pre>
+        <textarea id="source" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" aria-label="Vyrn source code"></textarea>
+      </div>
+    </div>
+  </section>
+  <section class="pane" aria-label="Output">
+    <h2>Output</h2>
+    <pre id="output"><span class="placeholder">Press Run to see what the program prints. Errors appear here with a hint on how to fix them.</span></pre>
+  </section>
+</main>
+
+<footer>
+  <span>The whole Vyrn toolchain (parser, checker, compiler and VM) runs here as one WebAssembly module.</span>
+  <span>WebAssembly has no clock or files, so <code>sleep</code>, <code>now</code> and <code>read_text</code> are unavailable on this page.</span>
+</footer>
+
+<script type="application/octet-stream" id="vyrn-wasm"></script>
+<script type="application/json" id="examples">[{"name": "Hello", "source": "main:\n    name = \"Ada\"\n    year = 1843\n    print(\"Hello, {name}!\")\n    print(\"{name} wrote the first program in {year}, {2026 - year} years ago.\")\nend\n"}, {"name": "Lists, maps and loops", "source": "main:\n    scores = [72, 95, 88]\n    scores.append(100)\n    print(scores, len(scores), sum(scores) / len(scores))\n\n    ages = {\"Ada\": 36, \"Alan\": 41}\n    ages[\"Grace\"] = 85\n    for name, age in ages.items():\n        print(\"{name} is {age}\")\n    end\n\n    squares = [n * n for n in 1 to 5]\n    print(squares)\nend\n"}, {"name": "Functions, let and var", "source": "fn greet(name, excited = false):\n    return \"Hello, {name}\" + (\"!\" if excited else \".\")\nend\n\nfn area(width: float, height: float) -> float:\n    return width * height\nend\n\nmain:\n    print(greet(\"Ada\"), greet(\"Alan\", excited = true))\n    print(area(3.0, 4.5))\n\n    let limit = 10      # `let` never changes\n    var count = 0       # `var` can\n    while count < limit:\n        count += 3\n    end\n    print(count)\nend\n"}, {"name": "if and match", "source": "enum Shape:\n    Circle(radius: float)\n    Rect(width: float, height: float)\n    Empty\nend\n\nfn area(s: Shape) -> float:\n    match s:\n        is Shape.Circle(r): return 3.14159 * r * r\n        is Shape.Rect(w, h): return w * h\n        is Shape.Empty: return 0.0\n    end\nend\n\nfn size(n: int) -> str:\n    if n < 10:\n        return \"small\"\n    elif n < 100:\n        return \"medium\"\n    else:\n        return \"large\"\n    end\nend\n\nmain:\n    print(area(Shape.Circle(1.0)), area(Shape.Rect(2.0, 3.0)), area(Shape.Empty))\n    print(size(5), size(50), size(500))\nend\n"}, {"name": "Structs and classes", "source": "struct Point:\n    x: float\n    y: float\n\n    fn length(self) -> float:\n        return sqrt(self.x * self.x + self.y * self.y)\n    end\nend\n\nclass Counter:\n    count: int = 0\n\n    fn add(self, n: int):\n        self.count += n\n    end\nend\n\nmain:\n    var a = Point(3.0, 4.0)\n    var b = a            # a struct is a value: b is a copy\n    b.x = 0.0\n    print(a.x, b.x, a.length())\n\n    let c = Counter()\n    let same = c         # a class is shared: same is c\n    same.add(5)\n    print(c.count)\nend\n"}, {"name": "Missing values and errors", "source": "struct NotFound:\n    name: str\nend\n\nfn find(name: str) -> int?:\n    let people = {\"Ada\": 36, \"Alan\": 41}\n    if name in people: return people[name]\n    return none\nend\n\nfn age_of(name: str) -> int:\n    let age = find(name)\n    if age == none: fail NotFound(name)\n    return age\nend\n\nmain:\n    print(find(\"Ada\"), find(\"Bob\"))\n    print(find(\"Bob\") ?? 0)\n    try:\n        print(age_of(\"Alan\"))\n        print(age_of(\"Bob\"))\n    catch NotFound as e:\n        print(\"no one called\", e.name)\n    end\nend\n"}, {"name": "Tasks and channels", "source": "async fn square(n: int) -> int:\n    return n * n\nend\n\nasync fn produce(ch, count: int):\n    for i in 1 to count:\n        ch.send(i)\n    end\n    ch.close()\nend\n\nmain:\n    # `join` waits for several tasks at once.\n    print(await join(square(3), square(4)))\n\n    let numbers = channel()\n    let producer = produce(numbers, 3)\n    async for n in numbers:\n        print(\"got\", n)\n    end\n    await producer\nend\n"}, {"name": "Tensors and kernels", "source": "kernel fn leaky(x: f32) -> f32:\n    return x if x > 0.0 else 0.1 * x\nend\n\nmain:\n    let w = tensor([[1.0, 2.0], [3.0, 4.0]])\n    let x = tensor([[1.0, -1.0]])\n    let y = x @ w           # matrix product\n    print(y, y.shape)\n    print(leaky(y))         # a kernel runs on every element\n    print(leaky(-5.0))      # and on plain numbers\nend\n"}, {"name": "Find the bug (checker errors)", "source": "# This program has three mistakes. Press Run to see how Vyrn explains them.\n\nstruct User:\n    name: str\n    email: str?\nend\n\nfn domain(u: User) -> str:\n    return u.email.split(\"@\")[1]\nend\n\nmain:\n    let count = 0\n    count = count + 1\n    print(\"total: \" + count)\nend\n"}]</script>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const source = $("source"), highlight = $("highlight"), gutter = $("gutter");
+const output = $("output"), status = $("status"), runButton = $("run"), stopButton = $("stop");
+const examples = JSON.parse($("examples").textContent);
+
+// ---- highlighting ----
+const KEYWORDS = new Set("and any as async await by catch class const defer elif else end enum export extern fail fails false finally fn for if impl in is kernel let loop main match move mut none not on or own par ptr pub ref region return route routes shared skip spawn stop strict struct to trait true try type unsafe until use var weak while with self".split(" "));
+const TYPES = new Set("int float bool str tensor i8 i16 i32 i64 u8 u16 u32 u64 f16 bf16 f32 f64 q4 q8 vec2 vec3 vec4".split(" "));
+const escape = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function highlightCode(text) {
+  const token = /(#[^\n]*)|("(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?)|(\b\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?\b)|([A-Za-z_]\w*)(\s*\()?/g;
+  let out = "", last = 0, m;
+  while ((m = token.exec(text))) {
+    out += escape(text.slice(last, m.index));
+    if (m[1]) out += `<span class="t-com">${escape(m[1])}</span>`;
+    else if (m[2]) out += `<span class="t-str">${escape(m[2])}</span>`;
+    else if (m[3]) out += `<span class="t-num">${m[3]}</span>`;
+    else {
+      const word = m[4];
+      const cls = KEYWORDS.has(word) ? "t-kw" : TYPES.has(word) ? "t-type" : m[5] ? "t-fn" : "";
+      out += cls ? `<span class="${cls}">${word}</span>` : word;
+      if (m[5]) out += escape(m[5]);
+    }
+    last = token.lastIndex;
+  }
+  return out + escape(text.slice(last)) + "\n";
+}
+function refresh() {
+  highlight.innerHTML = highlightCode(source.value);
+  const lines = source.value.split("\n").length;
+  gutter.textContent = Array.from({ length: lines }, (_, i) => i + 1).join("\n");
+  syncScroll();
+  try { localStorage.setItem("vyrn-playground-draft", source.value); } catch (_) {}
+}
+function syncScroll() {
+  highlight.scrollTop = source.scrollTop;
+  highlight.scrollLeft = source.scrollLeft;
+  gutter.scrollTop = source.scrollTop;
+}
+source.addEventListener("input", refresh);
+source.addEventListener("scroll", syncScroll);
+
+// ---- editing: Tab indents, Enter keeps the indentation and adds a level after `:` ----
+function insert(text) {
+  const { selectionStart: a, selectionEnd: b, value } = source;
+  source.value = value.slice(0, a) + text + value.slice(b);
+  source.selectionStart = source.selectionEnd = a + text.length;
+  refresh();
+}
+let escaped = false;
+source.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); run(); return; }
+  if (e.key === "Escape") { escaped = true; return; }
+  if (e.key === "Tab" && !escaped && !e.shiftKey) { e.preventDefault(); insert("    "); return; }
+  escaped = false;
+  if (e.key === "Enter") {
+    const before = source.value.slice(0, source.selectionStart);
+    const line = before.slice(before.lastIndexOf("\n") + 1);
+    let indent = line.match(/^\s*/)[0];
+    if (/:\s*(#.*)?$/.test(line) && !/^\s*#/.test(line)) indent += "    ";
+    e.preventDefault();
+    insert("\n" + indent);
+  }
+});
+
+// ---- examples ----
+const pick = $("example");
+examples.forEach((ex, i) => pick.add(new Option(ex.name, String(i))));
+pick.addEventListener("change", () => {
+  source.value = examples[Number(pick.value)].source;
+  refresh();
+  output.innerHTML = '<span class="placeholder">Press Run to see what this example prints.</span>';
+});
+let draft = null;
+try { draft = localStorage.getItem("vyrn-playground-draft"); } catch (_) {}
+source.value = draft && draft.trim() ? draft : (examples[0] ? examples[0].source : "main:\n    print(\"Hello\")\nend\n");
+refresh();
+
+// ---- running: the toolchain runs in a worker, so a runaway loop can be stopped ----
+const WORKER = `
+let instance = null;
+const enc = new TextEncoder(), dec = new TextDecoder();
+onmessage = async (event) => {
+  const { module, source } = event.data;
+  if (!instance) instance = await WebAssembly.instantiate(module, {});
+  const x = instance.exports;
+  const bytes = enc.encode(source);
+  const ptr = x.vyrn_alloc(bytes.length);
+  new Uint8Array(x.memory.buffer, ptr, bytes.length).set(bytes);
+  const started = performance.now();
+  const reply = x.vyrn_run(ptr, bytes.length);
+  const ms = performance.now() - started;
+  x.vyrn_free(ptr, bytes.length);
+  const len = new DataView(x.memory.buffer).getUint32(reply, true);
+  const out = new Uint8Array(x.memory.buffer, reply + 4, len).slice();
+  x.vyrn_free(reply, len + 4);
+  postMessage({ ok: out[0] === 0, output: dec.decode(out.subarray(1)), ms });
+};`;
+const workerUrl = URL.createObjectURL(new Blob([WORKER], { type: "text/javascript" }));
+let module = null, worker = null, running = false;
+
+function newWorker() {
+  worker = new Worker(workerUrl);
+  worker.onmessage = (e) => finish(e.data);
+  worker.onerror = () => finish({ ok: false, output: "error: the program crashed the runtime\n", ms: 0 });
+}
+
+function render(text, ok) {
+  if (!text) {
+    output.innerHTML = `<span class="placeholder">${ok ? "The program ran and printed nothing." : "The program failed without a message."}</span>`;
+    return;
+  }
+  output.innerHTML = text.split("\n").map((line) => {
+    const safe = escape(line);
+    if (/^error:/.test(line)) return `<span class="err">${safe}</span>`;
+    if (/^\s*= help:/.test(line)) return `<span class="help">${safe}</span>`;
+    if (/^\s*(-->|\d*\s*\|)/.test(line)) return `<span class="dim">${safe}</span>`;
+    return safe;
+  }).join("\n");
+}
+
+function finish(result) {
+  running = false;
+  stopButton.hidden = true;
+  runButton.disabled = false;
+  render(result.output, result.ok);
+  status.textContent = result.ok ? `Ran in ${result.ms.toFixed(1)} ms` : "Stopped with errors";
+}
+
+function run() {
+  if (!module || running) return;
+  running = true;
+  runButton.disabled = true;
+  stopButton.hidden = false;
+  status.textContent = "Running…";
+  worker.postMessage({ module, source: source.value });
+}
+
+runButton.addEventListener("click", run);
+stopButton.addEventListener("click", () => {
+  worker.terminate();
+  newWorker();
+  finish({ ok: false, output: "Stopped. The program was still running; check its loops.\n", ms: 0 });
+  status.textContent = "Stopped";
+});
+
+async function wasmBytes() {
+  const embedded = $("vyrn-wasm").textContent.trim();
+  if (embedded) return Uint8Array.from(atob(embedded), (c) => c.charCodeAt(0));
+  const response = await fetch("vyrn.wasm");
+  if (!response.ok) throw new Error("vyrn.wasm was not found next to this page");
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+(async () => {
+  try {
+    module = await WebAssembly.compile(await wasmBytes());
+    newWorker();
+    runButton.disabled = false;
+    status.textContent = "Ready";
+  } catch (e) {
+    status.textContent = "Vyrn could not load";
+    render(`error: ${e.message}\n`, false);
+  }
+})();
+</script>

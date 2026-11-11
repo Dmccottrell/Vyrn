@@ -1,0 +1,57 @@
+# A terminal game loop: balls fall, bounce and lose energy, drawn at 30
+# frames a second. Run it with `vyrn run examples/bounce.vyrn`.
+
+const WIDTH = 48
+const HEIGHT = 14
+const GRAVITY = 40.0
+
+struct Ball:
+    x: float
+    y: float
+    vx: float
+    vy: float
+    look: str
+end
+
+strict fn step(mut balls: [Ball], dt: float):
+    for mut b in balls:
+        b.vy += GRAVITY * dt
+        b.x += b.vx * dt
+        b.y += b.vy * dt
+        if b.y > float(HEIGHT - 1):
+            b.y = float(HEIGHT - 1)
+            b.vy = -b.vy * 0.8
+        end
+        if b.x < 0.0 or b.x > float(WIDTH - 1):
+            b.vx = -b.vx
+            b.x = 0.0 if b.x < 0.0 else float(WIDTH - 1)
+        end
+    end
+end
+
+fn draw(balls: [Ball], frame: int) -> str:
+    var rows = [[" " for _ in 0 until WIDTH] for _ in 0 until HEIGHT]
+    for b in balls:
+        rows[int(b.y)][int(b.x)] = b.look
+    end
+    var text = "frame {frame}\n+" + "-" * WIDTH + "+\n"
+    for row in rows:
+        text += "|" + "".join(row) + "|\n"
+    end
+    return text + "+" + "-" * WIDTH + "+"
+end
+
+main(args):
+    var balls = [
+        Ball(2.0, 1.0, 14.0, 0.0, "o"),
+        Ball(20.0, 4.0, -9.0, 0.0, "@"),
+        Ball(40.0, 0.0, 6.0, 0.0, "*"),
+    ]
+    let frames = 90 if len(args) == 0 else int(args[0])
+    var clock = Clock(hz = 30, frames = frames)
+    while clock.running:
+        step(mut balls, clock.tick())
+        print("\x1b[H\x1b[2J" + draw(balls, clock.frame))
+    end
+    print("{clock.frame} frames at {round(clock.fps)} frames a second")
+end

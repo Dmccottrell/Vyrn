@@ -22,6 +22,7 @@ The type checker, borrow checker and native backends do not exist yet.
 
 - [`examples/grade.vyrn`](examples/grade.vyrn): beginner, a grade calculator
 - [`examples/game.vyrn`](examples/game.vyrn): game dev, a fixed-size entity pool and a per-frame memory region
+- [`examples/bounce.vyrn`](examples/bounce.vyrn): a terminal game loop with physics, drawn at 30 frames a second
 - [`examples/api.vyrn`](examples/api.vyrn): web, async routes returning JSON
 - [`examples/inference.vyrn`](examples/inference.vyrn): ML, tensor layers spread across GPUs
 
@@ -85,7 +86,15 @@ cargo run --release --features gpu -- run program.vyrn
 | `src/project/` | Multi-file programs, the URL module resolver, `vyrn.lock`, single-file builds |
 | `src/vm/` | Bytecode compiler, register VM, tensor backends and builtins (see `docs/architecture.md` section 2.4) |
 
-`examples/grade.vyrn` and `examples/api.vyrn` (a web API on port 8080, with
-its database module in `examples/app/storage.vyrn`) run as they are. The game
-and inference examples call functions from packages that do not exist yet
-(`load_level`, `load_model`).
+`examples/grade.vyrn`, `examples/api.vyrn` (a web API on port 8080, with its
+database module in `examples/app/storage.vyrn`) and `examples/bounce.vyrn` (a
+terminal game loop) run as they are. `examples/game.vyrn` and
+`examples/inference.vyrn` show larger programs and call functions from
+packages that do not exist yet (`load_level`, `load_model`).
+
+## Playground
+
+`playground/index.html` runs Vyrn in the browser: the whole toolchain as one
+WebAssembly module, with the tutorial's examples. Serve it next to
+`vyrn.wasm` (built from `runtime/wasm`), or open the published copy, which
+has the module built in.
