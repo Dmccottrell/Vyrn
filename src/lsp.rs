@@ -503,6 +503,26 @@ const MODULES: &[(&str, &str)] = &[
         "http",
         "HTTP: a server (routes, serve) and a client (get, post).",
     ),
+    ("task", "Tasks: select, timeout, groups, cancel."),
+    ("db", "SQLite databases: open, execute, query."),
+    (
+        "draw",
+        "Windows, 2D and 3D drawing, input, widgets, turtle, images.",
+    ),
+    ("html", "Reading web pages with CSS selectors."),
+    (
+        "template",
+        "Pages and text made from data: {{name}}, {{#each}}, {{#if}}.",
+    ),
+    (
+        "table",
+        "Data in rows and columns: read_csv, where, sort, group_by.",
+    ),
+    (
+        "chart",
+        "Charts to PNG or SVG: line, bar, scatter, hist, pie.",
+    ),
+    ("mail", "Sending email over SMTP."),
 ];
 
 fn native_signature(name: &str, params: &[&str], variadic: bool) -> String {
