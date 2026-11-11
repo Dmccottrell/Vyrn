@@ -1181,3 +1181,48 @@ fn with_closes_resources_in_reverse_order() {
         "done\n[\"using a and b\", \"closed b\", \"closed a\", \"closed c\", \"caught\"]\n"
     );
 }
+
+// ---- kernels ----------------------------------------------------------------
+
+#[test]
+fn kernels_run_on_numbers_and_on_tensors() {
+    assert_eq!(
+        run("const SCALE = 2\n\
+             kernel fn leaky(x: f32) -> f32:\n    return x if x > 0.0 else 0.01 * x\nend\n\
+             kernel fn mix(a: f32, b: f32, t: f32) -> f32:\n    let d = b - a\n    return a + d * t * SCALE\nend\n\
+             main:\n\
+             \x20   print(leaky(-2.0), leaky(3.0))\n\
+             \x20   let x = arange(4) - 2.0\n\
+             \x20   print(leaky(x))\n\
+             \x20   print(mix(x, ones(4), 0.25))\n\
+             end\n"),
+        "-0.02 3.0\ntensor([-0.02, -0.01, 0.0, 1.0])\ntensor([-0.5, 0.0, 0.5, 1.0])\n"
+    );
+}
+
+#[test]
+fn kernels_explain_what_cannot_run_on_tensors() {
+    let e = runtime_error(
+        "kernel fn noisy(x: f32) -> f32:\n    print(x)\n    return x\nend\nmain:\n    print(noisy(2.0))\n    noisy(ones(3))\nend\n",
+    );
+    assert_eq!(e.kind, "KernelError");
+    assert!(
+        e.message
+            .contains("is not `let` bindings followed by one `return`"),
+        "{}",
+        e.message
+    );
+    let e = runtime_error(
+        "kernel fn add(a: f32, b: f32) -> f32: return a + b\nmain: add(ones(2), ones(3))\n",
+    );
+    assert_eq!(e.kind, "ShapeError");
+    // Known values are checked before running; others when the call runs.
+    assert!(compile_source(
+        "kernel fn add(a: f32, b: f32) -> f32: return a + b\nmain: add(ones(2), \"x\")\n"
+    )
+    .is_err());
+    let e = runtime_error(
+        "kernel fn add(a: f32, b: f32) -> f32: return a + b\nfn text(): return \"x\"\nmain: add(ones(2), text())\n",
+    );
+    assert_eq!(e.kind, "TypeError");
+}

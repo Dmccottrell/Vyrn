@@ -27,6 +27,9 @@ pub struct Proto {
     pub captures: Vec<Capture>,
     /// `async fn`: calling it starts a task and returns its handle.
     pub is_async: bool,
+    /// `kernel fn`: its body lowered for running on tensors, or why it
+    /// could not be.
+    pub kernel: Option<Rc<Result<super::kernel::Kernel, String>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,6 +138,21 @@ impl Program {
             }
             for (i, op) in proto.code.iter().enumerate() {
                 let _ = writeln!(out, "  {i:>4}  line {:<4} {op:?}", proto.lines[i]);
+            }
+            match proto.kernel.as_deref() {
+                Some(Ok(kernel)) => {
+                    let _ = writeln!(
+                        out,
+                        "  kernel: the WGSL compute shader when every argument is a tensor"
+                    );
+                    for line in kernel.wgsl(&vec![true; kernel.params.len()]).lines() {
+                        let _ = writeln!(out, "    | {line}");
+                    }
+                }
+                Some(Err(why)) => {
+                    let _ = writeln!(out, "  kernel: runs on numbers only, because {why}");
+                }
+                None => {}
             }
             out.push('\n');
         }

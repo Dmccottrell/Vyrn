@@ -537,10 +537,137 @@ impl Vm {
         base: usize,
         argc: usize,
     ) -> VmResult<()> {
+        if closure.proto.is_async || closure.proto.kernel.is_some() {
+            return self.enter_special(closure, ret, base, argc);
+        }
+        self.push_frame(closure, ret, base, argc)
+    }
+
+    /// Calls an `async fn` (as a task) or a `kernel fn` (on tensors, element
+    /// by element, when any argument is a tensor).
+    #[cold]
+    #[inline(never)]
+    fn enter_special(
+        &mut self,
+        closure: Rc<Closure>,
+        ret: usize,
+        base: usize,
+        argc: usize,
+    ) -> VmResult<()> {
+        if let Some(kernel) = closure.proto.kernel.clone() {
+            let args = &self.stack[base..base + argc];
+            if args.iter().any(|a| matches!(a, Value::Tensor(_))) {
+                let value = self.run_kernel(&kernel, &closure.proto.name, base, argc)?;
+                self.stack[ret] = value;
+                return Ok(());
+            }
+        }
         if closure.proto.is_async {
             return self.start_task(closure, ret, base, argc);
         }
         self.push_frame(closure, ret, base, argc)
+    }
+
+    /// Applies a kernel to tensor arguments (and number arguments, the same
+    /// for every element), on the tensors' device.
+    fn run_kernel(
+        &mut self,
+        kernel: &Result<super::kernel::Kernel, String>,
+        name: &str,
+        base: usize,
+        argc: usize,
+    ) -> VmResult<Value> {
+        use super::kernel::Input;
+        use super::tensor::KernelArg;
+        let kernel = kernel.as_ref().map_err(|why| {
+            err(
+                "KernelError",
+                format!(
+                    "kernel `{name}` works on numbers, but cannot run on tensors because {why}"
+                ),
+            )
+        })?;
+        if argc != kernel.params.len() {
+            return Err(err(
+                "CallError",
+                format!(
+                    "`{name}` takes {} arguments, got {argc}",
+                    kernel.params.len()
+                ),
+            ));
+        }
+        let args: Vec<Value> = self.stack[base..base + argc].to_vec();
+        let mut shape: Option<(Vec<usize>, super::tensor::Device)> = None;
+        for a in &args {
+            match a {
+                Value::Tensor(t) => match &shape {
+                    None => shape = Some((t.shape.clone(), t.device)),
+                    Some((s, d)) => {
+                        if *s != t.shape {
+                            return Err(err(
+                                "ShapeError",
+                                format!("kernel `{name}` needs tensors of one shape, got {s:?} and {:?}", t.shape),
+                            ));
+                        }
+                        if *d != t.device {
+                            return Err(err(
+                                "DeviceError",
+                                format!(
+                                    "kernel `{name}` got tensors on {d} and {}; move one first",
+                                    t.device
+                                ),
+                            ));
+                        }
+                    }
+                },
+                Value::Int(_) | Value::Float(_) => {}
+                other => {
+                    return Err(type_error(format!(
+                        "kernel `{name}` takes tensors and numbers, not {}",
+                        other.type_name()
+                    )))
+                }
+            }
+        }
+        let Some((shape, device)) = shape else {
+            return Err(err("InternalError", "no tensor argument"));
+        };
+        let len: usize = shape.iter().product();
+        let scalar = |v: &Value| match v {
+            Value::Int(i) => *i as f32,
+            Value::Float(f) => *f as f32,
+            _ => 0.0,
+        };
+        let backend_args: Vec<KernelArg> = args
+            .iter()
+            .map(|a| match a {
+                Value::Tensor(t) => KernelArg::Tensor(t),
+                other => KernelArg::Scalar(scalar(other)),
+            })
+            .collect();
+        let data = match self.ctx.backend(device).kernel(kernel, &backend_args, len) {
+            Some(data) => data,
+            None => {
+                let values: Vec<Option<std::borrow::Cow<[f32]>>> = args
+                    .iter()
+                    .map(|a| match a {
+                        Value::Tensor(t) => Some(t.values()),
+                        _ => None,
+                    })
+                    .collect();
+                let inputs: Vec<Input> = args
+                    .iter()
+                    .zip(&values)
+                    .map(|(a, v)| match v {
+                        Some(v) => Input::Values(v),
+                        None => Input::Scalar(scalar(a)),
+                    })
+                    .collect();
+                kernel.run_cpu(&inputs, len)
+            }
+        };
+        let tensor = super::tensor::Tensor::new(shape, data, device).map_err(ops::tensor_error)?;
+        ops::alloc(tensor)
     }
 
     #[cold]

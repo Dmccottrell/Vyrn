@@ -17,6 +17,7 @@ pub mod foreign;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod json;
+pub mod kernel;
 pub mod machine;
 pub mod op;
 pub mod ops;

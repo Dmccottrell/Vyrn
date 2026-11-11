@@ -193,3 +193,43 @@ fn programs_run_their_gpu_blocks_on_it() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn generated_kernel_shaders_match_the_cpu() {
+    use vyrn::vm::kernel::{lower, Input};
+    use vyrn::vm::tensor::KernelArg;
+    let Some(gpu) = backend() else { return };
+    let module = vyrn::parse(
+        "kernel fn f(x: f32, y: f32, k: f32) -> f32:\n    let g = 1.0 / (1.0 + exp(-k * x))\n    let h = max(y, -1.0) ** 2.0\n    return x * g + tanh(h) if x > y else gelu(x) - abs(y) + sqrt(abs(x)) + min(x, y)\nend\n",
+    )
+    .unwrap();
+    let vyrn::ast::ItemKind::Fn(f) = &module.items[0].kind else {
+        unreachable!()
+    };
+    let kernel = lower(f, &Default::default()).unwrap();
+    let x = tensor(&[37, 41], 3, DType::F32);
+    let y = tensor(&[37, 41], 4, DType::F32);
+    let len = 37 * 41;
+    let got = gpu
+        .kernel(
+            &kernel,
+            &[
+                KernelArg::Tensor(&x),
+                KernelArg::Tensor(&y),
+                KernelArg::Scalar(1.7),
+            ],
+            len,
+        )
+        .expect("ran on the GPU");
+    let (xv, yv) = (x.to_vec(), y.to_vec());
+    let want = kernel.run_cpu(
+        &[Input::Values(&xv), Input::Values(&yv), Input::Scalar(1.7)],
+        len,
+    );
+    for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+        assert!(
+            (g - w).abs() <= 1e-4 * (1.0 + w.abs()),
+            "element {i}: gpu {g} vs cpu {w}"
+        );
+    }
+}

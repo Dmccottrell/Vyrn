@@ -686,6 +686,24 @@ pub trait TensorBackend {
     fn softmax(&self, a: &Tensor, axis: i64) -> Result<Tensor, TensorError>;
     /// Copies a tensor to another device.
     fn transfer(&self, a: &Tensor, to: Device) -> Result<Tensor, TensorError>;
+
+    /// Applies a `kernel fn` element by element over `len` elements.
+    /// `None` leaves it to the CPU evaluator.
+    fn kernel(
+        &self,
+        kernel: &super::kernel::Kernel,
+        args: &[KernelArg],
+        len: usize,
+    ) -> Option<Vec<f32>> {
+        let _ = (kernel, args, len);
+        None
+    }
+}
+
+/// An argument of a kernel applied to tensors.
+pub enum KernelArg<'a> {
+    Tensor(&'a Tensor),
+    Scalar(f32),
 }
 
 /// Runs every tensor operation on the CPU, for any device. Results are

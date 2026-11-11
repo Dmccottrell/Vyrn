@@ -270,6 +270,8 @@ pub struct WgpuBackend {
     map: wgpu::ComputePipeline,
     softmax: wgpu::ComputePipeline,
     resident: RefCell<HashMap<usize, Resident>>,
+    /// Compiled `kernel fn` shaders, by WGSL source.
+    kernels: RefCell<HashMap<String, wgpu::ComputePipeline>>,
     max_binding: u64,
     /// Operations on fewer elements than this run on the CPU, where they
     /// are cheaper than a dispatch and a copy back.
@@ -328,6 +330,7 @@ impl WgpuBackend {
             queue,
             name: format!("wgpu: {} ({:?})", info.name, info.backend),
             resident: RefCell::new(HashMap::new()),
+            kernels: RefCell::new(HashMap::new()),
             max_binding: limits
                 .max_storage_buffer_binding_size
                 .min(limits.max_buffer_size),
@@ -658,5 +661,70 @@ impl TensorBackend for WgpuBackend {
 
     fn transfer(&self, a: &Tensor, to: super::tensor::Device) -> Result<Tensor, TensorError> {
         ReferenceBackend.transfer(a, to)
+    }
+
+    /// A `kernel fn` on tensors: its WGSL is generated for this pattern of
+    /// tensor and number arguments, compiled once, and dispatched with one
+    /// thread per element.
+    fn kernel(
+        &self,
+        kernel: &super::kernel::Kernel,
+        args: &[super::tensor::KernelArg],
+        len: usize,
+    ) -> Option<Vec<f32>> {
+        use super::tensor::KernelArg;
+        if len < self.min_elements || !self.fits(len * 4) {
+            return None;
+        }
+        let mask: Vec<bool> = args
+            .iter()
+            .map(|a| matches!(a, KernelArg::Tensor(_)))
+            .collect();
+        let source = kernel.wgsl(&mask);
+        let mut cache = self.kernels.borrow_mut();
+        let pipeline = cache.entry(source.clone()).or_insert_with(|| {
+            let module = self
+                .device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some(&kernel.name),
+                    source: wgpu::ShaderSource::Wgsl(source.as_str().into()),
+                });
+            self.device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(&kernel.name),
+                    layout: None,
+                    module: &module,
+                    entry_point: Some("main"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                })
+        });
+        let mut scalars: Vec<f32> = args
+            .iter()
+            .filter_map(|a| match a {
+                KernelArg::Scalar(s) => Some(*s),
+                KernelArg::Tensor(_) => None,
+            })
+            .collect();
+        if scalars.is_empty() {
+            scalars.push(0.0);
+        }
+        let out = self.output(len);
+        let scalars = self.storage(&f32_bytes(&scalars));
+        let sizes = self.uniform([len as u32, 0, 0, 0]);
+        let mut inputs = Vec::new();
+        for a in args {
+            if let KernelArg::Tensor(t) = a {
+                if !self.fits(t.storage.len() * 4) {
+                    return None;
+                }
+                inputs.push(self.storage(&f32_bytes(&t.values())));
+            }
+        }
+        let mut buffers: Vec<&wgpu::Buffer> = vec![&out, &scalars, &sizes];
+        buffers.extend(inputs.iter());
+        let pipeline = pipeline.clone();
+        drop(cache);
+        Some(self.run(&pipeline, &buffers, len, &out, len))
     }
 }

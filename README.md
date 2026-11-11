@@ -14,6 +14,7 @@ The type checker, borrow checker and native backends do not exist yet.
 - [`docs/stdlib.md`](docs/stdlib.md): the standard library: the Prelude, `std.http`, `std.fs`, `std.task` and `std.nn`
 - [`docs/principles.md`](docs/principles.md): the five rules every feature is checked against, and what Vyrn takes from each language
 - [`docs/ffi.md`](docs/ffi.md): the Python and C bridges, zero-copy tensors, and the decentralized module resolver
+- [`docs/nn.md`](docs/nn.md): `kernel fn` on tensors, its lowering to WGSL, and tensor memory layout
 
 ## Examples
 

@@ -113,6 +113,9 @@ struct ParamInfo {
 
 #[derive(Clone, Debug)]
 struct FnSig {
+    /// A `kernel fn`: its number parameters also take tensors, and then it
+    /// returns a tensor.
+    elementwise: bool,
     params: Vec<ParamInfo>,
     /// `None` when the return type is not written.
     ret: Option<Ty>,
@@ -250,6 +253,7 @@ impl Table {
     fn signature(&self, f: &FnDecl) -> FnSig {
         let generics: Vec<String> = f.generics.iter().map(|g| g.name.name.clone()).collect();
         FnSig {
+            elementwise: f.modifiers.is_kernel,
             params: f
                 .params
                 .iter()
@@ -1987,6 +1991,7 @@ impl Checker<'_> {
                                 })
                                 .collect(),
                             ret: Some(result.clone()),
+                            elementwise: false,
                         });
                     }
                 } else {
@@ -2066,6 +2071,8 @@ impl Checker<'_> {
         let mut positional = 0;
         // What each type parameter stands for in this call.
         let mut bindings: HashMap<String, (Ty, Span)> = HashMap::new();
+        let elementwise = sig.as_ref().is_some_and(|s| s.elementwise);
+        let mut on_tensors = false;
         for arg in args {
             let t = self.expr(&arg.value);
             let param = match &arg.name {
@@ -2098,6 +2105,9 @@ impl Checker<'_> {
                         format!("every `{var}` in one call must be the same type"),
                     );
                     // One error is enough for this argument.
+                } else if elementwise && t == Ty::Tensor && matches!(p.ty, Ty::Int | Ty::Float) {
+                    // A kernel applied to a tensor, element by element.
+                    on_tensors = true;
                 } else {
                     let expected = subst(&p.ty, &bindings);
                     self.expect(&expected, &t, arg.value.span, || {
@@ -2132,6 +2142,9 @@ impl Checker<'_> {
                     "a `mut` argument must be the only way the call can reach that value",
                 );
             }
+        }
+        if on_tensors {
+            return Ty::Tensor;
         }
         subst(&result, &bindings)
     }

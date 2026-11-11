@@ -215,6 +215,8 @@ struct Compiler {
     /// Globals filled by a builtin call before anything else runs: Python
     /// modules and C functions. Global slot, builtin, and its arguments.
     foreign_inits: Vec<(u16, u16, Vec<Value>)>,
+    /// Constants with a literal number value, which kernels may read.
+    numeric_consts: HashMap<String, f32>,
     symbols: Interner,
     routes: Vec<RouteDef>,
     main: Option<usize>,
@@ -338,6 +340,7 @@ impl Compiler {
             modules: HashMap::new(),
             imports: HashMap::new(),
             foreign_inits: Vec::new(),
+            numeric_consts: HashMap::new(),
             symbols: Interner::default(),
             routes: Vec::new(),
             main: None,
@@ -461,6 +464,7 @@ impl Compiler {
                         num_regs: 1,
                         captures: Vec::new(),
                         is_async: false,
+                        kernel: None,
                     })
                 })
             })
@@ -498,6 +502,22 @@ impl Compiler {
                 plans.push(Plan::Main { slot, decl });
             }
             ItemKind::Const(c) => {
+                let number = match &c.value.kind {
+                    ExprKind::Int { value, .. } => Some(*value as f32),
+                    ExprKind::Float { value, .. } => Some(*value as f32),
+                    ExprKind::Unary {
+                        op: UnaryOp::Neg,
+                        operand,
+                    } => match &operand.kind {
+                        ExprKind::Int { value, .. } => Some(-(*value as f32)),
+                        ExprKind::Float { value, .. } => Some(-(*value as f32)),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(n) = number {
+                    self.numeric_consts.insert(c.name.name.clone(), n);
+                }
                 if let Some(slot) = self.add_global(&c.name.name, GlobalInit::Const, item.span) {
                     self.global_index
                         .insert(c.name.name.clone(), GlobalKind::Const { slot });
@@ -745,6 +765,9 @@ impl Compiler {
                 self.set_pos(decl.name.span);
                 let mut proto = self.function(decl.name.name.clone(), &decl.params, &decl.body);
                 proto.is_async = decl.modifiers.is_async;
+                if decl.modifiers.is_kernel {
+                    proto.kernel = Some(Rc::new(super::kernel::lower(decl, &self.numeric_consts)));
+                }
                 self.set_proto(slot, proto);
             }
             Plan::Main { slot, decl } => {
@@ -993,6 +1016,7 @@ impl Compiler {
             num_regs: f.max_reg.max(1),
             captures: f.captures.into_iter().map(|(_, c, _)| c).collect(),
             is_async: false,
+            kernel: None,
         }
     }
 
