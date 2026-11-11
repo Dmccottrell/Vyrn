@@ -1417,3 +1417,11 @@ fn fakes_stand_in_for_dependencies_and_record_calls() {
         "1 [[\"people\", \"Ada\"]] true\n8 15 2\ndown\n"
     );
 }
+
+#[test]
+fn a_builtin_task_on_its_own_line_is_waited_for() {
+    assert_eq!(
+        run("use vyrn.time\nmain:\n    let start = time.monotonic()\n    time.sleep(0.05)\n    print(time.monotonic() - start >= 0.05)\nend\n"),
+        "true\n"
+    );
+}

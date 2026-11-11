@@ -3293,7 +3293,8 @@ impl Vm {
                         };
                         put!(dst, value);
                     }
-                    Op::Await { dst, src } => {
+                    Op::AwaitIfTask { src } if !matches!(reg!(src), Value::Task(_)) => {}
+                    Op::Await { dst, src } | Op::AwaitIfTask { src: dst @ src } => {
                         let value = reg!(src).clone();
                         match self.await_value(&value) {
                             Awaited::Ready(v) => put!(dst, v),

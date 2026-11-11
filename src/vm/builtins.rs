@@ -283,6 +283,9 @@ pub static NATIVES: &[Native] = &[
         super::lib_game::overlaps3d,
     ),
     fixed("game.distance", &["a", "b"], 2, super::lib_game::distance),
+    fixed("net.udp", &["port"], 0, super::lib_net::udp),
+    fixed("net.listen", &["port"], 0, super::lib_net::listen),
+    fixed("net.connect", &["address"], 1, super::lib_net::connect),
     fixed("game.normalize", &["v"], 1, super::lib_game::normalize),
     fixed(
         "game.slide",
@@ -391,6 +394,7 @@ pub fn std_module(name: &str) -> Option<&'static str> {
         "chart" => Some("chart"),
         "mail" => Some("mail"),
         "game" => Some("game"),
+        "net" => Some("net"),
         _ => None,
     }
 }
@@ -398,7 +402,7 @@ pub fn std_module(name: &str) -> Option<&'static str> {
 /// The library's modules, for messages: `vyrn.os`, `vyrn.fs`, ...
 pub const LIBRARY: &[&str] = &[
     "os", "fs", "path", "time", "random", "math", "json", "re", "csv", "http", "task", "db",
-    "draw", "html", "template", "table", "chart", "mail", "game",
+    "draw", "html", "template", "table", "chart", "mail", "game", "net",
 ];
 
 pub fn library_list() -> String {

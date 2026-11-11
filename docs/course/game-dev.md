@@ -290,7 +290,52 @@ vyrn run examples/fps.vyrn
 
 Read it top to bottom: every part is one of the sections above.
 
-## 10. From here to a modern shooter
+## 10. Multiplayer
+
+Online games send small messages many times a second. `vyrn.net` has the
+two kinds games use:
+
+- **UDP** for things sent every frame (inputs, positions): fast, and a lost
+  message doesn't matter because the next one is 16 ms behind.
+- **TCP** for things that must arrive (chat, joining a match, scores).
+
+```vyrn
+use vyrn.net
+use vyrn.time
+
+main:
+    let server = net.udp()
+    let player = net.udp()
+    player.send("127.0.0.1:{server.port}", {"name": "Ada", "keys": ["left", "up"]})
+    time.sleep(0.05)
+    let msg = server.receive()
+    print(msg["data"]["name"], msg["data"]["keys"])
+    server.send(msg["from"], [{"name": "Ada", "x": 120, "y": 80}])
+    time.sleep(0.05)
+    print(player.receive()["data"])
+end
+```
+
+```text
+Ada ["left", "up"]
+[{"name": "Ada", "x": 120, "y": 80}]
+```
+
+The pattern every competitive shooter uses: **players send their inputs,
+the server decides what happens** (moves everyone, checks hits) and sends
+the world back. Players can't cheat by claiming they hit someone, because
+only the server decides. `examples/multiplayer.vyrn` is a complete server
+and client:
+
+```bash
+vyrn run examples/multiplayer.vyrn server
+```
+
+```bash
+vyrn run examples/multiplayer.vyrn play 127.0.0.1 Ada
+```
+
+## 11. From here to a modern shooter
 
 Games like Call of Duty or XDefiant are made by hundreds of people over
 years, with engines that took decades. The way there is the way they
@@ -307,6 +352,6 @@ roadmap, roughly in order:
 | 6 | Models from Blender | ✅ `draw.load_obj` |
 | 7 | Textures, lighting and a GPU renderer for big scenes | planned |
 | 8 | Sound effects and music | planned |
-| 9 | Online multiplayer (a server, client prediction, lag compensation) | `vyrn.http` and tasks today; fast UDP networking planned |
+| 9 | Online multiplayer (a server, client prediction, lag compensation) | ✅ `vyrn.net` (UDP and TCP); prediction and lag compensation are yours to build on it |
 
 Start with step 1 (done!), then make the targets fight back.

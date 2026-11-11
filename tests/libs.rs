@@ -406,3 +406,31 @@ fn cameras_aim_and_strafe() {
          end\n");
     assert_eq!(out, "[1.0, 0.0, 0.0] [0.0, 0.0, -2.0]\n");
 }
+
+#[test]
+fn programs_talk_over_udp_and_tcp() {
+    let out = run("use vyrn.net\nuse vyrn.time\n\
+         main:\n\
+         \x20   let server = net.udp()\n\
+         \x20   let client = net.udp()\n\
+         \x20   client.send(\"127.0.0.1:{server.port}\", {\"x\": 1, \"names\": [\"a\"]})\n\
+         \x20   time.sleep(0.05)\n\
+         \x20   let m = server.receive()\n\
+         \x20   print(m[\"data\"])\n\
+         \x20   server.send(m[\"from\"], \"pong\")\n\
+         \x20   time.sleep(0.05)\n\
+         \x20   print(client.receive()[\"data\"], client.receive())\n\
+         \x20   let lobby = net.listen()\n\
+         \x20   let c = net.connect(\"127.0.0.1:{lobby.port}\")\n\
+         \x20   time.sleep(0.05)\n\
+         \x20   let conn = lobby.accept()\n\
+         \x20   c.send(\"hi\")\n\
+         \x20   c.send([1, 2])\n\
+         \x20   time.sleep(0.05)\n\
+         \x20   print(conn.receive_all())\n\
+         end\n");
+    assert_eq!(
+        out,
+        "{\"x\": 1, \"names\": [\"a\"]}\npong none\n[\"hi\", [1, 2]]\n"
+    );
+}

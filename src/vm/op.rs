@@ -261,6 +261,11 @@ pub enum Op {
         dst: u8,
         src: u8,
     },
+    /// A built-in call used as a statement, like `time.sleep(1)`: if it
+    /// gave a task, wait for it, as the line reads.
+    AwaitIfTask {
+        src: u8,
+    },
     /// `yield src`: hands the value to whoever reads the generator and
     /// pauses until it asks for the next one.
     Yield {

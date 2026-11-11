@@ -575,6 +575,19 @@ impl Compiler {
         })
     }
 
+    /// Whether `e` is a call of a built-in function (`time.sleep(1)`,
+    /// `sleep(1)`), as opposed to one of the program's own.
+    fn calls_builtin(&mut self, e: &Expr) -> bool {
+        let ExprKind::Call { callee, .. } = &e.kind else {
+            return false;
+        };
+        match &callee.kind {
+            ExprKind::Name(n) => matches!(self.resolve(&n.name), Some(Resolved::Native(_))),
+            ExprKind::Field { .. } => matches!(self.module_member(callee), Some(Ok(_))),
+            _ => false,
+        }
+    }
+
     /// `super.name(args)` in a method of `T`: calls the method `name` of
     /// `T`'s base class (or the nearest ancestor that has one) on `self`.
     fn super_call(&mut self, callee: &Expr, args: &[Arg], dst: u8) -> CResult<()> {
@@ -1940,7 +1953,11 @@ impl Compiler {
             StmtKind::Binding(b) => self.binding(b),
             StmtKind::Expr(e) => {
                 let mark = self.mark();
-                self.expr_any(e)?;
+                let r = self.expr_any(e)?;
+                // `time.sleep(1)` on its own line waits, as it reads.
+                if self.calls_builtin(e) {
+                    self.emit(Op::AwaitIfTask { src: r });
+                }
                 self.release(mark);
                 Ok(())
             }
@@ -2125,16 +2142,19 @@ impl Compiler {
         match &b.target {
             BindTarget::Name(ident) => {
                 let r = self.alloc()?;
-                match &b.value {
-                    Some(value) => self.expr_to(value, r)?,
+                // The name is declared even when its value has a mistake,
+                // so one mistake is reported once, not at every use.
+                let value = match &b.value {
+                    Some(value) => self.expr_to(value, r),
                     None => {
                         self.emit(Op::LoadNone { dst: r });
+                        Ok(())
                     }
-                }
-                self.apply_placement(b.declared_ty.as_ref(), r)?;
+                };
+                let placed = value.and_then(|_| self.apply_placement(b.declared_ty.as_ref(), r));
                 self.release(r as usize + 1);
                 self.bind_name(&ident.name, r);
-                Ok(())
+                placed
             }
             target => {
                 let Some(value) = &b.value else {
@@ -2210,10 +2230,10 @@ impl Compiler {
                     _ => {
                         // A new variable, as in Python.
                         let r = self.alloc()?;
-                        self.expr_to(value, r)?;
+                        let compiled = self.expr_to(value, r);
                         self.release(r as usize + 1);
                         self.bind_name(&ident.name, r);
-                        return Ok(());
+                        return compiled;
                     }
                 }
             }

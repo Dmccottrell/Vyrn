@@ -374,6 +374,18 @@ and directions are `[x, y, z]`.
 | `game.slide(position, movement, boxes, size)` | Moves without passing through boxes, sliding along walls |
 | `game.distance(a, b)`, `game.normalize(v)` | Between points; a direction of length 1 |
 
+### `vyrn.net`: multiplayer and other programs
+
+| API | Does |
+|---|---|
+| `net.udp(port)` | A UDP socket (any free port without one): fast messages that may be lost, for game state every frame |
+| `sock.send("host:port", data)`, `sock.receive()`, `sock.receive_all()`, `sock.port` | Send any Vyrn data; receive `{"from", "data"}` or `none` without waiting |
+| `net.listen(port)`, `server.accept()` | A TCP server; each new connection, or `none` |
+| `net.connect("host:port")`, `conn.send(data)`, `conn.receive()`, `conn.receive_all()`, `conn.open`, `conn.close()` | A reliable, ordered TCP connection |
+
+Data travels as JSON. Nothing waits, so sockets fit in a game loop;
+`examples/multiplayer.vyrn` is a server and its players.
+
 `docs/course/game-dev.md` teaches game programming with them, and
 `examples/fps.vyrn` is a complete small shooter.
 
