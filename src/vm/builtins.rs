@@ -263,6 +263,27 @@ pub static NATIVES: &[Native] = &[
         super::lib_draw::sphere_mesh_fn,
     ),
     variadic("draw.overlaps", super::lib_draw::overlaps),
+    fixed("draw.load_obj", &["path"], 1, super::lib_draw::load_obj),
+    fixed(
+        "game.raycast",
+        &["origin", "direction", "boxes", "max_distance"],
+        3,
+        super::lib_game::raycast,
+    ),
+    fixed(
+        "game.overlaps3d",
+        &["a", "b"],
+        2,
+        super::lib_game::overlaps3d,
+    ),
+    fixed("game.distance", &["a", "b"], 2, super::lib_game::distance),
+    fixed("game.normalize", &["v"], 1, super::lib_game::normalize),
+    fixed(
+        "game.slide",
+        &["position", "movement", "boxes", "size"],
+        3,
+        super::lib_game::slide,
+    ),
     fixed("draw.rgb", &["r", "g", "b"], 3, super::lib_draw::rgb),
     fixed(
         "draw.text_width",
@@ -363,6 +384,7 @@ pub fn std_module(name: &str) -> Option<&'static str> {
         "table" => Some("table"),
         "chart" => Some("chart"),
         "mail" => Some("mail"),
+        "game" => Some("game"),
         _ => None,
     }
 }
@@ -370,7 +392,7 @@ pub fn std_module(name: &str) -> Option<&'static str> {
 /// The library's modules, for messages: `vyrn.os`, `vyrn.fs`, ...
 pub const LIBRARY: &[&str] = &[
     "os", "fs", "path", "time", "random", "math", "json", "re", "csv", "http", "task", "db",
-    "draw", "html", "template", "table", "chart", "mail",
+    "draw", "html", "template", "table", "chart", "mail", "game",
 ];
 
 pub fn library_list() -> String {
@@ -1256,6 +1278,65 @@ fn vec4(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 // ---- methods of builtin types ----------------------------------------------
 
 /// Calls method `name` on `args[0]` with the remaining arguments.
+/// Methods of numbers, handy in game and maths code: `angle.sin()`,
+/// `speed.abs()`, `x.clamp(0, 10)`, `n.is_even()`.
+fn number_method(n: &Value, name: &str, rest: &[Value]) -> VmResult<Value> {
+    let x = match n {
+        Value::Int(i) => *i as f64,
+        Value::Float(f) => *f,
+        _ => 0.0,
+    };
+    let arg = |i: usize| -> VmResult<f64> {
+        match rest.get(i) {
+            Some(Value::Int(v)) => Ok(*v as f64),
+            Some(Value::Float(v)) => Ok(*v),
+            Some(other) => Err(type_error(format!(
+                "`.{name}()` takes numbers, not {}",
+                other.type_name()
+            ))),
+            None => Err(err("CallError", format!("`.{name}()` needs a number"))),
+        }
+    };
+    let keep_int = |v: f64| match n {
+        Value::Int(_) if v.fract() == 0.0 && v.abs() < 9.0e15 => Value::Int(v as i64),
+        _ => Value::Float(v),
+    };
+    Ok(match name {
+        "abs" => keep_int(x.abs()),
+        "sqrt" => Value::Float(x.sqrt()),
+        "sin" => Value::Float(x.sin()),
+        "cos" => Value::Float(x.cos()),
+        "tan" => Value::Float(x.tan()),
+        "floor" => Value::Int(x.floor() as i64),
+        "ceil" => Value::Int(x.ceil() as i64),
+        "round" => match rest.first() {
+            None => Value::Int(x.round() as i64),
+            Some(_) => {
+                let k = 10f64.powi(arg(0)? as i32);
+                Value::Float((x * k).round() / k)
+            }
+        },
+        "clamp" => keep_int(x.clamp(arg(0)?, arg(1)?.max(arg(0)?))),
+        "min" => keep_int(x.min(arg(0)?)),
+        "max" => keep_int(x.max(arg(0)?)),
+        "pow" => keep_int(x.powf(arg(0)?)),
+        "sign" => keep_int(if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }),
+        "radians" => Value::Float(x.to_radians()),
+        "degrees" => Value::Float(x.to_degrees()),
+        "is_even" => Value::Bool(matches!(n, Value::Int(i) if i % 2 == 0)),
+        "is_odd" => Value::Bool(matches!(n, Value::Int(i) if i % 2 != 0)),
+        _ => {
+            return Err(err(
+                "FieldError",
+                format!(
+                    "{} has no method `{name}`; numbers have abs, sqrt, sin, cos, tan, floor, ceil, round, clamp, min, max, pow, sign, radians, degrees, is_even, is_odd",
+                    n.type_name()
+                ),
+            ))
+        }
+    })
+}
+
 pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value> {
     let (receiver, rest) = (&args[0], &args[1..]);
     if let Value::Foreign(f) = receiver {
@@ -1275,6 +1356,9 @@ pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value>
             ))
         }
     };
+    if let Value::Int(_) | Value::Float(_) = receiver {
+        return number_method(receiver, name, rest);
+    }
     match receiver {
         Value::List(items) => match name {
             "append" => {

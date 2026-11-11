@@ -344,6 +344,25 @@ from the SQL, so input cannot change a statement. Errors are
 | `cube`, `sphere`, `plane`, `mesh`, `line3d` | 3D shapes, shaded, hidden behind nearer ones: `win.cube(cam, x, y, z, size, color, rotation = [rx, ry, rz])` |
 | `draw.mesh(points, triangles)`, `draw.cube_mesh()`, `draw.sphere_mesh(detail)` | Shapes of your own |
 | `draw.overlaps(x1, y1, w1, h1, x2, y2, w2, h2)`, `draw.rgb`, `draw.text_width` | Collisions, colours, text size |
+| `win.box(cam, [x, y, z, w, h, d], colour)` | A box from the same lists `vyrn.game` collides with |
+| `cam.direction`, `cam.position`, `cam.strafe(d)`, `cam.fly(d)` | First-person aiming and movement |
+| `win.mouse_dx`, `win.mouse_dy`, `win.hide_cursor()`, `win.show_cursor()` | Mouse look |
+| `draw.load_obj(path)` | A model exported from Blender and other 3D tools |
+
+### `vyrn.game`: the maths of 3D games
+
+Boxes are `[x, y, z, width, height, depth]` (centre and size); points
+and directions are `[x, y, z]`.
+
+| API | Does |
+|---|---|
+| `game.raycast(origin, direction, boxes, max_distance)` | The first box a ray hits: `{"index", "distance", "point"}`, or `none` (hitscan shots, line of sight) |
+| `game.overlaps3d(a, b)` | Whether two boxes touch |
+| `game.slide(position, movement, boxes, size)` | Moves without passing through boxes, sliding along walls |
+| `game.distance(a, b)`, `game.normalize(v)` | Between points; a direction of length 1 |
+
+`docs/course/game-dev.md` teaches game programming with them, and
+`examples/fps.vyrn` is a complete small shooter.
 
 Everything is drawn in software, so it looks the same on every machine.
 `examples/snake.vyrn`, `examples/cube3d.vyrn` and `examples/tips.vyrn`

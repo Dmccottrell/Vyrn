@@ -577,6 +577,13 @@ pub struct Camera {
 }
 
 impl Camera {
+    /// The way it looks, length 1: yaw turns right, pitch looks up.
+    fn direction(&self) -> [f64; 3] {
+        let (sy, cy) = self.yaw.get().to_radians().sin_cos();
+        let (sp, cp) = self.pitch.get().to_radians().sin_cos();
+        [sy * cp, sp, cy * cp]
+    }
+
     /// A world point in camera space: x right, y up, z forward.
     fn view(&self, p: [f64; 3]) -> [f64; 3] {
         let c = self.pos.get();
@@ -626,6 +633,17 @@ impl Foreign for Camera {
             "z" => p[2],
             "yaw" => self.yaw.get(),
             "pitch" => self.pitch.get(),
+            // Where it looks, as a direction of length 1: for aiming.
+            "direction" => {
+                return Ok(Value::list(
+                    self.direction().iter().map(|v| Value::Float(*v)).collect(),
+                ))
+            }
+            "position" => {
+                return Ok(Value::list(
+                    self.pos.get().iter().map(|v| Value::Float(*v)).collect(),
+                ))
+            }
             "fov" => self.fov.get(),
             _ => return Err(err("FieldError", format!("a Camera has no field `{name}`"))),
         }))
@@ -659,6 +677,21 @@ impl Foreign for Camera {
                 let (s, c) = self.yaw.get().to_radians().sin_cos();
                 let p = self.pos.get();
                 self.pos.set([p[0] + d * s, p[1], p[2] + d * c]);
+            }
+            // `cam.strafe(d)`: sideways, to the right for positive `d`.
+            "strafe" => {
+                let d = a.num(0, "distance")?;
+                let (s, c) = self.yaw.get().to_radians().sin_cos();
+                let p = self.pos.get();
+                self.pos.set([p[0] + d * c, p[1], p[2] - d * s]);
+            }
+            // `cam.fly(d)`: along exactly where it looks, up or down too.
+            "fly" => {
+                let d = a.num(0, "distance")?;
+                let v = self.direction();
+                let p = self.pos.get();
+                self.pos
+                    .set([p[0] + d * v[0], p[1] + d * v[1], p[2] + d * v[2]]);
             }
             "turn" => {
                 self.yaw.set(self.yaw.get() + a.num_or(0, "yaw", 0.0)?);
@@ -801,7 +834,7 @@ fn draw_mesh(
     m: &Mesh,
     pos: [f64; 3],
     rot: [f64; 3],
-    scale: f64,
+    scale: [f64; 3],
     c: Color,
 ) {
     let (sx, cx) = rot[0].to_radians().sin_cos();
@@ -811,7 +844,7 @@ fn draw_mesh(
         .verts
         .iter()
         .map(|v| {
-            let (x, y, z) = (v[0] * scale, v[1] * scale, v[2] * scale);
+            let (x, y, z) = (v[0] * scale[0], v[1] * scale[1], v[2] * scale[2]);
             let (y, z) = (y * cx - z * sx, y * sx + z * cx);
             let (x, z) = (x * cy + z * sy, -x * sy + z * cy);
             let (x, y) = (x * cz - y * sz, x * sz + y * cz);
@@ -975,6 +1008,38 @@ fn surface_method(
                 let path = a.text(0, "path")?;
                 p.save_png(&path)?
             }
+            // `win.box(cam, [x, y, z, width, height, depth], colour)`: the
+            // same box lists `vyrn.game` collides and ray-casts with.
+            "box" => {
+                let cam = match a.get(0, "camera") {
+                    Some(Value::Foreign(f)) => f
+                        .as_any()
+                        .downcast_ref::<Camera>()
+                        .map(|c| c as *const Camera),
+                    _ => None,
+                }
+                .ok_or_else(|| type_error("`box` takes a camera first, from `draw.camera()`"))?;
+                // SAFETY: held by the argument for the call.
+                let cam = unsafe { &*cam };
+                let b = ops::collect(a.get(1, "box").unwrap_or(&Value::None))?;
+                if b.len() != 6 {
+                    return Err(type_error("a box is [x, y, z, width, height, depth]"));
+                }
+                let n: Vec<f64> = b
+                    .iter()
+                    .map(|v| number(v, "a box"))
+                    .collect::<VmResult<_>>()?;
+                let c = a.color_or(2, "color", 0xffffff)?;
+                draw_mesh(
+                    &mut p,
+                    cam,
+                    &cube_mesh(),
+                    [n[0], n[1], n[2]],
+                    [0.0; 3],
+                    [n[3], n[4], n[5]],
+                    c,
+                )
+            }
             "cube" | "sphere" | "plane" | "mesh" => {
                 let cam = match a.get(0, "camera") {
                     Some(Value::Foreign(f)) => f
@@ -1008,7 +1073,21 @@ fn surface_method(
                     },
                 };
                 let position = [a.num(at, "x")?, a.num(at + 1, "y")?, a.num(at + 2, "z")?];
-                let size = a.num_or(at + 3, "size", 1.0)?;
+                // One number, or [width, height, depth].
+                let size = match a.get(at + 3, "size") {
+                    Some(v @ (Value::List(_) | Value::Tuple(_))) => {
+                        let s = ops::collect(v)?;
+                        if s.len() != 3 {
+                            return Err(type_error("`size` is a number or [width, height, depth]"));
+                        }
+                        [
+                            number(&s[0], "size")?,
+                            number(&s[1], "size")?,
+                            number(&s[2], "size")?,
+                        ]
+                    }
+                    _ => [a.num_or(at + 3, "size", 1.0)?; 3],
+                };
                 let c = a.color_or(at + 4, "color", 0xffffff)?;
                 let rot = match a.get(at + 5, "rotation") {
                     Some(v) => {
@@ -1308,6 +1387,9 @@ pub struct Window {
     last: Cell<std::time::Instant>,
     ui: RefCell<Ui>,
     typed: Rc<RefCell<String>>,
+    /// Where the mouse was last frame, and how far it moved since.
+    last_mouse: Cell<Option<(f64, f64)>>,
+    mouse_delta: Cell<(f64, f64)>,
 }
 
 impl Window {
@@ -1317,6 +1399,14 @@ impl Window {
         let mouse = w
             .get_mouse_pos(minifb::MouseMode::Clamp)
             .map_or((-1.0, -1.0), |(x, y)| (f64::from(x), f64::from(y)));
+        let moved = match self.last_mouse.get() {
+            Some((x, y)) if mouse.0 >= 0.0 => (mouse.0 - x, mouse.1 - y),
+            _ => (0.0, 0.0),
+        };
+        self.mouse_delta.set(moved);
+        if mouse.0 >= 0.0 {
+            self.last_mouse.set(Some(mouse));
+        }
         let down = w.get_mouse_down(minifb::MouseButton::Left);
         let mut typed = std::mem::take(&mut *self.typed.borrow_mut());
         for k in w.get_keys_pressed(minifb::KeyRepeat::Yes) {
@@ -1417,6 +1507,10 @@ impl Foreign for Window {
             .get_mouse_pos(minifb::MouseMode::Clamp)
             .unwrap_or((0.0, 0.0));
         match name {
+            // How far the mouse moved since the last frame: for looking
+            // around in a first-person game.
+            "mouse_dx" => Ok(Value::Float(self.mouse_delta.get().0)),
+            "mouse_dy" => Ok(Value::Float(self.mouse_delta.get().1)),
             "mouse_x" => Ok(Value::Float(f64::from(pos.0))),
             "mouse_y" => Ok(Value::Float(f64::from(pos.1))),
             _ => Err(err("FieldError", format!("a Window has no field `{name}`"))),
@@ -1542,6 +1636,14 @@ impl Foreign for Window {
             }
             "set_title" => {
                 self.win.borrow_mut().set_title(&a.text(0, "title")?);
+                Ok(Value::None)
+            }
+            // For first-person games: the mouse turns the view instead of
+            // pointing at things.
+            "hide_cursor" | "show_cursor" => {
+                self.win
+                    .borrow_mut()
+                    .set_cursor_visibility(name == "show_cursor");
                 Ok(Value::None)
             }
             "set_fps" => {
@@ -1773,6 +1875,8 @@ pub fn window(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         last: Cell::new(std::time::Instant::now()),
         ui: RefCell::new(Ui::default()),
         typed,
+        last_mouse: Cell::new(None),
+        mouse_delta: Cell::new((0.0, 0.0)),
     };
     window.poll();
     Ok(wrap(window))
@@ -1910,6 +2014,68 @@ pub fn text_width(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         _ => 2.0,
     };
     Ok(Value::Int((n as f64 * 8.0 * size) as i64))
+}
+
+/// `draw.load_obj("ship.obj")`: a model saved as a Wavefront OBJ file (the
+/// format Blender and most 3D tools export), for `win.mesh(...)`. Faces
+/// with more than three corners are split into triangles.
+pub fn load_obj(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let path = match args.first() {
+        Some(Value::Str(s)) => s.to_string(),
+        _ => return Err(type_error("`draw.load_obj` takes the file's path")),
+    };
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| err("IoError", format!("cannot read {path}: {e}")))?;
+    Ok(wrap(parse_obj(&text).map_err(|why| {
+        err(
+            "ValueError",
+            format!("{path} is not a model this can read: {why}"),
+        )
+    })?))
+}
+
+fn parse_obj(text: &str) -> Result<Mesh, String> {
+    let mut verts = Vec::new();
+    let mut faces = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let mut parts = line.split_whitespace();
+        match parts.next() {
+            Some("v") => {
+                let c: Vec<f64> = parts.take(3).filter_map(|p| p.parse().ok()).collect();
+                let [x, y, z] = c[..] else {
+                    return Err(format!("line {} has a point without x, y and z", n + 1));
+                };
+                verts.push([x, y, z]);
+            }
+            Some("f") => {
+                // `f 1 2 3` or `f 1/1/1 2/2/2 3/3/3`; counted from 1, or
+                // from the end when negative.
+                let idx: Vec<usize> = parts
+                    .map(|p| {
+                        let i: i64 = p
+                            .split('/')
+                            .next()
+                            .unwrap_or("")
+                            .parse()
+                            .map_err(|_| format!("line {} has a face corner {p:?}", n + 1))?;
+                        let i = if i < 0 { verts.len() as i64 + i } else { i - 1 };
+                        usize::try_from(i)
+                            .ok()
+                            .filter(|i| *i < verts.len())
+                            .ok_or_else(|| format!("line {} uses a point that is not there", n + 1))
+                    })
+                    .collect::<Result<_, _>>()?;
+                for k in 1..idx.len().saturating_sub(1) {
+                    faces.push([idx[0], idx[k], idx[k + 1]]);
+                }
+            }
+            _ => {}
+        }
+    }
+    if faces.is_empty() {
+        return Err("it has no faces".into());
+    }
+    Ok(Mesh { verts, faces })
 }
 
 /// `draw.cube_mesh()` and `draw.sphere_mesh(detail)`: ready-made shapes

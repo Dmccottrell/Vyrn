@@ -1,0 +1,201 @@
+# Target Range: a small first-person shooter.
+#
+#   mouse or arrow keys   look around
+#   W A S D               move (you slide along walls)
+#   space                 jump
+#   left click or F       shoot
+#   R                     reload
+#
+# Run it with `vyrn run examples/fps.vyrn`. Every piece is the same as in a
+# big FPS, just smaller: a game loop with frame time, mouse look,
+# collision against boxes, hitscan shooting by ray casting, enemies with
+# their own state, and a HUD drawn over the 3D view.
+use vyrn.draw
+use vyrn.game
+use vyrn.random
+
+const WIDTH = 800
+const HEIGHT = 500
+const EYE = 1.6
+const SPEED = 5.0
+const LOOK = 0.15
+const GRAVITY = 18.0
+const MAG = 8
+const ROUND_TIME = 90.0
+
+## A target that slides back and forth, and falls over when shot.
+object Target:
+    x: float
+    z: float
+    span: float
+    speed: float
+    health: int = 3
+    t: float = 0.0
+    start_x: float = 0.0
+
+    create init(self): self.start_x = self.x
+
+    create update(self, dt: float):
+        self.t += dt
+        self.x = self.start_x + self.span * (self.t * self.speed % 2.0 - 1.0).abs()
+    end
+
+    create bounds(self) -> list:
+        return [self.x, 1.0, self.z, 0.8, 2.0, 0.8]
+    end
+
+    create alive(self) -> bool: return self.health > 0
+end
+
+## The player's body: where they stand, how fast they fall, their gun.
+object Player:
+    position: list = [0.0, 0.0, -12.0]
+    fall_speed: float = 0.0
+    ammo: int = MAG
+    score: int = 0
+    shots: int = 0
+    hits: int = 0
+
+    create on_ground(self) -> bool: return self.position[1] <= 0.0
+end
+
+create arena() -> list:
+    return [
+        [0, 1.5, 15, 30, 3, 1],
+        [0, 1.5, -15, 30, 3, 1],
+        [15, 1.5, 0, 1, 3, 30],
+        [-15, 1.5, 0, 1, 3, 30],
+        [-5, 0.5, -4, 2, 1, 2],
+        [4, 0.75, -2, 1.5, 1.5, 1.5],
+        [0, 1, 5, 6, 2, 0.5],
+        [-8, 1, 6, 0.5, 2, 5],
+        [8, 0.5, 3, 2, 1, 4],
+    ]
+end
+
+create spawn_targets() -> list:
+    var targets = []
+    each i in 0 until 6:
+        targets.append(Target(random.float(-10, 6), random.float(0, 12), random.float(2, 5), random.float(0.2, 0.6)))
+    end
+    return targets
+end
+
+main:
+    let win = draw.window(WIDTH, HEIGHT, "Target Range")
+    win.hide_cursor()
+    let cam = draw.camera(0, EYE, -12)
+    let walls = arena()
+    let player = Player()
+    var targets = spawn_targets()
+    var time_left = ROUND_TIME
+    var reload_timer = 0.0
+    var flash = 0.0
+    var dt = 0.016
+
+    loop win.open():
+        let playing = time_left > 0
+        if playing:
+            time_left -= dt
+
+            # Looking: the mouse, or the arrow keys.
+            var yaw = win.mouse_dx * LOOK
+            var pitch = -win.mouse_dy * LOOK
+            if win.key_down("left"): yaw -= 120 * dt
+            if win.key_down("right"): yaw += 120 * dt
+            if win.key_down("up"): pitch += 90 * dt
+            if win.key_down("down"): pitch -= 90 * dt
+            cam.turn(yaw, pitch)
+
+            # Moving: work out the step on the ground, then slide it
+            # against the walls one axis at a time.
+            let rad = cam.yaw * 3.14159 / 180
+            let fx = rad.sin()
+            let fz = rad.cos()
+            var forward = 0.0
+            var side = 0.0
+            if win.key_down("w"): forward += 1
+            if win.key_down("s"): forward -= 1
+            if win.key_down("d"): side += 1
+            if win.key_down("a"): side -= 1
+            let step = SPEED * dt
+            let move = [(fx * forward + fz * side) * step, 0, (fz * forward - fx * side) * step]
+
+            # Jumping and falling.
+            if win.key_pressed("space") and player.on_ground(): player.fall_speed = -7.0
+            player.fall_speed += GRAVITY * dt
+            move[1] = -player.fall_speed * dt
+            let body = [player.position[0], player.position[1] + 0.9, player.position[2]]
+            let moved = game.slide(body, move, walls, [0.6, 1.8, 0.6])
+            player.position = [moved[0], max(0.0, moved[1] - 0.9), moved[2]]
+            if player.position[1] <= 0.0: player.fall_speed = 0.0
+            cam.move_to(player.position[0], player.position[1] + EYE, player.position[2])
+
+            # Shooting: a ray from the eye along the view.
+            if reload_timer > 0:
+                reload_timer -= dt
+                if reload_timer <= 0: player.ammo = MAG
+            else if win.key_pressed("r") and player.ammo < MAG:
+                reload_timer = 1.2
+            else if (win.clicked() or win.key_pressed("f")) and player.ammo > 0:
+                player.ammo -= 1
+                player.shots += 1
+                flash = 0.06
+                let alive = targets.filter(t => t.alive())
+                let solid = walls + [t.bounds() each t in alive]
+                let hit = game.raycast(cam.position, cam.direction, solid, 60)
+                if hit != none and hit["index"] >= len(walls):
+                    let target = alive[hit["index"] - len(walls)]
+                    target.health -= 1
+                    player.hits += 1
+                    if not target.alive(): player.score += 100
+                end
+            end
+
+            each t in targets:
+                if t.alive(): t.update(dt)
+            end
+            if len(targets.filter(t => t.alive())) == 0: targets = spawn_targets()
+        else if win.key_pressed("enter"):
+            player.score = 0
+            player.shots = 0
+            player.hits = 0
+            player.ammo = MAG
+            targets = spawn_targets()
+            time_left = ROUND_TIME
+        end
+
+        # Drawing: sky, floor, world, then the HUD on top.
+        win.clear("#87b5e0")
+        win.box(cam, [0, -0.05, 0, 30, 0.1, 30], "#5d7a4a")
+        each w in walls: win.box(cam, w, "#b8a589")
+        each t in targets:
+            if t.alive():
+                win.box(cam, t.bounds(), "#d64545" if t.health == 3 else "#e89a3c")
+                win.box(cam, [t.x, 2.2, t.z, 0.4, 0.4, 0.4], "#f2d0a4")
+            end
+        end
+        let cx = WIDTH / 2
+        let cy = HEIGHT / 2
+        win.line(cx - 10, cy, cx - 3, cy, "white", width = 2)
+        win.line(cx + 3, cy, cx + 10, cy, "white", width = 2)
+        win.line(cx, cy - 10, cx, cy - 3, "white", width = 2)
+        win.line(cx, cy + 3, cx, cy + 10, "white", width = 2)
+        if flash > 0:
+            win.circle(cx + 120, HEIGHT - 60, 18, "#ffe08a")
+            flash -= dt
+        end
+        win.rect(cx + 100, HEIGHT - 70, 120, 70, "#222222")
+        win.text("Score {player.score}", 12, 12, "white")
+        win.text("Time {max(0, time_left):.0f}", 12, 28, "white")
+        let ammo_text = "reloading..." if reload_timer > 0 else "Ammo {player.ammo}/{MAG}"
+        win.text(ammo_text, WIDTH - 140, HEIGHT - 24, "white")
+        if not playing:
+            let accuracy = player.hits / max(1, player.shots)
+            win.rect(cx - 170, cy - 50, 340, 100, "#000000")
+            win.text("Time! Score {player.score}, accuracy {accuracy:.0%}", cx - 150, cy - 20, "white")
+            win.text("Press enter to play again", cx - 150, cy + 10, "white")
+        end
+        dt = win.show()
+    end
+end

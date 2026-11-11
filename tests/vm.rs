@@ -812,7 +812,7 @@ fn runtime_type_errors() {
     );
     assert_eq!(
         runtime_error("main:\n    x = 5\n    x.go()\nend\n").message,
-        "int has no method `go`"
+        "int has no method `go`; numbers have abs, sqrt, sin, cos, tan, floor, ceil, round, clamp, min, max, pow, sign, radians, degrees, is_even, is_odd"
     );
 }
 
@@ -1388,5 +1388,21 @@ fn a_derived_object_can_change_an_inherited_default() {
         run("object Animal:\n    name: str\n    legs: int = 4\nend\nobject Bird(Animal):\n    legs: int = 2\n    wings: int = 2\nend\n\
              main:\n    print(Bird(\"Tweety\"), Animal(\"Rex\"))\nend\n"),
         "Bird(name=\"Tweety\", legs=2, wings=2) Animal(name=\"Rex\", legs=4)\n"
+    );
+}
+
+#[test]
+fn numbers_have_methods() {
+    assert_eq!(
+        run("main:\n    print((-3).abs(), 15.clamp(0, 10), 3.7.floor(), 2.0.sqrt() > 1.41, 4.is_even(), 2.pow(10), 0.0.sin())\nend\n"),
+        "3 10 3 true true 1024 0.0\n"
+    );
+}
+
+#[test]
+fn an_else_after_a_one_line_if_belongs_to_the_block_if() {
+    assert_eq!(
+        run("main:\n    each n in [1, 2]:\n        if n == 1:\n            print(\"one\")\n            if true: print(\"inner\")\n        else:\n            print(\"other\")\n        end\n    end\nend\n"),
+        "one\ninner\nother\n"
     );
 }

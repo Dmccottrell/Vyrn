@@ -113,6 +113,9 @@ pub struct Parser {
     /// End of the last token consumed, not counting line breaks, so spans
     /// never extend over a trailing newline.
     prev_end: Pos,
+    /// How many block-form `if`s are being read. Inside one, an `else` on
+    /// the line after a one-line `if` belongs to the block `if`.
+    block_ifs: usize,
 }
 
 impl Parser {
@@ -129,6 +132,7 @@ impl Parser {
             diagnostics: Vec::new(),
             reported_unclosed: false,
             prev_end,
+            block_ifs: 0,
         }
     }
 
@@ -1769,7 +1773,12 @@ impl Parser {
             let body = self.inline_body()?;
             let mut branches = vec![(condition, body)];
             let mut else_body = None;
-            if self.at_kw(K::Else) {
+            // `else` on the next line, inside a block `if`, is that `if`'s:
+            //     if a:
+            //         if b: x = 1
+            //     else:
+            let next_line = self.pos > 0 && matches!(self.tokens[self.pos - 1].kind, Tk::Newline);
+            if self.at_kw(K::Else) && !(next_line && self.block_ifs > 0) {
                 let span = self.span();
                 self.error(
                     "a one-line `if` cannot continue with `else`",
@@ -1803,6 +1812,23 @@ impl Parser {
         }
 
         self.bump();
+        self.block_ifs += 1;
+        let chain = self.if_chain(condition);
+        self.block_ifs -= 1;
+        let (branches, else_body) = chain?;
+        self.expect_end("if", header)?;
+        Ok(StmtKind::If(IfStmt {
+            branches,
+            else_body,
+        }))
+    }
+
+    /// The blocks of `if c:` ... `else if c:` ... `else:` ..., before `end`.
+    #[allow(clippy::type_complexity)]
+    fn if_chain(
+        &mut self,
+        condition: Condition,
+    ) -> PResult<(Vec<(Condition, Block)>, Option<Block>)> {
         let mut branches = vec![(condition, self.block())];
         let mut else_body = None;
         while self.eat_kw(K::Else) {
@@ -1816,11 +1842,7 @@ impl Parser {
             else_body = Some(self.clause_body()?);
             break;
         }
-        self.expect_end("if", header)?;
-        Ok(StmtKind::If(IfStmt {
-            branches,
-            else_body,
-        }))
+        Ok((branches, else_body))
     }
 
     /// `loop condition:`: repeats while the condition holds.

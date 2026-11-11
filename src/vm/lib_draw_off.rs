@@ -28,5 +28,6 @@ stubs!(
     rgb,
     text_width,
     cube_mesh_fn,
-    sphere_mesh_fn
+    sphere_mesh_fn,
+    load_obj
 );

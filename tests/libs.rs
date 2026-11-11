@@ -382,3 +382,27 @@ fn databases_store_records_without_sql() {
         "{\"id\": 2, \"name\": \"Tom\", \"age\": 6}\n1 [{\"id\": 2, \"name\": \"Tom\", \"age\": 6}]\n"
     );
 }
+
+#[test]
+fn games_raycast_collide_and_slide() {
+    let out = run("use vyrn.game\n\
+         main:\n\
+         \x20   let world = [[0, 1, 4, 1, 1, 1], [0, 1, 10, 0.8, 2, 0.8]]\n\
+         \x20   print(game.raycast([0, 1, 0], [0, 0, 1], world)[\"index\"], game.raycast([0, 1.8, 0], [0, 0, 1], world)[\"index\"])\n\
+         \x20   print(game.raycast([0, 1, 0], [0, 0, -1], world), game.overlaps3d([0, 0, 0, 1, 1, 1], [0.8, 0, 0, 1, 1, 1]))\n\
+         \x20   print(game.slide([0, 1, 4.0], [0.5, 0, 0.5], [[0, 1, 5, 10, 2, 1]], [0.6, 1.8, 0.6]))\n\
+         end\n");
+    assert_eq!(out, "0 1\nnone true\n[0.5, 1.0, 4.0]\n");
+}
+
+#[test]
+fn cameras_aim_and_strafe() {
+    let out = run("use vyrn.draw\n\
+         main:\n\
+         \x20   let cam = draw.camera(0, 0, 0)\n\
+         \x20   cam.turn(90, 0)\n\
+         \x20   cam.strafe(2)\n\
+         \x20   print([round(v, 2) each v in cam.direction], [round(v, 2) each v in cam.position])\n\
+         end\n");
+    assert_eq!(out, "[1.0, 0.0, 0.0] [0.0, 0.0, -2.0]\n");
+}
