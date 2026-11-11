@@ -30,6 +30,7 @@ const USAGE: &str = "\
 usage: vyrn <command> [arguments]
 
   (no command)           start the interactive prompt (also: vyrn repl)
+  learn [lesson]         the 100-day course, with exercises it checks
   file.vyrn [args...]    run a file (same as vyrn run file.vyrn)
   new <name>             create a project
   run [file] [args...]   run a program (the project's main file by default)
@@ -70,6 +71,7 @@ fn main() -> ExitCode {
         }
         file if file.ends_with(".vyrn") => run(&args),
         "new" => new(rest),
+        "learn" => learn(rest),
         "run" => run(rest),
         "check" => check(rest),
         "test" => test(rest),
@@ -103,6 +105,39 @@ fn main() -> ExitCode {
             eprintln!("error: unknown command `{command}`\n\n{USAGE}");
             ExitCode::from(2)
         }
+    }
+}
+
+/// `vyrn learn`: lessons in the terminal; answers run as `vyrn run`.
+fn learn(args: &[String]) -> ExitCode {
+    let run_file = |path: &Path, input: &str| -> (String, String) {
+        use std::io::Write;
+        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("vyrn"));
+        let child = std::process::Command::new(exe)
+            .arg("run")
+            .arg(path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+        let mut child = match child {
+            Ok(c) => c,
+            Err(e) => return (String::new(), format!("cannot run {}: {e}", path.display())),
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(input.as_bytes());
+        }
+        match child.wait_with_output() {
+            Ok(o) => (
+                String::from_utf8_lossy(&o.stdout).into_owned(),
+                String::from_utf8_lossy(&o.stderr).into_owned(),
+            ),
+            Err(e) => (String::new(), e.to_string()),
+        }
+    };
+    match vyrn::learn::command(args, &run_file) {
+        0 => ExitCode::SUCCESS,
+        n => ExitCode::from(n as u8),
     }
 }
 

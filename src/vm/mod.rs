@@ -120,6 +120,16 @@ impl Write for Captured {
 }
 
 /// Runs a program's `main:` block and returns everything it printed.
+/// Like [`run_source`], with `input()` reading the lines of `input`.
+pub fn run_source_with_input(src: &str, input: &str) -> Result<String, RunError> {
+    let program = compile_source(src).map_err(RunError::Compile)?;
+    let out = Captured::default();
+    let mut vm = Vm::with_output(program, Box::new(out.clone()));
+    vm.set_input(input);
+    vm.run_main(&[]).map_err(RunError::Runtime)?;
+    Ok(out.text())
+}
+
 pub fn run_source(src: &str) -> Result<String, RunError> {
     let program = compile_source(src).map_err(RunError::Compile)?;
     let out = Captured::default();

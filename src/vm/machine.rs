@@ -288,6 +288,7 @@ impl Vm {
             cpu: Box::new(ReferenceBackend),
             gpu: Box::new(ReferenceBackend),
             rng: 0x9E37_79B9_7F4A_7C15,
+            scripted_input: None,
             timers: Vec::new(),
             wakeups: Vec::new(),
             next_task: super::task::ROOT_TASK,
@@ -349,6 +350,11 @@ impl Vm {
 
     /// Runs the `main:` block. `args` is passed if `main` declares a
     /// parameter.
+    /// Makes `input()` give these lines, one per call, then `none`.
+    pub fn set_input(&mut self, text: &str) {
+        self.ctx.scripted_input = Some(text.lines().map(str::to_string).collect());
+    }
+
     /// Starts counting calls and time per function.
     pub fn enable_profile(&mut self) {
         self.profile = Some(Box::default());

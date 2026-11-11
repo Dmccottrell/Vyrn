@@ -63,6 +63,9 @@ pub fn input(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         let _ = write!(ctx.out, "{}", ops::display(&ctx.program, prompt));
         let _ = ctx.out.flush();
     }
+    if let Some(lines) = &mut ctx.scripted_input {
+        return Ok(lines.pop_front().map_or(Value::None, Value::str));
+    }
     let mut line = String::new();
     let read = std::io::stdin()
         .lock()

@@ -16,6 +16,7 @@ pub mod ast;
 pub mod check;
 pub mod diagnostic;
 pub mod fmt;
+pub mod learn;
 pub mod lexer;
 pub mod lsp;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]

@@ -43,6 +43,9 @@ pub struct Ctx {
     pub cpu: Box<dyn TensorBackend>,
     pub gpu: Box<dyn TensorBackend>,
     pub rng: u64,
+    /// Lines for `input()` to give instead of reading the keyboard (for
+    /// tests and course checks).
+    pub scripted_input: Option<std::collections::VecDeque<String>>,
     /// Timers started by `sleep`, each finishing its task when it expires.
     pub timers: Vec<(std::time::Instant, Rc<super::task::TaskHandle>)>,
     /// Tasks made ready by builtins, such as a channel receiving a value.
