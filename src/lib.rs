@@ -18,6 +18,7 @@ pub mod diagnostic;
 pub mod fmt;
 pub mod lexer;
 pub mod parser;
+pub mod prelude;
 pub mod pretty;
 pub mod project;
 pub mod span;

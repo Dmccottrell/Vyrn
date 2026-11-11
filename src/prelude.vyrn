@@ -1,0 +1,187 @@
+## The part of the Prelude written in Vyrn: everything that takes a
+## function. It is compiled into every program, after the program's own
+## declarations, so a program that defines `sorted` or `map` keeps its own.
+##
+## A function named `__list_name`, `__str_name` or `__map_name` is the
+## method `.name()` of lists, strings or maps.
+
+## `sorted(xs, key = none, reverse = false)`: a new list in order. `key`
+## is called once per item, and items with equal keys keep their order.
+create sorted(xs, key = none, reverse = false):
+    if key == none: return __sorted(xs, reverse)
+    return __sort_by(xs, [key(x) each x in xs], reverse)
+end
+
+## `min(xs, key = f)` and `max(xs, key = f)` land here.
+create __vyrn_min_by(xs, key):
+    return __pick_by(xs, [key(x) each x in xs], false)
+end
+
+create __vyrn_max_by(xs, key):
+    return __pick_by(xs, [key(x) each x in xs], true)
+end
+
+## `map(f, xs)` and `filter(f, xs)`, as in Python, but returning lists.
+create map(f, xs):
+    return [f(x) each x in xs]
+end
+
+create filter(f, xs):
+    if f == none: return [x each x in xs if x]
+    return [x each x in xs if f(x)]
+end
+
+## ---- lists ---------------------------------------------------------------
+
+## `xs.sort(key = none, reverse = false)`: sorts in place.
+create __list_sort(self, key = none, reverse = false):
+    var ordered = none
+    if key == none:
+        ordered = __sorted(self, reverse)
+    else:
+        ordered = __sort_by(self, [key(x) each x in self], reverse)
+    end
+    self.clear()
+    self.extend(ordered)
+end
+
+## `xs.map(f)`: a new list of `f(x)` for each item.
+create __list_map(self, f):
+    return [f(x) each x in self]
+end
+
+## `xs.filter(f)`: the items for which `f(x)` is true.
+create __list_filter(self, f):
+    return [x each x in self if f(x)]
+end
+
+## `xs.reduce(f, start)`: combines the items from the left, as in
+## `[1, 2, 3].reduce((a, b) => a + b)`. Without `start`, the first item
+## starts.
+create __list_reduce(self, f, start = none):
+    var acc = start
+    var first = start == none
+    each x in self:
+        if first:
+            acc = x
+            first = false
+        else:
+            acc = f(acc, x)
+        end
+    end
+    if first: __fail("ValueError", "`reduce` of an empty list with no start")
+    return acc
+end
+
+## `xs.find(f)`: the first item for which `f(x)` is true, or `none`.
+create __list_find(self, f):
+    each x in self:
+        if f(x): return x
+    end
+    return none
+end
+
+## `xs.find_index(f)`: where the first match is, or -1.
+create __list_find_index(self, f):
+    var i = 0
+    each x in self:
+        if f(x): return i
+        i += 1
+    end
+    return -1
+end
+
+## `xs.any(f)` and `xs.all(f)`: whether some or every item passes.
+create __list_any(self, f = none):
+    each x in self:
+        if (f(x) if f != none else x): return true
+    end
+    return false
+end
+
+create __list_all(self, f = none):
+    each x in self:
+        if not (f(x) if f != none else x): return false
+    end
+    return true
+end
+
+## `xs.count_if(f)`: how many items pass.
+create __list_count_if(self, f):
+    var n = 0
+    each x in self:
+        if f(x): n += 1
+    end
+    return n
+end
+
+## `xs.min_by(f)` and `xs.max_by(f)`
+create __list_min_by(self, f):
+    return __pick_by(self, [f(x) each x in self], false)
+end
+
+create __list_max_by(self, f):
+    return __pick_by(self, [f(x) each x in self], true)
+end
+
+## `xs.sum_by(f)`
+create __list_sum_by(self, f):
+    var total = 0
+    each x in self: total += f(x)
+    return total
+end
+
+## `xs.group_by(f)`: a map from each key to the items with that key.
+create __list_group_by(self, f):
+    let groups = {}
+    each x in self:
+        let k = f(x)
+        if k in groups:
+            groups[k].append(x)
+        else:
+            groups[k] = [x]
+        end
+    end
+    return groups
+end
+
+## `xs.each(f)`: calls `f` on every item, for its effect.
+create __list_each(self, f):
+    each x in self: f(x)
+end
+
+## `xs.flatten()`: one level of nesting removed.
+create __list_flatten(self):
+    return [y each x in self each y in x]
+end
+
+## `xs.take_while(f)` and `xs.drop_while(f)`
+create __list_take_while(self, f):
+    let out = []
+    each x in self:
+        if not f(x): return out
+        out.append(x)
+    end
+    return out
+end
+
+create __list_drop_while(self, f):
+    var i = 0
+    each x in self:
+        if not f(x): return self[i:]
+        i += 1
+    end
+    return []
+end
+
+## ---- maps ----------------------------------------------------------------
+
+## `m.map_values(f)`: the same keys, each value passed through `f`.
+create __map_map_values(self, f):
+    return {k: f(v) each k, v in self.items()}
+end
+
+## `m.filter(f)`: the entries for which `f(key, value)` is true.
+create __map_filter(self, f):
+    return {k: v each k, v in self.items() if f(k, v)}
+end

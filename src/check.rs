@@ -2169,7 +2169,10 @@ fn common(tys: &[Ty]) -> Ty {
 fn builtin_result(name: &str) -> Ty {
     match name {
         "len" | "int" => Ty::Int,
-        "str" | "format_bytes" | "read_text" | "to_json" => Ty::Str,
+        "str" | "format_bytes" | "read_text" | "to_json" | "format" | "__format" | "repr"
+        | "chr" | "hex" | "oct" | "bin" | "typeof" => Ty::Str,
+        "bool" | "any" | "all" => Ty::Bool,
+        "ord" | "floor" | "ceil" => Ty::Int,
         "float" | "sqrt" | "now" => Ty::Float,
         "range" => Ty::Range,
         "zeros" | "ones" | "rand" | "arange" | "eye" | "tensor" | "vec2" | "vec3" | "vec4"

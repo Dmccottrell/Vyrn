@@ -18,6 +18,8 @@ path = "src/main.rs"
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
 sha2 = "0.10"
+# `use std.re`: regular expressions.
+regex = { version = "1", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
 ureq = { version = "3", optional = true }
 wgpu = { version = "30", optional = true, default-features = false, features = ["vulkan", "metal", "dx12", "wgsl"] }
 pollster = { version = "0.4", optional = true }

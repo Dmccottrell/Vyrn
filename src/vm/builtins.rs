@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use super::dtype::DType;
 use super::ops::{self, err, type_error, Ctx, VmResult};
+use super::stdlib as S;
 use super::tensor::{widen, Device, MapOp, Reduce, Tensor};
 use super::value::{Key, Map, Value};
 
@@ -107,6 +108,126 @@ pub static NATIVES: &[Native] = &[
         ffi_function,
     ),
     fixed("Clock", &["hz", "frames"], 0, clock),
+    // ---- everyday Prelude (src/vm/stdlib.rs) ----
+    fixed("input", &["prompt"], 0, S::input),
+    fixed("bool", &["x"], 1, S::to_bool),
+    fixed("typeof", &["x"], 1, S::type_of),
+    fixed("repr", &["x"], 1, S::repr),
+    fixed("chr", &["code"], 1, S::chr),
+    fixed("ord", &["char"], 1, S::ord),
+    fixed("hex", &["n"], 1, S::hex),
+    fixed("oct", &["n"], 1, S::oct),
+    fixed("bin", &["n"], 1, S::bin),
+    fixed("divmod", &["a", "b"], 2, S::divmod),
+    fixed("pow", &["base", "exp", "modulo"], 2, S::pow),
+    fixed("floor", &["x"], 1, S::floor),
+    fixed("ceil", &["x"], 1, S::ceil),
+    fixed("any", &["xs"], 1, S::any),
+    fixed("all", &["xs"], 1, S::all),
+    fixed("reversed", &["xs"], 1, S::reversed),
+    fixed("list", &["xs"], 0, S::list),
+    fixed("dict", &["pairs"], 0, S::dict),
+    fixed("set", &["xs"], 0, S::set),
+    fixed("__set", &["xs"], 1, S::set),
+    fixed("open", &["path", "mode"], 1, S::open),
+    fixed("format", &["value", "spec"], 1, S::format),
+    fixed("__format", &["value", "spec"], 2, S::format),
+    fixed("__sorted", &["xs", "reverse"], 1, S::sorted_plain),
+    fixed("__sort_by", &["xs", "keys", "reverse"], 2, S::sort_by),
+    fixed("__pick_by", &["xs", "keys", "greatest"], 2, S::pick_by),
+    fixed("__fail", &["kind", "message"], 2, S::prelude_fail),
+    // ---- std.os ----
+    fixed("os.args", &[], 0, S::os_args),
+    fixed("os.env", &["name", "default"], 1, S::os_env),
+    fixed("os.set_env", &["name", "value"], 2, S::os_set_env),
+    fixed("os.environ", &[], 0, S::os_environ),
+    fixed("os.cwd", &[], 0, S::os_cwd),
+    fixed("os.chdir", &["path"], 1, S::os_chdir),
+    fixed("os.exit", &["code"], 0, S::os_exit),
+    fixed("os.platform", &[], 0, S::os_platform),
+    fixed("os.run", &["command", "input"], 1, S::os_run),
+    // ---- std.fs ----
+    fixed("fs.exists", &["path"], 1, S::fs_exists),
+    fixed("fs.is_file", &["path"], 1, S::fs_is_file),
+    fixed("fs.is_dir", &["path"], 1, S::fs_is_dir),
+    fixed("fs.list", &["dir"], 0, S::fs_list),
+    fixed("fs.walk", &["dir"], 1, S::fs_walk),
+    fixed("fs.mkdir", &["path"], 1, S::fs_mkdir),
+    fixed("fs.remove", &["path"], 1, S::fs_remove),
+    fixed("fs.rename", &["from", "to"], 2, S::fs_rename),
+    fixed("fs.copy", &["from", "to"], 2, S::fs_copy),
+    fixed("fs.size", &["path"], 1, S::fs_size),
+    fixed("fs.modified", &["path"], 1, S::fs_modified),
+    fixed("fs.read_text", &["path"], 1, read_text),
+    fixed("fs.write_text", &["path", "text"], 2, write_text),
+    fixed("fs.append_text", &["path", "text"], 2, S::fs_append_text),
+    fixed("fs.read_lines", &["path"], 1, S::fs_read_lines),
+    // ---- std.path ----
+    variadic("path.join", S::path_join),
+    fixed("path.name", &["path"], 1, S::path_name),
+    fixed("path.stem", &["path"], 1, S::path_stem),
+    fixed("path.ext", &["path"], 1, S::path_ext),
+    fixed("path.parent", &["path"], 1, S::path_parent),
+    fixed("path.absolute", &["path"], 1, S::path_absolute),
+    fixed("path.home", &[], 0, S::path_home),
+    // ---- std.time ----
+    fixed("time.now", &[], 0, S::time_now),
+    fixed("time.format", &["time", "pattern"], 0, S::time_format),
+    fixed("time.date", &["time"], 0, S::time_date),
+    fixed("time.parse", &["text", "pattern"], 1, S::time_parse),
+    fixed("time.monotonic", &[], 0, now),
+    fixed("time.sleep", &["seconds"], 1, sleep),
+    // ---- std.random ----
+    fixed("random.seed", &["n"], 1, S::random_seed),
+    fixed("random.float", &["low", "high"], 0, S::random_float),
+    fixed("random.int", &["low", "high"], 2, S::random_int),
+    fixed("random.choice", &["xs"], 1, S::random_choice),
+    fixed("random.shuffle", &["xs"], 1, S::random_shuffle),
+    fixed("random.sample", &["xs", "k"], 2, S::random_sample),
+    // ---- std.math ----
+    fixed("math.sqrt", &["x"], 1, sqrt),
+    fixed("math.exp", &["x"], 1, exp),
+    fixed("math.floor", &["x"], 1, S::floor),
+    fixed("math.ceil", &["x"], 1, S::ceil),
+    fixed("math.log", &["x", "base"], 1, S::math_log),
+    fixed("math.log2", &["x"], 1, S::math_log2),
+    fixed("math.log10", &["x"], 1, S::math_log10),
+    fixed("math.sin", &["x"], 1, S::math_sin),
+    fixed("math.cos", &["x"], 1, S::math_cos),
+    fixed("math.tan", &["x"], 1, S::math_tan),
+    fixed("math.asin", &["x"], 1, S::math_asin),
+    fixed("math.acos", &["x"], 1, S::math_acos),
+    fixed("math.atan", &["x"], 1, S::math_atan),
+    fixed("math.atan2", &["y", "x"], 2, S::math_atan2),
+    fixed("math.hypot", &["x", "y"], 2, S::math_hypot),
+    fixed("math.degrees", &["x"], 1, S::math_degrees),
+    fixed("math.radians", &["x"], 1, S::math_radians),
+    fixed("math.isnan", &["x"], 1, S::math_isnan),
+    fixed("math.isinf", &["x"], 1, S::math_isinf),
+    fixed("math.gcd", &["a", "b"], 2, S::math_gcd),
+    fixed("math.factorial", &["n"], 1, S::math_factorial),
+    fixed("math.clamp", &["x", "low", "high"], 3, S::math_clamp),
+    // ---- std.json ----
+    fixed("json.parse", &["text"], 1, parse_json),
+    fixed("json.dumps", &["value", "indent"], 1, S::json_dumps),
+    fixed("json.load", &["path"], 1, S::json_load),
+    fixed("json.save", &["path", "value"], 2, S::json_save),
+    // ---- std.re ----
+    fixed("re.test", &["pattern", "text"], 2, S::re_test),
+    fixed("re.find", &["pattern", "text"], 2, S::re_find),
+    fixed("re.find_all", &["pattern", "text"], 2, S::re_find_all),
+    fixed("re.replace", &["pattern", "text", "with"], 3, S::re_replace),
+    fixed("re.split", &["pattern", "text"], 2, S::re_split),
+    // ---- std.csv ----
+    fixed("csv.parse", &["text", "header", "sep"], 1, S::csv_parse),
+    fixed("csv.read", &["path", "header", "sep"], 1, S::csv_read),
+    fixed("csv.format", &["rows", "sep"], 1, S::csv_format),
+    fixed("csv.write", &["path", "rows", "sep"], 2, S::csv_write),
+    // ---- std.http client ----
+    fixed("web.get", &["url", "headers"], 1, S::http_get),
+    fixed("web.post", &["url", "body", "headers"], 1, S::http_post),
+    fixed("web.put", &["url", "body", "headers"], 1, S::http_put),
+    fixed("web.delete", &["url", "headers"], 1, S::http_delete),
     fixed("web.serve", &["port", "host", "requests"], 0, web_serve),
     fixed("web.provide", &["name", "value"], 2, web_provide),
 ];
@@ -116,6 +237,15 @@ pub static NATIVES: &[Native] = &[
 pub fn std_module(name: &str) -> Option<&'static str> {
     match name {
         "web" | "http" => Some("web"),
+        "os" => Some("os"),
+        "fs" => Some("fs"),
+        "path" => Some("path"),
+        "time" => Some("time"),
+        "random" => Some("random"),
+        "math" => Some("math"),
+        "json" => Some("json"),
+        "re" => Some("re"),
+        "csv" => Some("csv"),
         _ => None,
     }
 }
@@ -132,7 +262,11 @@ pub fn constant(name: &str) -> Option<Value> {
     match name {
         "cpu" => Some(Value::Device(Device::Cpu)),
         "gpu" => Some(Value::Gpus),
-        "pi" => Some(Value::Float(std::f64::consts::PI)),
+        "pi" | "math.pi" => Some(Value::Float(std::f64::consts::PI)),
+        "math.e" => Some(Value::Float(std::f64::consts::E)),
+        "math.tau" => Some(Value::Float(std::f64::consts::TAU)),
+        "math.inf" => Some(Value::Float(f64::INFINITY)),
+        "math.nan" => Some(Value::Float(f64::NAN)),
         // Element types are values, so they can be passed around:
         // `w.to(q4)`, `tensor(data, f16)`.
         "f32" | "f16" | "bf16" | "q8" | "q4" => Some(Value::str(name)),
@@ -169,11 +303,11 @@ pub fn call(id: u16, ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 }
 
 /// An optional argument, treating a left-out one as absent.
-fn opt(args: &[Value], i: usize) -> Option<&Value> {
+pub(crate) fn opt(args: &[Value], i: usize) -> Option<&Value> {
     args.get(i).filter(|v| !matches!(v, Value::Missing))
 }
 
-fn number(value: &Value, what: &str) -> VmResult<f64> {
+pub(crate) fn number(value: &Value, what: &str) -> VmResult<f64> {
     match value {
         Value::Int(i) => Ok(*i as f64),
         Value::Float(f) => Ok(*f),
@@ -184,7 +318,7 @@ fn number(value: &Value, what: &str) -> VmResult<f64> {
     }
 }
 
-fn integer(value: &Value, what: &str) -> VmResult<i64> {
+pub(crate) fn integer(value: &Value, what: &str) -> VmResult<i64> {
     match value {
         Value::Int(i) => Ok(*i),
         Value::Float(f) if f.fract() == 0.0 => Ok(*f as i64),
@@ -378,7 +512,7 @@ fn zip(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     ))
 }
 
-fn sorted(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+pub(crate) fn sorted(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let mut items = ops::collect(&args[0])?;
     let mut failure = None;
     items.sort_by(|a, b| {
@@ -1057,8 +1191,13 @@ pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value>
                 Ok(Value::None)
             }
             "sort" => {
-                arity(0)?;
-                let sorted_items = sorted(ctx, std::slice::from_ref(receiver))?;
+                let sorted_items = S::sorted_plain(
+                    ctx,
+                    &[
+                        receiver.clone(),
+                        rest.first().cloned().unwrap_or(Value::Bool(false)),
+                    ],
+                )?;
                 if let Value::List(new) = sorted_items {
                     let new = new.borrow().clone();
                     *items.borrow_mut() = new;
@@ -1077,6 +1216,82 @@ pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value>
                     .position(|v| ops::equals(v, &rest[0]))
                     .map(|i| Value::Int(i as i64))
                     .ok_or_else(|| err("ValueError", "the value is not in the list"))
+            }
+            "count" => {
+                arity(1)?;
+                Ok(Value::Int(
+                    items
+                        .borrow()
+                        .iter()
+                        .filter(|v| ops::equals(v, &rest[0]))
+                        .count() as i64,
+                ))
+            }
+            "remove" => {
+                arity(1)?;
+                let mut items = items.borrow_mut();
+                let at = items
+                    .iter()
+                    .position(|v| ops::equals(v, &rest[0]))
+                    .ok_or_else(|| err("ValueError", "the value is not in the list"))?;
+                items.remove(at);
+                Ok(Value::None)
+            }
+            "contains" => {
+                arity(1)?;
+                Ok(Value::Bool(
+                    items.borrow().iter().any(|v| ops::equals(v, &rest[0])),
+                ))
+            }
+            "first" => Ok(items.borrow().first().cloned().unwrap_or(Value::None)),
+            "last" => Ok(items.borrow().last().cloned().unwrap_or(Value::None)),
+            "is_empty" => Ok(Value::Bool(items.borrow().is_empty())),
+            "unique" => {
+                let mut seen = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for v in items.borrow().iter() {
+                    match Key::from_value(v) {
+                        Some(k) => {
+                            if seen.insert(k) {
+                                out.push(v.clone());
+                            }
+                        }
+                        None => {
+                            if !out.iter().any(|o| ops::equals(o, v)) {
+                                out.push(v.clone());
+                            }
+                        }
+                    }
+                }
+                Ok(Value::list(out))
+            }
+            "join" => {
+                let sep = match rest.first() {
+                    Some(Value::Str(s)) => s.to_string(),
+                    Some(_) => return Err(type_error("`.join()` takes a separator string")),
+                    None => String::new(),
+                };
+                let parts: Vec<String> = items
+                    .borrow()
+                    .iter()
+                    .map(|v| ops::display(&ctx.program, v))
+                    .collect();
+                Ok(Value::str(parts.join(&sep)))
+            }
+            "sum" => sum(ctx, std::slice::from_ref(receiver)),
+            "chunks" => {
+                arity(1)?;
+                let n = integer(&rest[0], "the chunk size")?;
+                if n <= 0 {
+                    return Err(err("ValueError", "the chunk size must be positive"));
+                }
+                Ok(Value::list(
+                    items
+                        .borrow()
+                        .chunks(n as usize)
+                        .map(|c| Value::list(c.to_vec()))
+                        .collect(),
+                ))
             }
             _ => Err(no_method(receiver, name)),
         },
@@ -1098,16 +1313,28 @@ pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value>
             match name {
                 "upper" => Ok(Value::str(text.to_uppercase())),
                 "lower" => Ok(Value::str(text.to_lowercase())),
-                "strip" => Ok(Value::str(text.trim())),
+                "strip" if rest.is_empty() => Ok(Value::str(text.trim())),
                 "split" => {
-                    let parts: Vec<Value> = if rest.is_empty() {
+                    let parts: Vec<Value> = if rest.is_empty() || matches!(rest[0], Value::None) {
                         text.split_whitespace().map(Value::str).collect()
                     } else {
                         let sep = string_arg(0)?;
                         if sep.is_empty() {
                             return Err(err("ValueError", "cannot split on an empty separator"));
                         }
-                        text.split(sep.as_str()).map(Value::str).collect()
+                        match rest.get(1) {
+                            Some(n) => {
+                                let n = integer(n, "the number of splits")?;
+                                if n < 0 {
+                                    text.split(sep.as_str()).map(Value::str).collect()
+                                } else {
+                                    text.splitn(n as usize + 1, sep.as_str())
+                                        .map(Value::str)
+                                        .collect()
+                                }
+                            }
+                            None => text.split(sep.as_str()).map(Value::str).collect(),
+                        }
                     };
                     Ok(Value::list(parts))
                 }
@@ -1129,6 +1356,182 @@ pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value>
                     text.find(&string_arg(0)?)
                         .map(|byte| text[..byte].chars().count() as i64)
                         .unwrap_or(-1),
+                )),
+                "rfind" => Ok(Value::Int(
+                    text.rfind(&string_arg(0)?)
+                        .map(|byte| text[..byte].chars().count() as i64)
+                        .unwrap_or(-1),
+                )),
+                "index" => {
+                    let part = string_arg(0)?;
+                    text.find(&part)
+                        .map(|byte| Value::Int(text[..byte].chars().count() as i64))
+                        .ok_or_else(|| {
+                            err(
+                                "ValueError",
+                                format!("{} is not in the string", S::quote(&part)),
+                            )
+                        })
+                }
+                "count" => {
+                    let part = string_arg(0)?;
+                    if part.is_empty() {
+                        return Ok(Value::Int(text.chars().count() as i64 + 1));
+                    }
+                    Ok(Value::Int(text.matches(part.as_str()).count() as i64))
+                }
+                "contains" => Ok(Value::Bool(text.contains(string_arg(0)?.as_str()))),
+                "title" => {
+                    let mut out = String::with_capacity(text.len());
+                    let mut start = true;
+                    for c in text.chars() {
+                        if c.is_alphabetic() {
+                            if start {
+                                out.extend(c.to_uppercase());
+                            } else {
+                                out.extend(c.to_lowercase());
+                            }
+                            start = false;
+                        } else {
+                            out.push(c);
+                            start = !c.is_alphanumeric() && c != '\'';
+                        }
+                    }
+                    Ok(Value::str(out))
+                }
+                "capitalize" => {
+                    let mut chars = text.chars();
+                    Ok(Value::str(match chars.next() {
+                        Some(first) => {
+                            first.to_uppercase().collect::<String>()
+                                + &chars.as_str().to_lowercase()
+                        }
+                        None => String::new(),
+                    }))
+                }
+                "swapcase" => Ok(Value::str(
+                    text.chars()
+                        .map(|c| {
+                            if c.is_uppercase() {
+                                c.to_lowercase().collect::<String>()
+                            } else {
+                                c.to_uppercase().collect::<String>()
+                            }
+                        })
+                        .collect::<String>(),
+                )),
+                "isdigit" | "isnumeric" | "isdecimal" => Ok(Value::Bool(
+                    !text.is_empty() && text.chars().all(|c| c.is_ascii_digit()),
+                )),
+                "isalpha" => Ok(Value::Bool(
+                    !text.is_empty() && text.chars().all(char::is_alphabetic),
+                )),
+                "isalnum" => Ok(Value::Bool(
+                    !text.is_empty() && text.chars().all(char::is_alphanumeric),
+                )),
+                "isspace" => Ok(Value::Bool(
+                    !text.is_empty() && text.chars().all(char::is_whitespace),
+                )),
+                "isupper" => Ok(Value::Bool(
+                    text.chars().any(char::is_alphabetic) && !text.chars().any(char::is_lowercase),
+                )),
+                "islower" => Ok(Value::Bool(
+                    text.chars().any(char::is_alphabetic) && !text.chars().any(char::is_uppercase),
+                )),
+                "lstrip" | "rstrip" | "strip" if !rest.is_empty() => {
+                    let chars: Vec<char> = string_arg(0)?.chars().collect();
+                    let f = |c: char| chars.contains(&c);
+                    Ok(Value::str(match name {
+                        "lstrip" => text.trim_start_matches(f),
+                        "rstrip" => text.trim_end_matches(f),
+                        _ => text.trim_matches(f),
+                    }))
+                }
+                "lstrip" => Ok(Value::str(text.trim_start())),
+                "rstrip" => Ok(Value::str(text.trim_end())),
+                "removeprefix" => {
+                    let p = string_arg(0)?;
+                    Ok(Value::str(text.strip_prefix(p.as_str()).unwrap_or(text)))
+                }
+                "removesuffix" => {
+                    let p = string_arg(0)?;
+                    Ok(Value::str(text.strip_suffix(p.as_str()).unwrap_or(text)))
+                }
+                "splitlines" | "lines" => Ok(Value::list(text.lines().map(Value::str).collect())),
+                "chars" => Ok(Value::list(
+                    text.chars().map(|c| Value::str(c.to_string())).collect(),
+                )),
+                "rsplit" => {
+                    let sep = string_arg(0)?;
+                    let limit = match rest.get(1) {
+                        Some(v) => integer(v, "the number of splits")?,
+                        None => -1,
+                    };
+                    let mut parts: Vec<Value> = if limit < 0 {
+                        text.rsplit(sep.as_str()).map(Value::str).collect()
+                    } else {
+                        text.rsplitn(limit as usize + 1, sep.as_str())
+                            .map(Value::str)
+                            .collect()
+                    };
+                    parts.reverse();
+                    Ok(Value::list(parts))
+                }
+                "partition" | "rpartition" => {
+                    let sep = string_arg(0)?;
+                    let found = if name == "partition" {
+                        text.split_once(sep.as_str())
+                    } else {
+                        text.rsplit_once(sep.as_str())
+                    };
+                    Ok(Value::tuple(match found {
+                        Some((a, b)) => vec![Value::str(a), Value::str(sep), Value::str(b)],
+                        None if name == "partition" => {
+                            vec![Value::str(text), Value::str(""), Value::str("")]
+                        }
+                        None => vec![Value::str(""), Value::str(""), Value::str(text)],
+                    }))
+                }
+                "zfill" => {
+                    let width = integer(&rest[0], "the width")?.max(0) as usize;
+                    let len = text.chars().count();
+                    if len >= width {
+                        return Ok(Value::str(text));
+                    }
+                    let (sign, digits) = match text.strip_prefix(['-', '+']) {
+                        Some(d) => (&text[..1], d),
+                        None => ("", text),
+                    };
+                    Ok(Value::str(format!(
+                        "{sign}{}{digits}",
+                        "0".repeat(width - len)
+                    )))
+                }
+                "ljust" | "rjust" | "center" => {
+                    let width = integer(rest.first().unwrap_or(&Value::Int(0)), "the width")?.max(0)
+                        as usize;
+                    let fill = match rest.get(1) {
+                        Some(Value::Str(f)) if f.chars().count() == 1 => {
+                            f.chars().next().unwrap_or(' ')
+                        }
+                        Some(_) => return Err(type_error("the fill is one character")),
+                        None => ' ',
+                    };
+                    let align = match name {
+                        "ljust" => "<",
+                        "rjust" => ">",
+                        _ => "^",
+                    };
+                    S::format_value(ctx, receiver, &format!("{fill}{align}{width}")).map(Value::str)
+                }
+                "repeat" => {
+                    let n = integer(&rest[0], "the count")?.max(0) as usize;
+                    Ok(Value::str(text.repeat(n)))
+                }
+                "format" => S::format_value(ctx, receiver, &string_arg(0)?).map(Value::str),
+                "is_empty" => Ok(Value::Bool(text.is_empty())),
+                "encode" => Ok(Value::list(
+                    text.bytes().map(|b| Value::Int(i64::from(b))).collect(),
                 )),
                 _ => Err(no_method(receiver, name)),
             }
@@ -1247,6 +1650,61 @@ pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value>
                     .cloned()
                     .unwrap_or_else(|| rest.get(1).cloned().unwrap_or(Value::None)))
             }
+            "update" => {
+                arity(1)?;
+                let Value::Map(other) = &rest[0] else {
+                    return Err(type_error("`.update()` takes a map"));
+                };
+                let entries = other.borrow().entries().to_vec();
+                let mut map = map.borrow_mut();
+                for (k, v) in entries {
+                    if let Some(h) = Key::from_value(&k) {
+                        map.insert(h, k, v);
+                    }
+                }
+                Ok(Value::None)
+            }
+            "pop" | "remove" => {
+                let key = rest
+                    .first()
+                    .ok_or_else(|| err("CallError", format!("`.{name}()` needs a key")))?;
+                let removed = Key::from_value(key).and_then(|k| map.borrow_mut().remove(&k));
+                match (removed, rest.get(1)) {
+                    (Some(v), _) => Ok(v),
+                    (None, Some(default)) => Ok(default.clone()),
+                    (None, None) => Err(err(
+                        "KeyError",
+                        format!("{} is not in the map", ops::display(&ctx.program, key)),
+                    )),
+                }
+            }
+            "setdefault" => {
+                let key = rest
+                    .first()
+                    .ok_or_else(|| err("CallError", "`.setdefault()` needs a key"))?;
+                let h = Key::from_value(key).ok_or_else(|| {
+                    type_error(format!("{} cannot be a map key", key.type_name()))
+                })?;
+                let mut map = map.borrow_mut();
+                if let Some(v) = map.get(&h) {
+                    return Ok(v.clone());
+                }
+                let v = rest.get(1).cloned().unwrap_or(Value::None);
+                map.insert(h, key.clone(), v.clone());
+                Ok(v)
+            }
+            "has" | "contains" => {
+                arity(1)?;
+                Ok(Value::Bool(
+                    Key::from_value(&rest[0]).is_some_and(|k| map.borrow().contains(&k)),
+                ))
+            }
+            "copy" => Ok(Value::Map(Rc::new(RefCell::new(map.borrow().clone())))),
+            "clear" => {
+                map.borrow_mut().clear();
+                Ok(Value::None)
+            }
+            "is_empty" => Ok(Value::Bool(map.borrow().is_empty())),
             _ => Err(no_method(receiver, name)),
         },
         Value::Tensor(t) => {
@@ -1319,7 +1777,7 @@ fn tensor_to_list(t: &Tensor, dim: usize, offset: usize) -> Value {
     )
 }
 
-fn no_method(receiver: &Value, name: &str) -> Value {
+pub(crate) fn no_method(receiver: &Value, name: &str) -> Value {
     err(
         "FieldError",
         format!("{} has no method `{name}`", receiver.type_name()),

@@ -53,6 +53,8 @@ struct Handler {
 pub struct TraceLine {
     pub function: String,
     pub line: u32,
+    /// The loaded file the function is in; see `Proto::file`.
+    pub file: u32,
 }
 
 /// A failure nothing caught.
@@ -83,6 +85,9 @@ impl fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.kind, self.message)?;
         for line in &self.trace {
+            if crate::prelude::is_prelude_offset(line.file << 24) {
+                continue;
+            }
             write!(f, "\n  in {} at line {}", line.function, line.line)?;
         }
         Ok(())
@@ -90,6 +95,31 @@ impl fmt::Display for RuntimeError {
 }
 
 impl std::error::Error for RuntimeError {}
+
+impl RuntimeError {
+    /// What usually fixes an error of this kind, for the report.
+    pub fn hint(&self) -> Option<&'static str> {
+        Some(match self.kind.as_str() {
+            "IndexError" => "positions count from 0, so the last item of `xs` is `xs[len(xs) - 1]` (or `xs[-1]`)",
+            "KeyError" => "check with `key in m` first, or use `m.get(key, default)`",
+            "DivisionByZero" => "check that the number you divide by is not 0",
+            "NotFound" => "check the path; `fs.exists(path)` (with `use std.fs`) tells whether it is there",
+            "PermissionDenied" => "this program is not allowed to use that file",
+            "ValueError" if self.message.contains("is not an integer") || self.message.contains("is not a number") => {
+                "convert text to a number only after checking it, as in `if s.isdigit(): n = int(s)`"
+            }
+            "FieldError" if self.message.contains("none") => {
+                "the value is `none` here; check it with `if x != none:` or use `x?.field`"
+            }
+            "TypeError" if self.message.contains("none") => {
+                "a value is `none` here; check it with `if x != none:` or give a default with `x ?? default`"
+            }
+            "Overflow" => "the result is too large for an `int`; use a `float` if precision can be lost",
+            "AssertionError" => "the condition given to `assert` was false",
+            _ => return None,
+        })
+    }
+}
 
 pub struct Vm {
     program: Rc<Program>,
@@ -99,6 +129,9 @@ pub struct Vm {
     handlers: Vec<Handler>,
     /// Method lookup with inheritance already resolved: (type, name).
     methods: HashMap<(u16, Symbol), Rc<Closure>>,
+    /// Methods of lists, strings and maps written in Vyrn (the Prelude's
+    /// `__list_map` and the like), by receiver kind and name.
+    builtin_methods: HashMap<(u8, Symbol), Rc<Closure>>,
     /// A capture-free closure for every function, shared by all calls.
     functions: Vec<Rc<Closure>>,
     ctx: Ctx,
@@ -187,6 +220,20 @@ impl Vm {
                 }
             }
         }
+        let mut builtin_methods = HashMap::new();
+        for (i, global) in program.globals.iter().enumerate() {
+            let GlobalInit::Function(p) = global.init else {
+                continue;
+            };
+            let _ = i;
+            for (prefix, kind) in [("__list_", 0u8), ("__str_", 1), ("__map_", 2)] {
+                if let Some(method) = global.name.strip_prefix(prefix) {
+                    if let Some(symbol) = program.symbols.get(method) {
+                        builtin_methods.insert((kind, symbol), functions[p].clone());
+                    }
+                }
+            }
+        }
         let ctx = Ctx {
             program: program.clone(),
             out,
@@ -209,6 +256,7 @@ impl Vm {
             frames: Vec::new(),
             handlers: Vec::new(),
             methods,
+            builtin_methods,
             functions,
             ctx,
             initialized: false,
@@ -505,6 +553,17 @@ impl Vm {
             Ok(v) => self.response_for(Ok(v)),
             Err(e) => self.response_for(Err(e.value)),
         }
+    }
+
+    /// A Vyrn-written method of a list, string or map (from the Prelude).
+    fn builtin_method(&self, receiver: &Value, symbol: Symbol) -> Option<Rc<Closure>> {
+        let kind = match receiver {
+            Value::List(_) => 0,
+            Value::Str(_) => 1,
+            Value::Map(_) => 2,
+            _ => return None,
+        };
+        self.builtin_methods.get(&(kind, symbol)).cloned()
     }
 
     /// The text `print` would show for a value.
@@ -1252,6 +1311,7 @@ impl Vm {
                     .get(frame.ip.saturating_sub(1))
                     .copied()
                     .unwrap_or(0),
+                file: frame.closure.proto.file,
             })
             .collect()
     }
@@ -1277,6 +1337,7 @@ impl Vm {
                     .get(frame.ip.saturating_sub(1))
                     .copied()
                     .unwrap_or(0),
+                file: frame.closure.proto.file,
             })
             .collect();
         RuntimeError {
@@ -1927,6 +1988,41 @@ impl Vm {
                             ),
                             Value::Native(id) => {
                                 let native = &builtins::NATIVES[*id as usize];
+                                if native.variadic && matches!(native.name, "min" | "max") {
+                                    // `max(xs, key = f)`: the Prelude's
+                                    // `__vyrn_max_by(items, f)` does it.
+                                    let (args, kwargs) = check!(split_keywords(
+                                        &self.stack[at + 1..],
+                                        argc as usize
+                                    ));
+                                    let key = match kwargs.as_slice() {
+                                        [(k, v)] if k == "key" => v.clone(),
+                                        _ => throw!(type_error(format!(
+                                            "`{}` takes one keyword argument, `key`",
+                                            native.name
+                                        ))),
+                                    };
+                                    let items = match args.as_slice() {
+                                        [single] => check!(ops::collect(single)),
+                                        _ => args,
+                                    };
+                                    let helper = format!("__vyrn_{}_by", native.name);
+                                    let Some(Value::Function(f)) = self
+                                        .program
+                                        .global(&helper)
+                                        .map(|g| self.globals[g].clone())
+                                    else {
+                                        throw!(type_error(format!(
+                                            "`{}` takes no keyword arguments here",
+                                            native.name
+                                        )));
+                                    };
+                                    self.stack[at + 1] = Value::list(items);
+                                    self.stack[at + 2] = key;
+                                    save_ip!();
+                                    check!(self.enter(f, at, at + 1, 2));
+                                    continue 'frames;
+                                }
                                 if native.variadic {
                                     throw!(type_error(format!(
                                         "`{}` takes no keyword arguments",
@@ -1991,7 +2087,9 @@ impl Vm {
                             Value::Object(obj) => Some(obj.borrow().ty),
                             _ => None,
                         };
-                        let method = ty.and_then(|ty| self.methods.get(&(ty, symbol)).cloned());
+                        let method = ty
+                            .and_then(|ty| self.methods.get(&(ty, symbol)).cloned())
+                            .or_else(|| self.builtin_method(&self.stack[receiver], symbol));
                         let Some(method) = method else {
                             throw!(type_error(format!(
                                 "`.{}()` takes no keyword arguments here; pass them by position",
@@ -2050,6 +2148,11 @@ impl Vm {
                                     )
                                 )),
                             }
+                        }
+                        if let Some(method) = self.builtin_method(&self.stack[receiver], symbol) {
+                            save_ip!();
+                            check!(self.enter(method, result_at, receiver, argc as usize + 1));
+                            continue 'frames;
                         }
                         let result = check!(builtins::call_method(
                             &mut self.ctx,

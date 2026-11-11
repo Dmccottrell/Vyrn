@@ -86,6 +86,20 @@ pub trait Foreign: Any {
         None
     }
 
+    /// `item in x`
+    fn contains(&self, item: &Value) -> VmResult<bool> {
+        let _ = item;
+        Err(err(
+            "TypeError",
+            format!("cannot search inside a {}", self.type_name()),
+        ))
+    }
+
+    /// How `to_json` writes it: `none` writes the displayed text.
+    fn json(&self) -> Option<Value> {
+        None
+    }
+
     fn equals(&self, other: &Value) -> bool {
         let _ = other;
         false

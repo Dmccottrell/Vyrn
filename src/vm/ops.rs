@@ -497,6 +497,7 @@ pub fn contains(item: &Value, container: &Value) -> VmResult<bool> {
             _ => Err(type_error("only a string can be found in a string")),
         },
         Value::Map(map) => Ok(Key::from_value(item).is_some_and(|k| map.borrow().contains(&k))),
+        Value::Foreign(f) => f.contains(item),
         Value::Range(r) => Ok(match item {
             Value::Int(i) => {
                 let inside = if r.step > 0 {
@@ -1327,6 +1328,11 @@ fn write_json_str(text: &str, out: &mut String) {
 }
 
 fn write_json(program: &Program, value: &Value, out: &mut String) {
+    if let Value::Foreign(f) = value {
+        if let Some(v) = f.json() {
+            return write_json(program, &v, out);
+        }
+    }
     match value {
         Value::None | Value::Missing => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),

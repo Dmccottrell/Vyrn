@@ -15,6 +15,8 @@ pub struct Proto {
     pub code: Vec<Op>,
     /// Source line of each instruction, for error messages.
     pub lines: Vec<u32>,
+    /// Which loaded file the function is in (its spans' `offset >> 24`).
+    pub file: u32,
     pub consts: Vec<Value>,
     /// Names used by field, method and type instructions.
     pub names: Vec<Symbol>,

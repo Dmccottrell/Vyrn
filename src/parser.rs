@@ -2499,6 +2499,14 @@ impl Parser {
                 self.bump();
                 ExprKind::None
             }
+            // `any` is a type, but `any(xs)` calls the Prelude function.
+            Tk::Keyword(K::Any) if self.kind_at(1).is_punct(P::LParen) => {
+                let span = self.bump().span;
+                ExprKind::Name(Ident {
+                    name: "any".to_string(),
+                    span,
+                })
+            }
             Tk::Ident(name) => {
                 let span = self.bump().span;
                 let python = match name.as_str() {
@@ -2586,6 +2594,54 @@ impl Parser {
         Ok(self.mk(ExprKind::List(items), start))
     }
 
+    /// The rest of a set literal, after its first item: a call to the
+    /// Prelude's `__set` with a list.
+    fn set_literal(&mut self, start: Pos, first: Expr) -> PResult<Expr> {
+        let list = if self.at_kw(K::Each) {
+            let clauses = self.comp_clauses()?;
+            self.expect_p(P::RBrace, "`}` to close the set comprehension")?;
+            self.mk(
+                ExprKind::ListComp {
+                    element: Box::new(first),
+                    clauses,
+                },
+                start,
+            )
+        } else {
+            let mut items = vec![first];
+            while self.eat_p(P::Comma) {
+                if self.at_p(P::RBrace) {
+                    break;
+                }
+                items.push(self.expression()?);
+            }
+            self.expect_p(P::RBrace, "`,` or `}` in the set")?;
+            self.mk(ExprKind::List(items), start)
+        };
+        let span = list.span;
+        let callee = Expr::new(
+            self.id(),
+            ExprKind::Name(Ident {
+                name: "__set".to_string(),
+                span,
+            }),
+            span,
+        );
+        let args = vec![Arg {
+            span,
+            name: None,
+            is_mut: false,
+            value: list,
+        }];
+        Ok(self.mk(
+            ExprKind::Call {
+                callee: Box::new(callee),
+                args,
+            },
+            start,
+        ))
+    }
+
     fn map(&mut self) -> PResult<Expr> {
         let start = self.start();
         self.bump();
@@ -2593,6 +2649,10 @@ impl Parser {
             return Ok(self.mk(ExprKind::Map(Vec::new()), start));
         }
         let key = self.expression()?;
+        // `{1, 2, 3}` and `{x each x in xs}` are sets.
+        if self.at_p(P::Comma) || self.at_p(P::RBrace) || self.at_kw(K::Each) {
+            return self.set_literal(start, key);
+        }
         self.expect_p(P::Colon, "`:` between a key and its value")?;
         let value = self.expression()?;
         if self.at_kw(K::Each) {
@@ -2653,6 +2713,44 @@ impl Parser {
     /// Parses the expression inside `{...}` in a string. Positions stay
     /// relative to the whole file, and node ids continue from this parser.
     fn interpolation(&mut self, source: &str, span: Span) -> Option<Expr> {
+        // `{price:.2f}`: a format spec after a `:` outside brackets.
+        let (source, spec) = split_format_spec(source);
+        let expr = self.interpolation_expr(source, span)?;
+        let Some(spec) = spec else {
+            return Some(expr);
+        };
+        let at = expr.span;
+        let callee = Expr::new(
+            self.id(),
+            ExprKind::Name(Ident {
+                name: "__format".to_string(),
+                span: at,
+            }),
+            at,
+        );
+        let spec = Expr::new(
+            self.id(),
+            ExprKind::Str(vec![StrSegment::Text(spec.to_string())]),
+            at,
+        );
+        let arg = |value: Expr| Arg {
+            span: value.span,
+            name: None,
+            is_mut: false,
+            value,
+        };
+        let args = vec![arg(expr), arg(spec)];
+        Some(Expr::new(
+            self.id(),
+            ExprKind::Call {
+                callee: Box::new(callee),
+                args,
+            },
+            at,
+        ))
+    }
+
+    fn interpolation_expr(&mut self, source: &str, span: Span) -> Option<Expr> {
         let (tokens, lex_errors) = Lexer::new_at(source, span.start).run();
         if !lex_errors.is_empty() {
             self.diagnostics
@@ -3018,6 +3116,34 @@ impl Parser {
 
 /// Python's words that Vyrn spells differently: the Vyrn word, and an
 /// example for the error message.
+/// Splits `price:.2f` into the expression and the format spec. A `:`
+/// inside brackets or quotes (`m["a:b"]`, `xs[1:3]`) is not a spec.
+fn split_format_spec(source: &str) -> (&str, Option<&str>) {
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (i, c) in source.char_indices() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => quote = Some(c),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ':' if depth == 0 => return (&source[..i], Some(&source[i + 1..])),
+            _ => {}
+        }
+    }
+    (source, None)
+}
+
 fn python_replacement(word: &str) -> Option<(&'static str, &'static str)> {
     Some(match word {
         "def" | "fn" => (

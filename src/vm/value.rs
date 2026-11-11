@@ -284,6 +284,23 @@ impl Map {
     pub fn entries(&self) -> &[(Value, Value)] {
         &self.entries
     }
+
+    /// Removes a key, keeping the order of the others. Returns its value.
+    pub fn remove(&mut self, key: &Key) -> Option<Value> {
+        let i = self.index.remove(key)?;
+        let (_, value) = self.entries.remove(i);
+        for slot in self.index.values_mut() {
+            if *slot > i {
+                *slot -= 1;
+            }
+        }
+        Some(value)
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.index.clear();
+    }
 }
 
 #[derive(Debug)]

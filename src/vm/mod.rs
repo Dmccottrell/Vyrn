@@ -26,6 +26,7 @@ pub mod program;
 pub mod python;
 #[cfg(feature = "python")]
 pub mod python_tensor;
+pub mod stdlib;
 pub mod task;
 pub mod tensor;
 pub mod tokenizer;

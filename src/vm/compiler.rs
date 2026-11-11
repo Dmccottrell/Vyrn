@@ -27,7 +27,7 @@ use crate::span::Span;
 
 /// Compiles a parsed module.
 pub fn compile(module: &Module) -> Result<Program, Vec<Diagnostic>> {
-    Compiler::new().compile_module(module)
+    Compiler::new().compile_module(&crate::prelude::with_prelude(module))
 }
 
 struct Fail;
@@ -457,6 +457,7 @@ impl Compiler {
                         name: "<missing>".into(),
                         code: vec![Op::ReturnNone],
                         lines: vec![0],
+                        file: 0,
                         consts: Vec::new(),
                         names: Vec::new(),
                         params: Vec::new(),
@@ -1009,6 +1010,7 @@ impl Compiler {
             name: f.name,
             code: f.code,
             lines: f.lines,
+            file: self.span.start.offset >> 24,
             consts: f.consts,
             names: f.names,
             params: f.params,
@@ -1224,7 +1226,7 @@ impl Compiler {
             self.error_hint(
                 format!("the standard library has no module `{name}`"),
                 decl.path.span,
-                "the interpreter provides `std.web`",
+                "the standard library has `std.os`, `std.fs`, `std.path`, `std.time`, `std.random`, `std.math`, `std.json`, `std.re`, `std.csv` and `std.http`",
             );
             return;
         };
@@ -1365,6 +1367,18 @@ impl Compiler {
             return None;
         }
         Some(prefix)
+    }
+
+    /// A constant that `module.name` refers to, as in `math.pi`.
+    fn module_constant(&mut self, expr: &Expr) -> Option<Value> {
+        let ExprKind::Field { base, name, .. } = &expr.kind else {
+            return None;
+        };
+        let ExprKind::Name(module) = &base.kind else {
+            return None;
+        };
+        let prefix = self.module_prefix(&module.name)?;
+        builtins::constant(&format!("{prefix}.{}", name.name))
     }
 
     /// The builtin that `module.name` refers to, as in `web.serve`.
@@ -3140,6 +3154,10 @@ impl Compiler {
                 let obj = self.expr_any(base)?;
                 let index = self.index_key(subscripts)?;
                 self.emit(Op::GetIndex { dst, obj, index });
+            }
+            ExprKind::Field { .. } if self.module_constant(expr).is_some() => {
+                let value = self.module_constant(expr).unwrap_or(Value::None);
+                self.load_const(dst, value)?;
             }
             ExprKind::Field { .. } if self.module_member(expr).is_some() => {
                 match self.module_member(expr) {

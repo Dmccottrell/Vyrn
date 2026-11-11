@@ -169,7 +169,9 @@ fn compile_program(entry: &Path) -> Option<(vm::Program, Vec<SourceFile>)> {
     }
 }
 
-fn execute(program: vm::Program, args: &[String], uses_gpu: bool) -> ExitCode {
+fn execute(program: vm::Program, args: &[String], files: &[SourceFile]) -> ExitCode {
+    let uses_gpu = mentions_gpu(files);
+    vyrn::vm::stdlib::set_args(args.to_vec());
     let mut machine = Vm::new(program);
     #[cfg(feature = "gpu")]
     use_gpu(&mut machine, uses_gpu);
@@ -182,10 +184,54 @@ fn execute(program: vm::Program, args: &[String], uses_gpu: bool) -> ExitCode {
     match result {
         Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("error: {error}");
+            eprintln!("{}", render_runtime_error(&error, files));
             ExitCode::FAILURE
         }
     }
+}
+
+/// A failure nothing caught, shown like a compile error: where it happened,
+/// the line of code, what usually fixes it, and the calls that led there.
+fn render_runtime_error(error: &vm::RuntimeError, files: &[SourceFile]) -> String {
+    let mut out = format!("error: {}: {}", error.kind, error.message);
+    let user_frames: Vec<&vyrn::vm::machine::TraceLine> = error
+        .trace
+        .iter()
+        .filter(|t| !vyrn::prelude::is_prelude_offset(t.file << 24) && t.line > 0)
+        .collect();
+    let location = |t: &vyrn::vm::machine::TraceLine| -> (String, Option<String>) {
+        match files.get(t.file as usize) {
+            Some(f) => (
+                format!("{}:{}", shown(&f.path), t.line),
+                f.text.lines().nth(t.line as usize - 1).map(str::to_string),
+            ),
+            None => (format!("line {}", t.line), None),
+        }
+    };
+    if let Some(first) = user_frames.first() {
+        let (place, code) = location(first);
+        let gutter = first.line.to_string().len();
+        out.push_str(&format!("\n{}--> {place}", " ".repeat(gutter)));
+        if let Some(code) = code {
+            out.push_str(&format!(
+                "\n{} |\n{} | {}\n{} |",
+                " ".repeat(gutter),
+                first.line,
+                code,
+                " ".repeat(gutter)
+            ));
+        }
+        if let Some(hint) = error.hint() {
+            out.push_str(&format!("\n{} = help: {hint}", " ".repeat(gutter)));
+        }
+        for t in &user_frames {
+            let (place, _) = location(t);
+            out.push_str(&format!("\n  in {} ({place})", t.function));
+        }
+    } else if let Some(hint) = error.hint() {
+        out.push_str(&format!("\n  = help: {hint}"));
+    }
+    out
 }
 
 /// Runs `gpu[...]` blocks on a real GPU when there is one. Set
@@ -230,7 +276,7 @@ fn run(args: &[String]) -> ExitCode {
     let Some((program, files)) = compile_program(&entry) else {
         return ExitCode::FAILURE;
     };
-    execute(program, program_args, mentions_gpu(&files))
+    execute(program, program_args, &files)
 }
 
 fn run_bundle(mut bundle: Bundle, args: &[String]) -> ExitCode {
@@ -244,7 +290,7 @@ fn run_bundle(mut bundle: Bundle, args: &[String]) -> ExitCode {
         }
     };
     match vm::compile_checked(&loaded.module) {
-        Ok(program) => execute(program, args, mentions_gpu(&loaded.files)),
+        Ok(program) => execute(program, args, &loaded.files),
         Err(mut diagnostics) => {
             loader::attach_files(&mut diagnostics, &loaded.files);
             report(&diagnostics, &loaded.files);
