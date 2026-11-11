@@ -324,6 +324,11 @@ that isn't a lowercase letter (spaces, punctuation) as it is.
 ```vyrn starter
 const ALPHABET = "abcdefghijklmnopqrstuvwxyz"
 
+create encrypt(text, shift):
+    result = ""
+    return result
+end
+
 main:
     print(encrypt("meet me at noon", 3))
     print(encrypt("zebra!", 1))

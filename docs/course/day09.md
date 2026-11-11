@@ -226,6 +226,10 @@ Write `min_max(numbers)` that returns the smallest and largest numbers as
 a tuple, and unpack the answer.
 
 ```vyrn starter
+create min_max(numbers):
+    return (0, 0)
+end
+
 main:
     low, high = min_max([7, 2, 9, 4])
     print("low {low}, high {high}")

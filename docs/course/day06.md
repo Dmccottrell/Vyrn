@@ -107,6 +107,10 @@ Create `box(word)` that prints the word inside a frame of `*`, as wide as
 the word plus four.
 
 ```vyrn starter
+create box(word):
+    # Print the frame, the word, and the frame again.
+end
+
 main:
     box("Vyrn")
     box("functions")
@@ -198,6 +202,10 @@ end
 Write `c_to_f(c)`, which returns `c * 9 / 5 + 32`, and print a small table.
 
 ```vyrn starter
+create c_to_f(c):
+    return 0
+end
+
 main:
     each c in [0, 37, 100]:
         print("{c} C = {c_to_f(c)} F")
@@ -261,6 +269,10 @@ Write `repeat_word(word, times = 2, sep = " ")` that returns the word
 repeated `times` times, joined by `sep`.
 
 ```vyrn starter
+create repeat_word(word, times = 2, sep = " "):
+    return word
+end
+
 main:
     print(repeat_word("hip"))
     print(repeat_word("hip", 3))
@@ -441,6 +453,14 @@ Write `is_prime(n)` (a prime has no divisors except 1 and itself), then
 `primes_up_to(limit)` that returns a list of the primes up to `limit`.
 
 ```vyrn starter
+create is_prime(n):
+    return false
+end
+
+create primes_up_to(limit):
+    return []
+end
+
 main:
     print(primes_up_to(30))
 end

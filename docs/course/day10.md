@@ -111,6 +111,10 @@ end
 Write `split_name(full)` returning the first and last name, and use it.
 
 ```vyrn starter
+create split_name(full):
+    return ("", "")
+end
+
 main:
     first, last = split_name("Katherine Johnson")
     print("Last: {last}, first: {first}")
@@ -181,6 +185,10 @@ Write `apply_twice(f, x)` that returns `f(f(x))`, and test it with
 ```vyrn starter
 create double(n): return n * 2
 create exclaim(s): return s + "!"
+
+create apply_twice(f, x):
+    return x
+end
 
 main:
     print(apply_twice(double, 5))
@@ -312,6 +320,10 @@ Write `sum_digits(n)` recursively: the sum of the digits of 4096 is
 4 + 0 + 9 + 6 = 19.
 
 ```vyrn starter
+create sum_digits(n):
+    return n
+end
+
 main:
     print(sum_digits(4096))
     print(sum_digits(7))
