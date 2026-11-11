@@ -25,6 +25,7 @@ pub mod lib_draw;
 #[cfg(not(feature = "draw"))]
 #[path = "lib_draw_off.rs"]
 pub mod lib_draw;
+pub mod lib_fake;
 pub mod lib_game;
 pub mod lib_html;
 pub mod lib_mail;

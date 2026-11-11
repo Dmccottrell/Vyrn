@@ -137,6 +137,12 @@ pub static NATIVES: &[Native] = &[
     fixed("__pick_by", &["xs", "keys", "greatest"], 2, S::pick_by),
     fixed("__fail", &["kind", "message"], 2, S::prelude_fail),
     fixed("Error", &["message"], 1, S::make_error),
+    fixed(
+        "fake",
+        &["returns", "returns_each", "fails", "methods"],
+        0,
+        super::lib_fake::fake,
+    ),
     fixed("ValueError", &["message"], 1, S::make_value_error),
     fixed("TypeError", &["message"], 1, S::make_type_error),
     fixed("KeyError", &["message"], 1, S::make_key_error),

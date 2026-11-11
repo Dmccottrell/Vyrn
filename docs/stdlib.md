@@ -290,6 +290,19 @@ All **run today** (`src/vm/stdlib.rs`).
 | `vyrn.csv` | `csv.read(path)` and `csv.parse(text)` (a list of maps from the header, or of lists with `header = false`), `csv.write(path, rows)`, `csv.format(rows)` |
 | `vyrn.http` client | `http.get(url, headers)`, `http.post(url, body, headers)`, `http.put`, `http.delete`: a response with `status`, `ok`, `text`, `json`, `headers`. Maps and lists are sent as JSON |
 
+### Testing with fakes
+
+`vyrn test` runs every `create test_...()` in `tests/`; `assert(condition,
+message)` checks. To test code without its real dependencies (a database,
+the network, the clock), pass it a **fake**:
+
+| API | Does |
+|---|---|
+| `fake(returns = x)` | A stand-in function that gives back `x` |
+| `fake(returns_each = [a, b])`, `fake(fails = ValueError("..."))` | One value per call; or failing on purpose |
+| `fake(methods = {"save": fake(returns = true)})` | A stand-in object; any other method is a fake too |
+| `f.calls`, `f.call_count`, `f.called`, `f.last_call`, `f.called_with(args...)`, `f.reset()` | What happened to it |
+
 ## 5b. Application modules
 
 All **run today**. Each module's file in `src/vm/` starts with an example.

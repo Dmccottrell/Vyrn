@@ -888,6 +888,15 @@ pub fn get_attr(value: &Value, name: &str) -> VmResult<Value> {
 }
 
 pub fn set_attr(value: &mut Value, name: &str, new: Value) -> VmResult<()> {
+    // A method call on `x.field` stores the field back afterwards; for a
+    // foreign value that is the very same object, so there is nothing to do.
+    if let (Value::Foreign(f), Value::Foreign(n)) = (&*value, &new) {
+        if let Ok(Value::Foreign(current)) = f.get_attr(name) {
+            if Rc::ptr_eq(&current, n) {
+                return Ok(());
+            }
+        }
+    }
     if let Value::Tensor(t) = value {
         let slot = match name {
             "x" => 0,

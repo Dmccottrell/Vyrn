@@ -1406,3 +1406,14 @@ fn an_else_after_a_one_line_if_belongs_to_the_block_if() {
         "one\ninner\nother\n"
     );
 }
+
+#[test]
+fn fakes_stand_in_for_dependencies_and_record_calls() {
+    assert_eq!(
+        run("create save(db, name):\n    db.insert(\"people\", name)\n    return db.count()\nend\n\
+             main:\n    let db = fake(methods = {\"count\": fake(returns = 1)})\n    print(save(db, \"Ada\"), db.insert.calls, db.insert.called_with(\"people\", \"Ada\"))\n\
+             \x20   let clock = fake(returns_each = [8, 15])\n    print(clock(), clock(), clock.call_count)\n\
+             \x20   attempt:\n        fake(fails = ValueError(\"down\"))()\n    catch ValueError as e:\n        print(e.message)\n    end\nend\n"),
+        "1 [[\"people\", \"Ada\"]] true\n8 15 2\ndown\n"
+    );
+}
