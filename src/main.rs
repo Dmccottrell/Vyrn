@@ -181,15 +181,26 @@ fn compile_program(entry: &Path) -> Option<(vm::Program, Vec<SourceFile>)> {
     }
 }
 
+thread_local! {
+    static PROFILE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn execute(program: vm::Program, args: &[String], files: &[SourceFile]) -> ExitCode {
     let uses_gpu = mentions_gpu(files);
     vyrn::vm::stdlib::set_args(args.to_vec());
     let mut machine = Vm::new(program);
+    let profile = PROFILE.with(|p| p.get());
+    if profile {
+        machine.enable_profile();
+    }
     #[cfg(feature = "gpu")]
     use_gpu(&mut machine, uses_gpu);
     #[cfg(not(feature = "gpu"))]
     let _ = uses_gpu;
     let result = machine.run_main(args);
+    if profile {
+        eprintln!("\n{}", machine.profile_report());
+    }
     for warning in vyrn::vm::task::take_unobserved() {
         eprintln!("warning: {warning}");
     }
@@ -273,6 +284,11 @@ fn mentions_gpu(files: &[SourceFile]) -> bool {
 // ==== commands =============================================================
 
 fn run(args: &[String]) -> ExitCode {
+    // `vyrn run --profile file.vyrn`: afterwards, which functions took the
+    // time.
+    let profile = args.first().is_some_and(|a| a == "--profile");
+    let args = if profile { &args[1..] } else { args };
+    PROFILE.with(|p| p.set(profile));
     // `vyrn run` runs the project; `vyrn run file.vyrn a b` passes `a b`.
     let (file, program_args) = match args.first() {
         Some(a) if a.ends_with(".vyrn") || Path::new(a).is_dir() => (Some(a), &args[1..]),

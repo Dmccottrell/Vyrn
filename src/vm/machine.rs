@@ -181,6 +181,18 @@ pub struct Vm {
     yielded: Option<Value>,
     /// How many generators are running, one inside another.
     generators: usize,
+    /// Calls and time per function, when profiling (`vyrn run --profile`).
+    profile: Option<Box<Profile>>,
+}
+
+/// What `vyrn run --profile` collects.
+#[derive(Default)]
+struct Profile {
+    /// When each frame on the stack started, and the time spent in the
+    /// functions it called so far, by depth.
+    starts: Vec<(std::time::Instant, std::time::Duration)>,
+    /// Calls and own time (not counting the functions it called), by name.
+    totals: HashMap<String, (u64, std::time::Duration)>,
 }
 
 /// The state of a task that is not running.
@@ -294,6 +306,7 @@ impl Vm {
             caught: None,
             yielded: None,
             generators: 0,
+            profile: None,
             methods,
             builtin_methods,
             functions,
@@ -336,6 +349,40 @@ impl Vm {
 
     /// Runs the `main:` block. `args` is passed if `main` declares a
     /// parameter.
+    /// Starts counting calls and time per function.
+    pub fn enable_profile(&mut self) {
+        self.profile = Some(Box::default());
+    }
+
+    /// The functions that took the most time, as a table. Each one's time
+    /// is its own: the functions it called are counted separately.
+    pub fn profile_report(&self) -> String {
+        let Some(p) = &self.profile else {
+            return String::new();
+        };
+        let mut rows: Vec<(&String, &(u64, std::time::Duration))> = p
+            .totals
+            .iter()
+            .filter(|(name, _)| !name.starts_with("__") && !name.starts_with('<'))
+            .collect();
+        rows.sort_by(|a, b| b.1 .1.cmp(&a.1 .1).then(a.0.cmp(b.0)));
+        let mut out = format!(
+            "{:<32} {:>10} {:>12} {:>12}\n",
+            "function", "calls", "own ms", "ms per call"
+        );
+        for (name, (calls, time)) in rows.iter().take(25) {
+            let ms = time.as_secs_f64() * 1000.0;
+            out.push_str(&format!(
+                "{:<32} {:>10} {:>12.3} {:>12.4}\n",
+                name,
+                calls,
+                ms,
+                ms / (*calls).max(1) as f64
+            ));
+        }
+        out
+    }
+
     pub fn run_main(&mut self, args: &[String]) -> Result<Value, RuntimeError> {
         self.init()?;
         let Some(main) = self.program.main else {
@@ -1562,6 +1609,11 @@ impl Vm {
         for slot in &mut self.stack[base + argc..base + arity] {
             *slot = Value::Missing;
         }
+        if let Some(p) = &mut self.profile {
+            p.starts.truncate(self.frames.len());
+            p.starts
+                .push((std::time::Instant::now(), std::time::Duration::ZERO));
+        }
         self.frames.push(Frame {
             closure,
             ip: 0,
@@ -1653,6 +1705,20 @@ impl Vm {
             return Some(value);
         };
         let depth = self.frames.len();
+        if let Some(p) = &mut self.profile {
+            if let Some(&(start, inner)) = p.starts.get(depth) {
+                let elapsed = start.elapsed();
+                let entry = p
+                    .totals
+                    .entry(frame.closure.proto.name.clone())
+                    .or_default();
+                entry.0 += 1;
+                entry.1 += elapsed.saturating_sub(inner);
+                if let Some(parent) = depth.checked_sub(1).and_then(|d| p.starts.get_mut(d)) {
+                    parent.1 += elapsed;
+                }
+            }
+        }
         while self.handlers.last().is_some_and(|h| h.frame_depth > depth) {
             self.handlers.pop();
         }
