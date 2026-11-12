@@ -2441,6 +2441,35 @@ pub fn csv_write(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 
 // ==== vyrn.http client =======================================================
 
+/// `http.query({"q": "tea & cake", "page": 2})`: `q=tea%20%26%20cake&page=2`,
+/// the part of a URL after `?`, with every value safely encoded.
+pub fn http_query(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let Some(Value::Map(m)) = args.first() else {
+        return Err(type_error("`http.query` takes a map of names to values"));
+    };
+    let encode = |text: &str| -> String {
+        text.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    };
+    let text = |v: &Value| match v {
+        Value::Str(s) => s.to_string(),
+        other => ops::display(&ctx.program, other),
+    };
+    let parts: Vec<String> = m
+        .borrow()
+        .entries()
+        .iter()
+        .map(|(k, v)| format!("{}={}", encode(&text(k)), encode(&text(v))))
+        .collect();
+    Ok(Value::str(parts.join("&")))
+}
+
 /// `http.get(url, headers = {})` and `http.post(url, body, headers = {})`:
 /// a response with `status`, `ok`, `text`, `headers` and, for JSON
 /// replies, `json`. Maps and lists sent as a body go as JSON.

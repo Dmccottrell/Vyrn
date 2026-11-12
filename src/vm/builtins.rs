@@ -462,6 +462,7 @@ pub static NATIVES: &[Native] = &[
     fixed("task.Pool", &["workers"], 0, super::parallel::pool),
     // ---- vyrn.http client ----
     fixed("web.get", &["url", "headers"], 1, S::http_get),
+    fixed("web.query", &["params"], 1, S::http_query),
     fixed("web.post", &["url", "body", "headers"], 1, S::http_post),
     fixed("web.put", &["url", "body", "headers"], 1, S::http_put),
     fixed("web.delete", &["url", "headers"], 1, S::http_delete),

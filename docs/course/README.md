@@ -88,8 +88,8 @@ plan below.
 
 | Day | Topic | Project |
 |---|---|---|
-| 31 | Capstone | Flash cards |
-| 32 | Email and dates (`vyrn.mail`, `vyrn.time`) | Birthday wisher |
+| 31 ✅ | Capstone | Flash cards |
+| 32 ✅ | Email and dates (`vyrn.mail`, `vyrn.time`) | Birthday wisher |
 | 33 | HTTP APIs and JSON | Is it daytime somewhere? |
 | 34 | APIs with a GUI | Trivia quiz |
 | 35 | API keys, environment variables, secrets | Weather alert |

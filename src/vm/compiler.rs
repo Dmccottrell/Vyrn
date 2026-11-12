@@ -2315,6 +2315,52 @@ impl Compiler {
                 return Err(self.unknown_name(&ident.name, target.span));
             }
         }
+        // `xs[f()] += 1`: the container and the key are worked out once,
+        // then read and written through the same registers.
+        if let ExprKind::Index { base, subscripts } = &target.kind {
+            let local = self.local_of(base);
+            let holder = match local {
+                Some(r) => r,
+                None => {
+                    let h = self.alloc()?;
+                    self.expr_to(base, h)?;
+                    h
+                }
+            };
+            let key = self.index_key(subscripts)?;
+            let current = self.alloc()?;
+            self.emit(Op::GetIndex {
+                dst: current,
+                obj: holder,
+                index: key,
+            });
+            let skip = (op == AssignOp::Coalesce).then(|| {
+                self.emit(Op::JumpIfNotNone {
+                    src: current,
+                    offset: 0,
+                })
+            });
+            let result = if op == AssignOp::Coalesce {
+                self.expr_any(value)?
+            } else {
+                let rhs = self.expr_any(value)?;
+                let result = self.alloc()?;
+                self.emit_assign_op(op, result, current, rhs);
+                result
+            };
+            self.emit(Op::SetIndex {
+                obj: holder,
+                index: key,
+                src: result,
+            });
+            if local.is_none() && self.is_place(base) {
+                self.store_place(base, holder)?;
+            }
+            if let Some(skip) = skip {
+                self.patch_here(skip);
+            }
+            return Ok(());
+        }
         let current = self.expr_any(target)?;
         if op == AssignOp::Coalesce {
             let skip = self.emit(Op::JumpIfNotNone {

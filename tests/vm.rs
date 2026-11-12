@@ -1322,6 +1322,17 @@ fn bounded_channels_pools_and_yielding() {
 }
 
 #[test]
+fn compound_assignment_works_out_the_index_once() {
+    assert_eq!(
+        run("object Counter:\n    n: int = 0\nend\nconst C = Counter()\n\
+             create key() -> int:\n    C.n += 1\n    return C.n % 2\nend\n\
+             main:\n    var xs = [10, 20]\n    xs[key()] += 5\n    var m = {\"a\": none}\n    m[\"a\"] ??= 7\n    m[\"a\"] ??= 9\n\
+             \x20   var grid = [[0, 0], [0, 0]]\n    grid[1][key()] += 3\n    print(xs, C.n, m, grid)\nend\n"),
+        "[10, 25] 2 {\"a\": 7} [[0, 0], [3, 0]]\n"
+    );
+}
+
+#[test]
 fn maps_merge_with_a_bar() {
     assert_eq!(
         run("main:\n    let a = {\"x\": 1, \"y\": 2}\n    print(a | {\"y\": 9, \"z\": 3}, a)\nend\n"),
