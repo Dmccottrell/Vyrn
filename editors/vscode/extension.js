@@ -107,11 +107,45 @@ function registerCommands(context) {
     }),
     vscode.commands.registerCommand("vyrn.test", () => terminal(`${vyrnPath()} test`)),
     vscode.commands.registerCommand("vyrn.repl", () => terminal(vyrnPath())),
+    vscode.commands.registerCommand("vyrn.debug", () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return;
+      vscode.debug.startDebugging(vscode.workspace.getWorkspaceFolder(editor.document.uri), {
+        type: "vyrn",
+        request: "launch",
+        name: "Debug this file",
+        program: editor.document.uri.fsPath,
+      });
+    }),
+  );
+}
+
+// F5 on a .vyrn file: `vyrn debug --dap` speaks the Debug Adapter Protocol,
+// and without a launch.json the open file is debugged.
+function registerDebugger(context) {
+  context.subscriptions.push(
+    vscode.debug.registerDebugAdapterDescriptorFactory("vyrn", {
+      createDebugAdapterDescriptor: () => new vscode.DebugAdapterExecutable(vyrnPath(), ["debug", "--dap"]),
+    }),
+    vscode.debug.registerDebugConfigurationProvider("vyrn", {
+      resolveDebugConfiguration(folder, config) {
+        if (!config.type && !config.request && !config.name) {
+          const editor = vscode.window.activeTextEditor;
+          if (!editor || editor.document.languageId !== "vyrn") return config;
+          config = { type: "vyrn", request: "launch", name: "Debug this file", program: editor.document.uri.fsPath };
+        }
+        if (!config.program) {
+          return vscode.window.showErrorMessage("Set `program` to the .vyrn file to debug.").then(() => undefined);
+        }
+        return config;
+      },
+    }),
   );
 }
 
 function activate(context) {
   registerCommands(context);
+  registerDebugger(context);
   if (startLanguageServer(context)) return;
   const collection = vscode.languages.createDiagnosticCollection("vyrn");
   context.subscriptions.push(collection);

@@ -47,6 +47,20 @@ const decrease = new RegExp(config.indentationRules.decreaseIndentPattern);
 assert.ok(increase.test("create f(x):") && increase.test("    if x > 1:  # big") && !increase.test("    x = 1"));
 assert.ok(decrease.test("end") && decrease.test("    else:") && decrease.test("    is Shape.Circle(r):") && !decrease.test("    ending = 1"));
 
+// The debugger contribution matches what `vyrn debug --dap` serves.
+const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
+const debuggerEntry = manifest.contributes.debuggers.find((d) => d.type === "vyrn");
+assert.ok(debuggerEntry && debuggerEntry.configurationAttributes.launch.required.includes("program"));
+assert.ok(manifest.contributes.breakpoints.some((b) => b.language === "vyrn"));
+const dap = require("child_process").spawnSync(vyrn, ["debug", "--dap"], {
+  input: (() => {
+    const m = JSON.stringify({ seq: 1, type: "request", command: "initialize", arguments: {} });
+    const d = JSON.stringify({ seq: 2, type: "request", command: "disconnect" });
+    return `Content-Length: ${m.length}\r\n\r\n${m}Content-Length: ${d.length}\r\n\r\n${d}`;
+  })(),
+});
+assert.ok(dap.stdout.toString().includes('"supportsConfigurationDoneRequest":true'), dap.stdout.toString());
+
 console.log(`ok: diagnostics parsed, ${patterns} grammar patterns compile`);
 
 // The language server answers `initialize` and reports errors on open.

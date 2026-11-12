@@ -9,6 +9,7 @@
 pub mod builtins;
 pub mod clock;
 pub mod compiler;
+pub mod debug;
 #[cfg(all(feature = "draw", feature = "gpu"))]
 pub mod draw_gpu;
 pub mod dtype;

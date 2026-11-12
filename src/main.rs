@@ -35,6 +35,9 @@ usage: vyrn <command> [arguments]
   new <name>             create a project
   run [file] [args...]   run a program (the project's main file by default)
   check [file]           find errors without running
+  debug [file] [args...] run a program stopping at each step: breakpoints,
+                         variables, the call stack (`help` inside lists
+                         the commands); `debug --dap` serves editors
   test [path]            run the test_* functions in tests/
   fmt [--check] [files]  format code in the one Vyrn style
   add <url>              fetch and lock a module, e.g. github.com/ann/neural@v1
@@ -74,6 +77,7 @@ fn main() -> ExitCode {
         "learn" => learn(rest),
         "run" => run(rest),
         "check" => check(rest),
+        "debug" => debug(rest),
         "test" => test(rest),
         "fmt" => fmt(rest),
         "add" => add(rest),
@@ -375,6 +379,34 @@ fn run_bundle(mut bundle: Bundle, args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `vyrn debug [file] [args...]`, or `vyrn debug --dap` for editors.
+fn debug(args: &[String]) -> ExitCode {
+    if args.first().is_some_and(|a| a == "--dap") {
+        let input = std::io::BufReader::new(std::io::stdin());
+        vyrn::debugger::run_dap(Box::new(input), Box::new(std::io::stdout()));
+        return ExitCode::SUCCESS;
+    }
+    let (file, program_args) = match args.first() {
+        Some(a) if a.ends_with(".vyrn") || Path::new(a).is_dir() => (Some(a), &args[1..]),
+        _ => (None, args),
+    };
+    let entry = match entry_file(file) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let input = std::io::BufReader::new(std::io::stdin());
+    let code = vyrn::debugger::run_terminal(
+        &entry,
+        program_args,
+        Box::new(input),
+        Box::new(std::io::stdout()),
+    );
+    ExitCode::from(code as u8)
 }
 
 fn check(args: &[String]) -> ExitCode {

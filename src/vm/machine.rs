@@ -183,6 +183,10 @@ pub struct Vm {
     generators: usize,
     /// Calls and time per function, when profiling (`vyrn run --profile`).
     profile: Option<Box<Profile>>,
+    /// The attached debugger, if any (`vyrn debug`, VS Code).
+    debug: Option<Box<super::debug::Session>>,
+    /// Whether a debugger is attached: tested before every instruction.
+    debugging: bool,
 }
 
 /// What `vyrn run --profile` collects.
@@ -311,6 +315,8 @@ impl Vm {
             yielded: None,
             generators: 0,
             profile: None,
+            debug: None,
+            debugging: false,
             methods,
             builtin_methods,
             functions,
@@ -334,6 +340,177 @@ impl Vm {
     /// devices.
     pub fn set_gpu_backend(&mut self, backend: Box<dyn TensorBackend>) {
         self.ctx.gpu = backend;
+    }
+
+    /// Attaches a debugger. `user_files` is how many of the program's
+    /// files are its own (the rest, such as the Prelude, are never stopped
+    /// in). Machine-code versions of functions are not used while
+    /// debugging, so every line can be stopped at.
+    pub fn attach_debugger(
+        &mut self,
+        host: Box<dyn super::debug::DebugHost>,
+        user_files: u32,
+        stop_on_entry: bool,
+    ) {
+        self.debug = Some(Box::new(super::debug::Session::new(
+            host,
+            user_files,
+            stop_on_entry,
+        )));
+        self.debugging = true;
+    }
+
+    /// At a stop: the calls on the stack, innermost first, in the
+    /// program's own files.
+    pub fn debug_stack(&self) -> Vec<super::debug::DebugFrame> {
+        let top = self.frames.len().saturating_sub(1);
+        self.frames
+            .iter()
+            .enumerate()
+            .rev()
+            .filter_map(|(i, f)| {
+                let proto = &f.closure.proto;
+                // The innermost frame is stopped before its instruction;
+                // the others are inside the call they made.
+                let at = if i == top {
+                    f.ip
+                } else {
+                    f.ip.saturating_sub(1)
+                };
+                let line = proto.lines.get(at).copied().unwrap_or(0);
+                (line > 0 && !crate::prelude::is_prelude_offset(proto.file << 24)).then(|| {
+                    super::debug::DebugFrame {
+                        function: proto.name.clone(),
+                        file: proto.file,
+                        line,
+                    }
+                })
+            })
+            .collect()
+    }
+
+    /// The frame `index` places from the innermost in `debug_stack`, as a
+    /// frame of the VM.
+    fn debug_frame(&self, index: usize) -> Option<(usize, &Frame)> {
+        let top = self.frames.len().checked_sub(1)?;
+        self.frames
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(i, f)| {
+                let proto = &f.closure.proto;
+                let at = if *i == top {
+                    f.ip
+                } else {
+                    f.ip.saturating_sub(1)
+                };
+                proto.lines.get(at).copied().unwrap_or(0) > 0
+                    && !crate::prelude::is_prelude_offset(proto.file << 24)
+            })
+            .nth(index)
+            .map(|(i, f)| {
+                (
+                    if i == top {
+                        f.ip
+                    } else {
+                        f.ip.saturating_sub(1)
+                    },
+                    f,
+                )
+            })
+    }
+
+    /// At a stop: the variables in scope in frame `index` (0 = innermost),
+    /// in the order they were made.
+    pub fn debug_locals(&self, index: usize) -> Vec<(String, Value)> {
+        let Some((at, frame)) = self.debug_frame(index) else {
+            return Vec::new();
+        };
+        let at = at as u32;
+        let mut out: Vec<(String, Value)> = Vec::new();
+        for local in &frame.closure.proto.locals {
+            if local.from > at || at >= local.to {
+                continue;
+            }
+            let Some(value) = self.stack.get(frame.base + local.reg as usize) else {
+                continue;
+            };
+            let value = match value {
+                Value::Cell(c) => c.borrow().clone(),
+                v => v.clone(),
+            };
+            // An inner variable hides an outer one of the same name.
+            out.retain(|(n, _)| *n != local.name);
+            out.push((local.name.clone(), value));
+        }
+        out
+    }
+
+    /// At a stop: the program's top-level variables and constants.
+    pub fn debug_globals(&self) -> Vec<(String, Value)> {
+        self.program
+            .globals
+            .iter()
+            .zip(&self.globals)
+            .filter(|(g, v)| {
+                !g.name.starts_with("__")
+                    && !matches!(v, Value::Function(_) | Value::Native(_) | Value::Missing)
+            })
+            .map(|(g, v)| (g.name.clone(), v.clone()))
+            .collect()
+    }
+
+    /// The parts of a value, for expanding it in a debugger: a list's
+    /// items, a map's entries, a struct's or object's fields.
+    pub fn debug_children(&self, value: &Value) -> Vec<(String, Value)> {
+        let fields = |ty: u16, values: &[Value]| -> Vec<(String, Value)> {
+            let def = &self.program.types[ty as usize];
+            values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let name = def
+                        .fields
+                        .get(i)
+                        .map_or(i.to_string(), |f| self.program.symbols.name(*f).to_string());
+                    (name, v.clone())
+                })
+                .collect()
+        };
+        match value {
+            Value::List(xs) => xs
+                .borrow()
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (i.to_string(), v.clone()))
+                .collect(),
+            Value::Tuple(xs) => xs
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (i.to_string(), v.clone()))
+                .collect(),
+            Value::Map(m) => m
+                .borrow()
+                .entries()
+                .iter()
+                .map(|(k, v)| (self.display_repr(k), v.clone()))
+                .collect(),
+            Value::Struct(inst) => fields(inst.ty, &inst.fields),
+            Value::Object(o) => {
+                let o = o.borrow();
+                fields(o.ty, &o.fields)
+            }
+            Value::Cell(c) => self.debug_children(&c.borrow()),
+            _ => Vec::new(),
+        }
+    }
+
+    /// A value as the debugger shows it: text in quotes.
+    pub fn display_repr(&self, value: &Value) -> String {
+        match value {
+            Value::Str(s) => super::stdlib::quote(s),
+            other => self.display(other),
+        }
     }
 
     pub fn program(&self) -> &Program {
@@ -844,7 +1021,9 @@ impl Vm {
         // A function compiled to machine code runs as machine code here
         // too (it may decline, and then runs as bytecode).
         let native = match &callee {
-            Value::Function(c) if c.bound.is_none() => c.proto.native.get().cloned(),
+            Value::Function(c) if c.bound.is_none() && !self.debugging => {
+                c.proto.native.get().cloned()
+            }
             _ => None,
         };
         if let Some(native) = native {
@@ -2285,7 +2464,9 @@ impl Vm {
                     let argc: usize = $argc;
                         match &self.stack[at] {
                             Value::Function(c)
-                                if c.bound.is_none() && c.proto.native.get().is_some() =>
+                                if c.bound.is_none()
+                                    && !self.debugging
+                                    && c.proto.native.get().is_some() =>
                             {
                                 let native = c.proto.native.get().cloned().expect("checked");
                                 match self.call_native(&native, at + 1, argc) {
@@ -2470,6 +2651,29 @@ impl Vm {
                     proto.name,
                     code[ip]
                 );
+                if self.debugging {
+                    let line = proto.lines[ip];
+                    let depth = self.frames.len();
+                    let key = proto as *const super::program::Proto as usize;
+                    let stop = self
+                        .debug
+                        .as_mut()
+                        .and_then(|s| s.should_stop(key, proto.file, line, depth));
+                    if let Some(reason) = stop {
+                        save_ip!();
+                        if let Some(mut session) = self.debug.take() {
+                            let how = session.host.stopped(self, reason);
+                            session.resume(how, depth);
+                            self.debug = Some(session);
+                            if how == super::debug::Resume::Terminate {
+                                return Err(RuntimeError::new(
+                                    "Stopped",
+                                    "the program was stopped from the debugger",
+                                ));
+                            }
+                        }
+                    }
+                }
                 let op = code[ip];
                 ip += 1;
                 match op {
@@ -3050,7 +3254,9 @@ impl Vm {
                         if let Some(ty) = ty {
                             check!(self.check_private(proto, ty, symbol));
                             match self.methods.get(&(ty, symbol)).cloned() {
-                                Some(method) if method.proto.native.get().is_some() => {
+                                Some(method)
+                                    if !self.debugging && method.proto.native.get().is_some() =>
+                                {
                                     let native =
                                         method.proto.native.get().cloned().expect("checked");
                                     match self.call_native(&native, receiver, argc as usize + 1) {

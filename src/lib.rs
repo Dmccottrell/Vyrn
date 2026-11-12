@@ -14,6 +14,7 @@
 
 pub mod ast;
 pub mod check;
+pub mod debugger;
 pub mod diagnostic;
 pub mod fmt;
 pub mod learn;

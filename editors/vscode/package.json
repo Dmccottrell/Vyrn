@@ -1,7 +1,7 @@
 {
   "name": "vyrn",
   "displayName": "Vyrn",
-  "description": "Vyrn language support: completion, hover, go to definition, errors as you type, formatting, and running",
+  "description": "Vyrn language support: completion, hover, go to definition, errors as you type, formatting, running and debugging",
   "version": "0.4.0",
   "publisher": "vyrn",
   "license": "MIT",
@@ -11,11 +11,14 @@
   "categories": [
     "Programming Languages",
     "Formatters",
-    "Linters"
+    "Linters",
+    "Debuggers"
   ],
   "main": "./extension.js",
   "activationEvents": [
-    "onLanguage:vyrn"
+    "onLanguage:vyrn",
+    "onDebugResolve:vyrn",
+    "onDebugDynamicConfigurations:vyrn"
   ],
   "contributes": {
     "languages": [
@@ -50,6 +53,10 @@
       {
         "command": "vyrn.repl",
         "title": "Vyrn: Open Interactive Prompt"
+      },
+      {
+        "command": "vyrn.debug",
+        "title": "Vyrn: Debug File"
       }
     ],
     "configuration": {
@@ -71,7 +78,68 @@
           "description": "Use the Vyrn language server (`vyrn lsp`) for completion, hover, definitions and errors."
         }
       }
-    }
+    },
+    "breakpoints": [
+      {
+        "language": "vyrn"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "vyrn",
+        "label": "Vyrn",
+        "languages": [
+          "vyrn"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "The .vyrn file to debug.",
+                "default": "${file}"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Arguments for the program.",
+                "default": []
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Stop at the first line.",
+                "default": false
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "vyrn",
+            "request": "launch",
+            "name": "Debug this file",
+            "program": "${file}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Vyrn: Debug a file",
+            "description": "Run a .vyrn file in the debugger",
+            "body": {
+              "type": "vyrn",
+              "request": "launch",
+              "name": "Debug ${1:file}",
+              "program": "^\"\\${file}\""
+            }
+          }
+        ]
+      }
+    ]
   },
   "repository": {
     "type": "git",

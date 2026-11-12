@@ -43,3 +43,10 @@ point their LSP client at the command `vyrn lsp` for `.vyrn` files.
 `node test.js` tests the parts that do not need VS Code: reading
 `vyrn check` output, the grammar, the indentation rules, and the language
 server answering `initialize`, diagnostics and hover.
+
+## Debugging
+
+Set a breakpoint by clicking left of a line number, then press **F5** (or
+run **Vyrn: Debug File**). The program stops there, and the side bar shows
+its variables and call stack. Step with F10 (over) and F11 (into). This
+uses `vyrn debug --dap`; see `docs/debugging.md` for everything it can do.

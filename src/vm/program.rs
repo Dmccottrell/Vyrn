@@ -41,6 +41,18 @@ pub struct Proto {
     /// `kernel fn`: its body lowered for running on tensors, or why it
     /// could not be.
     pub kernel: Option<Rc<Result<super::kernel::Kernel, String>>>,
+    /// Named variables and where each is in scope, for the debugger.
+    pub locals: Vec<LocalVar>,
+}
+
+/// A variable for the debugger: in register `reg` while the instruction
+/// pointer is in `from..to`.
+#[derive(Clone, Debug)]
+pub struct LocalVar {
+    pub name: String,
+    pub reg: u8,
+    pub from: u32,
+    pub to: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

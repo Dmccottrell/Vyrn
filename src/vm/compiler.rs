@@ -119,6 +119,9 @@ struct FnState {
     /// and the like) are recorded with an empty name.
     scopes: Vec<Vec<(String, u8, bool)>>,
     scope_starts: Vec<usize>,
+    /// Every named variable with the code range it is in scope for; `to`
+    /// is `u32::MAX` while its scope is open.
+    locals: Vec<super::program::LocalVar>,
     next_reg: usize,
     max_reg: usize,
     loops: Vec<LoopCtx>,
@@ -145,6 +148,7 @@ impl FnState {
             required: 0,
             scopes: vec![Vec::new()],
             scope_starts: vec![0],
+            locals: Vec::new(),
             next_reg: 0,
             max_reg: 0,
             loops: Vec::new(),
@@ -560,6 +564,7 @@ impl Compiler {
                         is_generator: false,
                         owner: None,
                         kernel: None,
+                        locals: Vec::new(),
                     })
                 })
             })
@@ -1379,9 +1384,14 @@ impl Compiler {
     fn end_fn(&mut self) -> Proto {
         self.sync_param_cells();
         self.emit(Op::ReturnNone);
-        let f = self.fns.pop().expect("a function is being compiled");
+        let mut f = self.fns.pop().expect("a function is being compiled");
         let is_generator = f.is_generator;
+        let end = f.code.len() as u32;
+        for local in &mut f.locals {
+            local.to = local.to.min(end);
+        }
         Proto {
+            locals: f.locals,
             is_generator,
             owner: self.owner,
             name: f.name,
@@ -1524,7 +1534,19 @@ impl Compiler {
 
     fn pop_scope(&mut self) {
         let f = self.f();
-        f.scopes.pop();
+        let here = f.code.len() as u32;
+        if let Some(scope) = f.scopes.pop() {
+            for (name, reg, _) in scope.iter().filter(|(n, _, _)| !n.is_empty()) {
+                if let Some(local) = f
+                    .locals
+                    .iter_mut()
+                    .rev()
+                    .find(|l| l.to == u32::MAX && l.reg == *reg && l.name == *name)
+                {
+                    local.to = here;
+                }
+            }
+        }
         if let Some(start) = f.scope_starts.pop() {
             f.next_reg = start;
         }
@@ -1547,7 +1569,17 @@ impl Compiler {
     }
 
     fn bind_entry(&mut self, name: &str, reg: u8, cell: bool) {
-        if let Some(scope) = self.f().scopes.last_mut() {
+        let f = self.f();
+        if !name.is_empty() && !name.starts_with("__") {
+            let from = f.code.len() as u32;
+            f.locals.push(super::program::LocalVar {
+                name: name.to_string(),
+                reg,
+                from,
+                to: u32::MAX,
+            });
+        }
+        if let Some(scope) = f.scopes.last_mut() {
             scope.push((name.to_string(), reg, cell));
         }
     }

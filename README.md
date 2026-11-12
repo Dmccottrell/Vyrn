@@ -22,6 +22,7 @@ run on the interpreter (`docs/deploy.md` section 3).
 - [`docs/ffi.md`](docs/ffi.md): the Python and C bridges, zero-copy tensors, and the decentralized module resolver
 - [`docs/nn.md`](docs/nn.md): `kernel` function on tensors, its lowering to WGSL, and tensor memory layout
 - [`docs/deploy.md`](docs/deploy.md): `vyrn build --target=...` for static Linux binaries and edge WebAssembly, and the LLVM backend design
+- [`docs/debugging.md`](docs/debugging.md): breakpoints, stepping and variables, in VS Code (F5) or the terminal (`vyrn debug`)
 - [`unreal/README.md`](unreal/README.md): gameplay scripting in Unreal Engine 5 with the VyrnScripting plugin, and `vyrn.dll` for embedding Vyrn in any C or C++ program
 
 ## Examples
