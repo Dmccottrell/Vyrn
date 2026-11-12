@@ -99,14 +99,6 @@ impl Color {
     fn opaque(rgb: u32) -> Color {
         Color { rgb, alpha: 255 }
     }
-
-    fn scaled(self, k: f64) -> Color {
-        let ch = |shift: u32| (((self.rgb >> shift) & 0xff) as f64 * k).clamp(0.0, 255.0) as u32;
-        Color {
-            rgb: (ch(16) << 16) | (ch(8) << 8) | ch(0),
-            alpha: self.alpha,
-        }
-    }
 }
 
 const NAMES: &[(&str, u32)] = &[
@@ -228,12 +220,103 @@ pub struct Pixels {
     /// Which surface this is, for its GPU resources.
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
     id: u64,
-    /// 3D triangles waiting to be filled on the GPU, three corners each.
+    /// 3D triangles waiting to be filled on the GPU, grouped by texture.
     #[cfg(feature = "gpu")]
-    gpu: Vec<super::draw_gpu::Vertex>,
+    gpu: Vec<super::draw_gpu::Batch>,
     /// The GPU depth buffer must start over (after `clear`).
     #[cfg(feature = "gpu")]
     depth_reset: bool,
+    /// How 3D shapes are lit.
+    lights: Lights,
+}
+
+/// The lights of a 3D scene. The defaults light everything from above and
+/// behind the camera, as Vyrn always has.
+#[derive(Clone)]
+struct Lights {
+    /// Towards the sun, length 1.
+    sun: [f64; 3],
+    sun_color: [f64; 3],
+    ambient: [f64; 3],
+    /// Lamps: position, colour (times strength) and how far they reach.
+    /// `clear` turns them off, so a game adds this frame's lamps each frame.
+    points: Vec<([f64; 3], [f64; 3], f64)>,
+    /// Things fade to this colour from `start` to `end` away.
+    fog: Option<([f64; 3], f64, f64)>,
+}
+
+impl Default for Lights {
+    fn default() -> Lights {
+        Lights {
+            sun: normalize([0.4, 0.8, -0.45]),
+            sun_color: [0.65; 3],
+            ambient: [0.35; 3],
+            points: Vec::new(),
+            fog: None,
+        }
+    }
+}
+
+fn normalize(v: [f64; 3]) -> [f64; 3] {
+    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if n == 0.0 {
+        v
+    } else {
+        [v[0] / n, v[1] / n, v[2] / n]
+    }
+}
+
+fn rgb_unit(c: u32) -> [f64; 3] {
+    [
+        ((c >> 16) & 0xff) as f64 / 255.0,
+        ((c >> 8) & 0xff) as f64 / 255.0,
+        (c & 0xff) as f64 / 255.0,
+    ]
+}
+
+impl Lights {
+    /// The colour of `base` at point `p` facing `n` (length 1), seen from
+    /// `eye`, as 0..255 channels and alpha. Surfaces are lit on both sides.
+    fn shade(&self, base: Color, p: [f64; 3], n: [f64; 3], eye: [f64; 3]) -> [f64; 4] {
+        let d = (n[0] * self.sun[0] + n[1] * self.sun[1] + n[2] * self.sun[2]).abs();
+        let mut light = [
+            self.ambient[0] + self.sun_color[0] * d,
+            self.ambient[1] + self.sun_color[1] * d,
+            self.ambient[2] + self.sun_color[2] * d,
+        ];
+        for (at, color, range) in &self.points {
+            let to = [at[0] - p[0], at[1] - p[1], at[2] - p[2]];
+            let dist = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+            if dist >= *range || dist == 0.0 {
+                continue;
+            }
+            let fall = (1.0 - dist / range).powi(2);
+            let facing = ((n[0] * to[0] + n[1] * to[1] + n[2] * to[2]) / dist).abs();
+            for k in 0..3 {
+                light[k] += color[k] * fall * facing;
+            }
+        }
+        let ch = |shift: u32, k: usize| {
+            (((base.rgb >> shift) & 0xff) as f64 * light[k])
+                .clamp(0.0, 255.0)
+                .trunc()
+        };
+        let mut out = [ch(16, 0), ch(8, 1), ch(0, 2), f64::from(base.alpha)];
+        if let Some((fog, start, end)) = self.fog {
+            let dist =
+                ((p[0] - eye[0]).powi(2) + (p[1] - eye[1]).powi(2) + (p[2] - eye[2]).powi(2))
+                    .sqrt();
+            let f = if end > start {
+                ((dist - start) / (end - start)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            for k in 0..3 {
+                out[k] = (out[k] * (1.0 - f) + fog[k] * 255.0 * f).trunc();
+            }
+        }
+        out
+    }
 }
 
 static NEXT_SURFACE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -257,6 +340,7 @@ impl Pixels {
             gpu: Vec::new(),
             #[cfg(feature = "gpu")]
             depth_reset: true,
+            lights: Lights::default(),
         }
     }
 
@@ -285,6 +369,8 @@ impl Pixels {
             self.gpu.clear();
             self.depth_reset = true;
         }
+        // Lamps are placed again each frame.
+        self.lights.points.clear();
         self.buf.fill(c.rgb);
         self.depth.fill(f32::INFINITY);
     }
@@ -409,25 +495,49 @@ impl Pixels {
     }
 
     /// A 3D triangle already projected: screen x, y and depth per corner.
-    fn triangle_depth(&mut self, p: [(f64, f64, f64); 3], c: Color) {
+    /// Fills a 3D triangle given in screen x, y and distance, with a colour
+    /// (0..255 channels and alpha) and texture coordinates per corner,
+    /// nearest wins. Texture coordinates follow the perspective.
+    fn triangle_shaded(
+        &mut self,
+        p: [(f64, f64, f64); 3],
+        col: [[f64; 4]; 3],
+        uv: [[f64; 2]; 3],
+        tex: Option<&Image>,
+    ) {
         #[cfg(feature = "gpu")]
         if super::draw_gpu::active() {
             let (w, h) = (self.w as f64, self.h as f64);
-            let color = [
-                ((c.rgb >> 16) & 0xff) as f32 / 255.0,
-                ((c.rgb >> 8) & 0xff) as f32 / 255.0,
-                (c.rgb & 0xff) as f32 / 255.0,
-                f32::from(c.alpha) / 255.0,
-            ];
-            for q in p {
-                self.gpu.push(super::draw_gpu::Vertex {
+            let texture = tex.map(Image::texture);
+            let id = texture.as_ref().map(|t| t.id);
+            if self
+                .gpu
+                .last()
+                .is_none_or(|b| b.texture.as_ref().map(|t| t.id) != id)
+            {
+                self.gpu.push(super::draw_gpu::Batch {
+                    texture,
+                    verts: Vec::new(),
+                });
+            }
+            let batch = self.gpu.last_mut().expect("pushed above");
+            for (k, q) in p.iter().enumerate() {
+                let z = q.2.max(NEAR);
+                batch.verts.push(super::draw_gpu::Vertex {
                     pos: [
-                        (q.0 / w * 2.0 - 1.0) as f32,
-                        (1.0 - q.1 / h * 2.0) as f32,
+                        ((q.0 / w * 2.0 - 1.0) * z) as f32,
+                        ((1.0 - q.1 / h * 2.0) * z) as f32,
                         // Nearer is smaller, from 0 at the near plane to 1.
-                        (1.0 - NEAR / q.2.max(NEAR)) as f32,
+                        ((1.0 - NEAR / z) * z) as f32,
+                        z as f32,
                     ],
-                    color,
+                    color: [
+                        (col[k][0] / 255.0) as f32,
+                        (col[k][1] / 255.0) as f32,
+                        (col[k][2] / 255.0) as f32,
+                        (col[k][3] / 255.0) as f32,
+                    ],
+                    uv: [uv[k][0] as f32, uv[k][1] as f32],
                 });
             }
             return;
@@ -460,6 +570,17 @@ impl Pixels {
         if area.abs() < 1e-9 {
             return;
         }
+        // One colour for the whole triangle unless its corners differ.
+        let flat = col[0] == col[1] && col[1] == col[2];
+        let color_of = |c: [f64; 4]| Color {
+            rgb: ((c[0] as u32) << 16) | ((c[1] as u32) << 8) | c[2] as u32,
+            alpha: c[3] as u8,
+        };
+        let inv = [
+            1.0 / p[0].2.max(NEAR),
+            1.0 / p[1].2.max(NEAR),
+            1.0 / p[2].2.max(NEAR),
+        ];
         for y in miny..=maxy {
             for x in minx..=maxx {
                 let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
@@ -471,10 +592,36 @@ impl Pixels {
                 }
                 let z = (w0 * p[0].2 + w1 * p[1].2 + w2 * p[2].2) as f32;
                 let i = y as usize * self.w + x as usize;
-                if z < self.depth[i] {
-                    self.depth[i] = z;
-                    self.buf[i] = blend(self.buf[i], c);
+                if z >= self.depth[i] {
+                    continue;
                 }
+                let mut c = if flat {
+                    col[0]
+                } else {
+                    let mut c = [0.0; 4];
+                    for (k, v) in c.iter_mut().enumerate() {
+                        *v = (w0 * col[0][k] + w1 * col[1][k] + w2 * col[2][k]).clamp(0.0, 255.0);
+                    }
+                    c
+                };
+                if let Some(img) = tex {
+                    // Perspective-correct: interpolate uv/z and 1/z.
+                    let (a, b, d) = (w0 * inv[0], w1 * inv[1], w2 * inv[2]);
+                    let sum = a + b + d;
+                    let u = (a * uv[0][0] + b * uv[1][0] + d * uv[2][0]) / sum;
+                    let v = (a * uv[0][1] + b * uv[1][1] + d * uv[2][1]) / sum;
+                    let (rgb, alpha) = img.sample(u, v);
+                    let t = rgb_unit(rgb);
+                    for k in 0..3 {
+                        c[k] = (c[k] * t[k]).trunc();
+                    }
+                    c[3] = (c[3] * f64::from(alpha) / 255.0).trunc();
+                }
+                if c[3] <= 0.0 {
+                    continue;
+                }
+                self.depth[i] = z;
+                self.buf[i] = blend(self.buf[i], color_of(c));
             }
         }
     }
@@ -573,6 +720,53 @@ pub struct Image {
     h: usize,
     /// (rgb, alpha) per pixel.
     px: Vec<(u32, u8)>,
+    /// Unique to this image, so the GPU uploads it once.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    id: u64,
+    /// RGBA bytes, made the first time the image is used as a texture.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    rgba: std::cell::OnceCell<Rc<Vec<u8>>>,
+}
+
+impl Image {
+    fn new(w: usize, h: usize, px: Vec<(u32, u8)>) -> Image {
+        Image {
+            w,
+            h,
+            px,
+            id: NEXT_SURFACE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            rgba: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The texel at texture coordinates (u, v), from the top left,
+    /// repeating past the edges; nearest pixel, as the GPU samples.
+    fn sample(&self, u: f64, v: f64) -> (u32, u8) {
+        if self.w == 0 || self.h == 0 {
+            return (0xffffff, 255);
+        }
+        let x = ((u - u.floor()) * self.w as f64) as usize;
+        let y = ((v - v.floor()) * self.h as f64) as usize;
+        self.px[y.min(self.h - 1) * self.w + x.min(self.w - 1)]
+    }
+
+    #[cfg(feature = "gpu")]
+    fn texture(&self) -> super::draw_gpu::TextureData {
+        let rgba = self.rgba.get_or_init(|| {
+            Rc::new(
+                self.px
+                    .iter()
+                    .flat_map(|(rgb, a)| [(rgb >> 16) as u8, (rgb >> 8) as u8, *rgb as u8, *a])
+                    .collect(),
+            )
+        });
+        super::draw_gpu::TextureData {
+            id: self.id,
+            w: self.w as u32,
+            h: self.h as u32,
+            rgba: rgba.clone(),
+        }
+    }
 }
 
 fn load_png(path: &str) -> VmResult<Image> {
@@ -616,7 +810,7 @@ fn load_png(path: &str) -> VmResult<Image> {
         };
         px.push(((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b), a));
     }
-    Ok(Image { w, h, px })
+    Ok(Image::new(w, h, px))
 }
 
 impl Foreign for Image {
@@ -802,10 +996,57 @@ impl Foreign for Camera {
     }
 }
 
-/// Points and the triangles between them.
+/// Points and the triangles between them, with optional texture
+/// coordinates and normals per point, and a texture.
 pub struct Mesh {
     verts: Vec<[f64; 3]>,
     faces: Vec<[usize; 3]>,
+    /// Texture coordinates per point (from the top left), or empty.
+    uvs: Vec<[f64; 2]>,
+    /// The way the surface faces at each point, for smooth shading; empty
+    /// for flat triangles.
+    normals: Vec<[f64; 3]>,
+    /// An `Image` to paint it with.
+    texture: Option<Value>,
+}
+
+impl Mesh {
+    fn new(verts: Vec<[f64; 3]>, faces: Vec<[usize; 3]>) -> Mesh {
+        Mesh {
+            verts,
+            faces,
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            texture: None,
+        }
+    }
+
+    /// Smooth normals: each point faces the average way of its triangles.
+    fn smooth(mut self) -> Mesh {
+        let mut normals = vec![[0.0; 3]; self.verts.len()];
+        for f in &self.faces {
+            let (a, b, c) = (self.verts[f[0]], self.verts[f[1]], self.verts[f[2]]);
+            let n = cross(
+                [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+            );
+            for &i in f {
+                for k in 0..3 {
+                    normals[i][k] += n[k];
+                }
+            }
+        }
+        self.normals = normals.into_iter().map(normalize).collect();
+        self
+    }
+}
+
+fn cross(u: [f64; 3], v: [f64; 3]) -> [f64; 3] {
+    [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ]
 }
 
 impl Foreign for Mesh {
@@ -825,6 +1066,8 @@ impl Foreign for Mesh {
         match name {
             "points" => Ok(Value::Int(self.verts.len() as i64)),
             "triangles" => Ok(Value::Int(self.faces.len() as i64)),
+            "texture" => Ok(self.texture.clone().unwrap_or(Value::None)),
+            "smooth" => Ok(Value::Bool(!self.normals.is_empty())),
             _ => Err(err("FieldError", format!("a Mesh has no field `{name}`"))),
         }
     }
@@ -835,32 +1078,28 @@ impl Foreign for Mesh {
 }
 
 fn cube_mesh() -> Mesh {
-    let v = |x: f64, y: f64, z: f64| [x - 0.5, y - 0.5, z - 0.5];
-    let verts = vec![
-        v(0., 0., 0.),
-        v(1., 0., 0.),
-        v(1., 1., 0.),
-        v(0., 1., 0.),
-        v(0., 0., 1.),
-        v(1., 0., 1.),
-        v(1., 1., 1.),
-        v(0., 1., 1.),
+    // Four corners per side, so each side has its own texture coordinates.
+    // Corners of each side in order (u, v) = (0,0) (1,0) (1,1) (0,1).
+    let sides: [[[f64; 3]; 4]; 6] = [
+        [[0., 1., 0.], [1., 1., 0.], [1., 0., 0.], [0., 0., 0.]], // front (z = 0)
+        [[1., 1., 1.], [0., 1., 1.], [0., 0., 1.], [1., 0., 1.]], // back
+        [[0., 1., 1.], [0., 1., 0.], [0., 0., 0.], [0., 0., 1.]], // left
+        [[1., 1., 0.], [1., 1., 1.], [1., 0., 1.], [1., 0., 0.]], // right
+        [[0., 1., 1.], [1., 1., 1.], [1., 1., 0.], [0., 1., 0.]], // top
+        [[0., 0., 0.], [1., 0., 0.], [1., 0., 1.], [0., 0., 1.]], // bottom
     ];
-    let faces = vec![
-        [0, 2, 1],
-        [0, 3, 2],
-        [4, 5, 6],
-        [4, 6, 7],
-        [0, 1, 5],
-        [0, 5, 4],
-        [3, 6, 2],
-        [3, 7, 6],
-        [0, 4, 7],
-        [0, 7, 3],
-        [1, 2, 6],
-        [1, 6, 5],
-    ];
-    Mesh { verts, faces }
+    let mut m = Mesh::new(Vec::new(), Vec::new());
+    for side in sides {
+        let at = m.verts.len();
+        for (k, c) in side.iter().enumerate() {
+            m.verts.push([c[0] - 0.5, c[1] - 0.5, c[2] - 0.5]);
+            m.uvs
+                .push([[0.0, 1.0, 1.0, 0.0][k], [0.0, 0.0, 1.0, 1.0][k]]);
+        }
+        m.faces.push([at, at + 1, at + 2]);
+        m.faces.push([at, at + 2, at + 3]);
+    }
+    m
 }
 
 fn sphere_mesh(detail: usize) -> Mesh {
@@ -886,19 +1125,31 @@ fn sphere_mesh(detail: usize) -> Mesh {
             faces.push([a, d, c]);
         }
     }
-    Mesh { verts, faces }
+    let uvs = (0..=rings)
+        .flat_map(|r| (0..segs).map(move |s| [s as f64 / segs as f64, r as f64 / rings as f64]))
+        .collect();
+    let normals = verts.iter().map(|v| normalize(*v)).collect();
+    Mesh {
+        verts,
+        faces,
+        uvs,
+        normals,
+        texture: None,
+    }
 }
 
 fn plane_mesh() -> Mesh {
-    Mesh {
-        verts: vec![
+    let mut m = Mesh::new(
+        vec![
             [-0.5, 0.0, -0.5],
             [0.5, 0.0, -0.5],
             [0.5, 0.0, 0.5],
             [-0.5, 0.0, 0.5],
         ],
-        faces: vec![[0, 2, 1], [0, 3, 2]],
-    }
+        vec![[0, 2, 1], [0, 3, 2]],
+    );
+    m.uvs = vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
+    m
 }
 
 /// Draws a mesh placed at `pos`, turned by `rot` (degrees about x, y, z)
@@ -907,25 +1158,86 @@ fn plane_mesh() -> Mesh {
 /// Nearest distance in front of the camera that is drawn.
 const NEAR: f64 = 0.06;
 
+/// An `Image` argument (`texture = img`), if given.
+fn image_arg(v: Option<&Value>) -> VmResult<Option<*const Image>> {
+    match v {
+        None | Some(Value::None) => Ok(None),
+        Some(Value::Foreign(f)) => match f.as_any().downcast_ref::<Image>() {
+            Some(img) => Ok(Some(img as *const Image)),
+            None => Err(type_error(
+                "`texture` takes an image, from `draw.image(path)` or `canvas.image()`",
+            )),
+        },
+        Some(other) => Err(type_error(format!(
+            "`texture` takes an image, from `draw.image(path)` or `canvas.image()`, not {}",
+            other.type_name()
+        ))),
+    }
+}
+
+/// Repeats a cube's texture once per unit of its size on each side.
+fn tile_cube(cube: &mut Mesh, size: [f64; 3]) {
+    // Sides in cube_mesh order: front, back, left, right, top, bottom; how
+    // many units wide and high each is.
+    let reps = [
+        (size[0], size[1]),
+        (size[0], size[1]),
+        (size[2], size[1]),
+        (size[2], size[1]),
+        (size[0], size[2]),
+        (size[0], size[2]),
+    ];
+    for (side, (w, h)) in reps.iter().enumerate() {
+        for k in 0..4 {
+            let uv = &mut cube.uvs[side * 4 + k];
+            uv[0] *= w.abs().max(1e-6);
+            uv[1] *= h.abs().max(1e-6);
+        }
+    }
+}
+
+/// A triangle corner on its way to the screen: in camera space, with its
+/// colour (0..255 and alpha) and texture coordinates.
+#[derive(Clone, Copy)]
+struct Corner {
+    v: [f64; 3],
+    c: [f64; 4],
+    uv: [f64; 2],
+}
+
 /// The part of a triangle (in camera space) in front of the near plane:
 /// none, three or four corners.
-fn clip_near(tri: [[f64; 3]; 3]) -> Vec<[f64; 3]> {
+fn clip_near(tri: [Corner; 3]) -> Vec<Corner> {
     let mut out = Vec::with_capacity(4);
     for i in 0..3 {
         let a = tri[i];
         let b = tri[(i + 1) % 3];
-        let (ina, inb) = (a[2] >= NEAR, b[2] >= NEAR);
+        let (ina, inb) = (a.v[2] >= NEAR, b.v[2] >= NEAR);
         if ina {
             out.push(a);
         }
         if ina != inb {
-            let t = (NEAR - a[2]) / (b[2] - a[2]);
-            out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, NEAR]);
+            let t = (NEAR - a.v[2]) / (b.v[2] - a.v[2]);
+            let lerp = |x: f64, y: f64| x + (y - x) * t;
+            out.push(Corner {
+                v: [lerp(a.v[0], b.v[0]), lerp(a.v[1], b.v[1]), NEAR],
+                c: [
+                    lerp(a.c[0], b.c[0]),
+                    lerp(a.c[1], b.c[1]),
+                    lerp(a.c[2], b.c[2]),
+                    lerp(a.c[3], b.c[3]),
+                ],
+                uv: [lerp(a.uv[0], b.uv[0]), lerp(a.uv[1], b.uv[1])],
+            });
         }
     }
     out
 }
 
+/// Draws a mesh placed at `pos`, turned by `rot` (degrees about x, y, z)
+/// and scaled, lit by the surface's lights, and painted with `tex` (or
+/// the mesh's own texture) when it has texture coordinates.
+#[allow(clippy::too_many_arguments)]
 fn draw_mesh(
     px: &mut Pixels,
     cam: &Camera,
@@ -934,53 +1246,88 @@ fn draw_mesh(
     rot: [f64; 3],
     scale: [f64; 3],
     c: Color,
+    tex: Option<&Image>,
 ) {
     let (sx, cx) = rot[0].to_radians().sin_cos();
     let (sy, cy) = rot[1].to_radians().sin_cos();
     let (sz, cz) = rot[2].to_radians().sin_cos();
+    let turn = |x: f64, y: f64, z: f64| {
+        let (y, z) = (y * cx - z * sx, y * sx + z * cx);
+        let (x, z) = (x * cy + z * sy, -x * sy + z * cy);
+        let (x, y) = (x * cz - y * sz, x * sz + y * cz);
+        [x, y, z]
+    };
     let world: Vec<[f64; 3]> = m
         .verts
         .iter()
         .map(|v| {
-            let (x, y, z) = (v[0] * scale[0], v[1] * scale[1], v[2] * scale[2]);
-            let (y, z) = (y * cx - z * sx, y * sx + z * cx);
-            let (x, z) = (x * cy + z * sy, -x * sy + z * cy);
-            let (x, y) = (x * cz - y * sz, x * sz + y * cz);
-            [x + pos[0], y + pos[1], z + pos[2]]
+            let w = turn(v[0] * scale[0], v[1] * scale[1], v[2] * scale[2]);
+            [w[0] + pos[0], w[1] + pos[1], w[2] + pos[2]]
         })
         .collect();
-    let light = {
-        let l: [f64; 3] = [0.4, 0.8, -0.45];
-        let n = l[0] * l[0] + l[1] * l[1] + l[2] * l[2];
-        let n = n.sqrt();
-        [l[0] / n, l[1] / n, l[2] / n]
+    // Normals turn with the mesh; stretching divides them by the scale.
+    let normals: Vec<[f64; 3]> = m
+        .normals
+        .iter()
+        .map(|n| {
+            let safe = |s: f64| if s == 0.0 { 1.0 } else { s };
+            normalize(turn(
+                n[0] / safe(scale[0]),
+                n[1] / safe(scale[1]),
+                n[2] / safe(scale[2]),
+            ))
+        })
+        .collect();
+    let mesh_texture = m.texture.as_ref().and_then(|v| match v {
+        Value::Foreign(f) => f
+            .as_any()
+            .downcast_ref::<Image>()
+            .map(|i| i as *const Image),
+        _ => None,
+    });
+    // SAFETY: the mesh, which holds the image, outlives the call.
+    let tex = tex.or_else(|| mesh_texture.map(|p| unsafe { &*p }));
+    let tex = if m.uvs.len() == m.verts.len() {
+        tex
+    } else {
+        None
     };
+    let lights = px.lights.clone();
+    let eye = cam.pos.get();
     for f in &m.faces {
         let (a, b, d) = (world[f[0]], world[f[1]], world[f[2]]);
-        let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-        let v = [d[0] - a[0], d[1] - a[1], d[2] - a[2]];
-        let n = [
-            u[1] * v[2] - u[2] * v[1],
-            u[2] * v[0] - u[0] * v[2],
-            u[0] * v[1] - u[1] * v[0],
-        ];
-        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-        let shade = if len > 0.0 {
-            let d = (n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / len;
-            0.35 + 0.65 * d.abs()
-        } else {
-            1.0
+        let face = normalize(cross(
+            [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+            [d[0] - a[0], d[1] - a[1], d[2] - a[2]],
+        ));
+        let corner = |k: usize, p: [f64; 3]| {
+            let n = if normals.is_empty() {
+                face
+            } else {
+                normals[f[k]]
+            };
+            Corner {
+                v: cam.view(p),
+                c: lights.shade(c, p, n, eye),
+                uv: if tex.is_some() { m.uvs[f[k]] } else { [0.0; 2] },
+            }
         };
         // Cut away the part behind the camera, so a wall right in front
         // of you is drawn instead of vanishing.
-        let visible = clip_near([cam.view(a), cam.view(b), cam.view(d)]);
+        let visible = clip_near([corner(0, a), corner(1, b), corner(2, d)]);
         let pts: Option<Vec<(f64, f64, f64)>> = visible
             .iter()
-            .map(|v| cam.project(*v, px.w, px.h))
+            .map(|k| cam.project(k.v, px.w, px.h))
             .collect();
         if let Some(p) = pts {
             for k in 1..p.len().saturating_sub(1) {
-                px.triangle_depth([p[0], p[k], p[k + 1]], c.scaled(shade));
+                let (i, j) = (k, k + 1);
+                px.triangle_shaded(
+                    [p[0], p[i], p[j]],
+                    [visible[0].c, visible[i].c, visible[j].c],
+                    [visible[0].uv, visible[i].uv, visible[j].uv],
+                    tex,
+                );
             }
         }
     }
@@ -1113,6 +1460,74 @@ fn surface_method(
                 p.sync();
                 p.save_png(&path)?
             }
+            // `img = canvas.to_image()`: what is drawn so far, as an image,
+            // for example to paint 3D shapes with (`texture = img`).
+            "to_image" => {
+                p.sync();
+                let px = p.buf.iter().map(|c| (*c, 255u8)).collect();
+                return Ok(wrap(Image::new(p.w, p.h, px)));
+            }
+            // `win.light(direction = [x, y, z], color = "white", strength = 0.65)`:
+            // the sun, shining from `direction` (towards the light).
+            "light" => {
+                let dir = match a.get(0, "direction") {
+                    Some(v) => {
+                        let d = ops::collect(v)?;
+                        let [x, y, z] = d.as_slice() else {
+                            return Err(type_error("`direction` is [x, y, z]"));
+                        };
+                        normalize([number(x, "x")?, number(y, "y")?, number(z, "z")?])
+                    }
+                    None => p.lights.sun,
+                };
+                let color = rgb_unit(a.color_or(1, "color", 0xffffff)?.rgb);
+                let strength = a.num_or(2, "strength", 0.65)?;
+                p.lights.sun = dir;
+                p.lights.sun_color = [
+                    color[0] * strength,
+                    color[1] * strength,
+                    color[2] * strength,
+                ];
+            }
+            // `win.ambient(0.35, color = "white")`: light that reaches everywhere.
+            "ambient" => {
+                let level = a.num_or(0, "level", 0.35)?;
+                let color = rgb_unit(a.color_or(1, "color", 0xffffff)?.rgb);
+                p.lights.ambient = [color[0] * level, color[1] * level, color[2] * level];
+            }
+            // `win.point_light(x, y, z, color = "orange", strength = 1, range = 8)`:
+            // a lamp for this frame (`clear` turns lamps off).
+            "point_light" => {
+                let at = [a.num(0, "x")?, a.num(1, "y")?, a.num(2, "z")?];
+                let color = rgb_unit(a.color_or(3, "color", 0xffffff)?.rgb);
+                let strength = a.num_or(4, "strength", 1.0)?;
+                let range = a.num_or(5, "range", 8.0)?.max(0.001);
+                if p.lights.points.len() >= 64 {
+                    return Err(err(
+                        "ValueError",
+                        "a scene can have at most 64 point lights",
+                    ));
+                }
+                p.lights.points.push((
+                    at,
+                    [
+                        color[0] * strength,
+                        color[1] * strength,
+                        color[2] * strength,
+                    ],
+                    range,
+                ));
+            }
+            // `win.fog("#9fb4c7", start = 10, end = 40)`, or `win.fog(none)`.
+            "fog" => match a.get(0, "color") {
+                None | Some(Value::None) => p.lights.fog = None,
+                Some(_) => {
+                    let color = rgb_unit(a.color_or(0, "color", 0xffffff)?.rgb);
+                    let start = a.num_or(1, "start", 10.0)?;
+                    let end = a.num_or(2, "end", 40.0)?;
+                    p.lights.fog = Some((color, start, end));
+                }
+            },
             // `win.box(cam, [x, y, z, width, height, depth], colour)`: the
             // same box lists `vyrn.game` collides and ray-casts with.
             "box" => {
@@ -1135,14 +1550,24 @@ fn surface_method(
                     .map(|v| number(v, "a box"))
                     .collect::<VmResult<_>>()?;
                 let c = a.color_or(2, "color", 0xffffff)?;
+                let tex = image_arg(a.get(3, "texture"))?;
+                // SAFETY: held by the argument for the call.
+                let tex = tex.map(|t| unsafe { &*t });
+                // A texture repeats once per unit, so a long wall shows
+                // many bricks rather than one stretched.
+                let mut cube = cube_mesh();
+                if tex.is_some() {
+                    tile_cube(&mut cube, [n[3], n[4], n[5]]);
+                }
                 draw_mesh(
                     &mut p,
                     cam,
-                    &cube_mesh(),
+                    &cube,
                     [n[0], n[1], n[2]],
                     [0.0; 3],
                     [n[3], n[4], n[5]],
                     c,
+                    tex,
                 )
             }
             "cube" | "sphere" | "plane" | "mesh" => {
@@ -1208,7 +1633,10 @@ fn surface_method(
                     }
                     None => [0.0; 3],
                 };
-                draw_mesh(&mut p, cam, mesh_ref, position, rot, size, c)
+                let tex = image_arg(a.get(at + 6, "texture"))?;
+                // SAFETY: held by the argument for the call.
+                let tex = tex.map(|t| unsafe { &*t });
+                draw_mesh(&mut p, cam, mesh_ref, position, rot, size, c, tex)
             }
             "line3d" => {
                 let cam = match a.get(0, "camera") {
@@ -2290,7 +2718,38 @@ pub fn mesh(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         };
         faces.push([idx(a)?, idx(b)?, idx(d)?]);
     }
-    Ok(wrap(Mesh { verts, faces }))
+    let mut mesh = Mesh::new(verts, faces);
+    // `uvs = [[u, v], ...]`: texture coordinates per point.
+    if let Some(uvs) = opt_arg(args, 2) {
+        let uvs = ops::collect(uvs)?;
+        if uvs.len() != mesh.verts.len() {
+            return Err(type_error(format!(
+                "`uvs` needs one [u, v] per point: {} points, {} given",
+                mesh.verts.len(),
+                uvs.len()
+            )));
+        }
+        for uv in &uvs {
+            let c = ops::collect(uv)?;
+            let [u, v] = c.as_slice() else {
+                return Err(type_error("each texture coordinate is [u, v]"));
+            };
+            mesh.uvs.push([number(u, "u")?, number(v, "v")?]);
+        }
+    }
+    if opt_arg(args, 3).is_some_and(Value::truthy) {
+        mesh = mesh.smooth();
+    }
+    if let Some(t) = opt_arg(args, 4) {
+        image_arg(Some(t))?;
+        mesh.texture = Some(t.clone());
+    }
+    Ok(wrap(mesh))
+}
+
+fn opt_arg(args: &[Value], i: usize) -> Option<&Value> {
+    args.get(i)
+        .filter(|v| !matches!(v, Value::None | Value::Missing))
 }
 
 /// `draw.overlaps(x1, y1, w1, h1, x2, y2, w2, h2)`: whether two rectangles
@@ -2379,56 +2838,128 @@ pub fn load_obj(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     };
     let text = std::fs::read_to_string(&path)
         .map_err(|e| err("IoError", format!("cannot read {path}: {e}")))?;
-    Ok(wrap(parse_obj(&text).map_err(|why| {
+    let (mut mesh, library) = parse_obj(&text).map_err(|why| {
         err(
             "ValueError",
             format!("{path} is not a model this can read: {why}"),
         )
-    })?))
+    })?;
+    // The texture its material file names (`map_Kd`), if it is a PNG.
+    let dir = std::path::Path::new(&path)
+        .parent()
+        .unwrap_or(std::path::Path::new(""));
+    if let Some(library) = library {
+        if let Ok(mtl) = std::fs::read_to_string(dir.join(&library)) {
+            let map = mtl
+                .lines()
+                .filter_map(|l| l.trim().strip_prefix("map_Kd"))
+                .map(|rest| rest.split_whitespace().last().unwrap_or("").to_string())
+                .next();
+            if let Some(map) = map.filter(|m| m.to_lowercase().ends_with(".png")) {
+                let image = load_png(&dir.join(&map).to_string_lossy())?;
+                mesh.texture = Some(wrap(image));
+            }
+        }
+    }
+    Ok(wrap(mesh))
 }
 
-fn parse_obj(text: &str) -> Result<Mesh, String> {
-    let mut verts = Vec::new();
-    let mut faces = Vec::new();
+/// The mesh in an OBJ file, and the material file it names. Corners with
+/// different texture coordinates or normals become separate points, as a
+/// GPU needs.
+fn parse_obj(text: &str) -> Result<(Mesh, Option<String>), String> {
+    let mut positions = Vec::new();
+    let mut tex_coords: Vec<[f64; 2]> = Vec::new();
+    let mut normals_in: Vec<[f64; 3]> = Vec::new();
+    let mut mesh = Mesh::new(Vec::new(), Vec::new());
+    let mut seen: std::collections::HashMap<(usize, Option<usize>, Option<usize>), usize> =
+        std::collections::HashMap::new();
+    let mut any_uv = false;
+    let mut any_normal = false;
+    let mut library = None;
+    let numbers = |parts: std::str::SplitWhitespace<'_>, n: usize| -> Vec<f64> {
+        parts.take(n).filter_map(|p| p.parse().ok()).collect()
+    };
     for (n, line) in text.lines().enumerate() {
         let mut parts = line.split_whitespace();
         match parts.next() {
             Some("v") => {
-                let c: Vec<f64> = parts.take(3).filter_map(|p| p.parse().ok()).collect();
+                let c = numbers(parts, 3);
                 let [x, y, z] = c[..] else {
                     return Err(format!("line {} has a point without x, y and z", n + 1));
                 };
-                verts.push([x, y, z]);
+                positions.push([x, y, z]);
             }
+            Some("vt") => {
+                let c = numbers(parts, 2);
+                let u = c.first().copied().unwrap_or(0.0);
+                let v = c.get(1).copied().unwrap_or(0.0);
+                // OBJ counts v from the bottom; images from the top.
+                tex_coords.push([u, 1.0 - v]);
+            }
+            Some("vn") => {
+                let c = numbers(parts, 3);
+                let [x, y, z] = c[..] else {
+                    return Err(format!("line {} has a normal without x, y and z", n + 1));
+                };
+                normals_in.push(normalize([x, y, z]));
+            }
+            Some("mtllib") => library = parts.next().map(str::to_string),
             Some("f") => {
-                // `f 1 2 3` or `f 1/1/1 2/2/2 3/3/3`; counted from 1, or
-                // from the end when negative.
-                let idx: Vec<usize> = parts
-                    .map(|p| {
-                        let i: i64 = p
-                            .split('/')
-                            .next()
-                            .unwrap_or("")
-                            .parse()
-                            .map_err(|_| format!("line {} has a face corner {p:?}", n + 1))?;
-                        let i = if i < 0 { verts.len() as i64 + i } else { i - 1 };
-                        usize::try_from(i)
-                            .ok()
-                            .filter(|i| *i < verts.len())
-                            .ok_or_else(|| format!("line {} uses a point that is not there", n + 1))
-                    })
-                    .collect::<Result<_, _>>()?;
-                for k in 1..idx.len().saturating_sub(1) {
-                    faces.push([idx[0], idx[k], idx[k + 1]]);
+                // `f 1 2 3`, `f 1/1 2/2 3/3` or `f 1/1/1 2//2 ...`; counted
+                // from 1, or from the end when negative.
+                let index = |field: Option<&str>,
+                             count: usize,
+                             what: &str|
+                 -> Result<Option<usize>, String> {
+                    let Some(field) = field.filter(|f| !f.is_empty()) else {
+                        return Ok(None);
+                    };
+                    let i: i64 = field
+                        .parse()
+                        .map_err(|_| format!("line {} has a face corner {field:?}", n + 1))?;
+                    let i = if i < 0 { count as i64 + i } else { i - 1 };
+                    usize::try_from(i)
+                        .ok()
+                        .filter(|i| *i < count)
+                        .map(Some)
+                        .ok_or_else(|| format!("line {} uses a {what} that is not there", n + 1))
+                };
+                let mut corners = Vec::new();
+                for p in parts {
+                    let mut fields = p.split('/');
+                    let v = index(fields.next(), positions.len(), "point")?
+                        .ok_or_else(|| format!("line {} has an empty face corner", n + 1))?;
+                    let t = index(fields.next(), tex_coords.len(), "texture coordinate")?;
+                    let nn = index(fields.next(), normals_in.len(), "normal")?;
+                    any_uv |= t.is_some();
+                    any_normal |= nn.is_some();
+                    let key = (v, t, nn);
+                    let at = *seen.entry(key).or_insert_with(|| {
+                        mesh.verts.push(positions[v]);
+                        mesh.uvs.push(t.map_or([0.0; 2], |t| tex_coords[t]));
+                        mesh.normals.push(nn.map_or([0.0; 3], |nn| normals_in[nn]));
+                        mesh.verts.len() - 1
+                    });
+                    corners.push(at);
+                }
+                for k in 1..corners.len().saturating_sub(1) {
+                    mesh.faces.push([corners[0], corners[k], corners[k + 1]]);
                 }
             }
             _ => {}
         }
     }
-    if faces.is_empty() {
+    if mesh.faces.is_empty() {
         return Err("it has no faces".into());
     }
-    Ok(Mesh { verts, faces })
+    if !any_uv {
+        mesh.uvs.clear();
+    }
+    if !any_normal {
+        mesh.normals.clear();
+    }
+    Ok((mesh, library))
 }
 
 /// `draw.cube_mesh()` and `draw.sphere_mesh(detail)`: ready-made shapes
@@ -2530,6 +3061,25 @@ mod tests {
         assert!(!ui.checkbox(&mut px, "Done", 10.0, 100.0, false));
         ui.next_frame((15.0, 105.0), true, String::new());
         assert!(ui.checkbox(&mut px, "Done", 10.0, 100.0, false));
+    }
+
+    #[test]
+    fn obj_files_with_texture_coordinates_and_normals() {
+        let text = "mtllib crate.mtl\nv 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n\
+                    vt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nvn 0 0 2\n\
+                    f 1/1/1 2/2/1 3/3/1 4/4/1\n# the same corner, another uv\nf 1/3/1 3/3/1 4/4/1\n";
+        let (mesh, library) = parse_obj(text).unwrap();
+        assert_eq!(library.as_deref(), Some("crate.mtl"));
+        // Point 1 with two different uvs becomes two points.
+        assert_eq!((mesh.verts.len(), mesh.faces.len()), (5, 3));
+        // v counts from the bottom in OBJ, from the top in images.
+        assert_eq!(mesh.uvs[0], [0.0, 1.0]);
+        assert_eq!(mesh.uvs[2], [1.0, 0.0]);
+        assert_eq!(mesh.normals[0], [0.0, 0.0, 1.0]);
+        // Without them, both stay empty.
+        let (plain, _) = parse_obj("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").unwrap();
+        assert!(plain.uvs.is_empty() && plain.normals.is_empty());
+        assert!(parse_obj("v 0 0 0\nf 1 2 3\n").is_err());
     }
 
     #[test]

@@ -361,7 +361,10 @@ from the SQL, so input cannot change a statement. Errors are
 | `win.box(cam, [x, y, z, w, h, d], colour)` | A box from the same lists `vyrn.game` collides with |
 | `cam.direction`, `cam.position`, `cam.strafe(d)`, `cam.fly(d)` | First-person aiming and movement |
 | `win.mouse_dx`, `win.mouse_dy`, `win.hide_cursor()`, `win.show_cursor()` | Mouse look |
-| `draw.load_obj(path)` | A model exported from Blender and other 3D tools |
+| `draw.load_obj(path)` | A model exported from Blender and other 3D tools, with its texture coordinates, normals (smooth shading) and the PNG texture its `.mtl` file names |
+| `texture = img` on `box`, `cube`, `sphere`, `plane`, `mesh` | Paints the shape with an image from `draw.image(path)` or `canvas.to_image()`; on a `box` it repeats once per unit |
+| `draw.mesh(points, triangles, uvs, smooth, texture)` | Your own shapes, with texture coordinates and smooth shading |
+| `win.light(direction, color, strength)`, `win.ambient(level, color)`, `win.point_light(x, y, z, color, strength, range)`, `win.fog(color, start, end)` | Lighting: the sun, light that reaches everywhere, lamps (placed each frame, after `clear`), and fog that fades distant things |
 | `draw.renderer()`, `draw.use_gpu(on)` | What fills 3D shapes: a real GPU when there is one (Vulkan, Metal or DirectX 12), otherwise Vyrn's software renderer; `VYRN_GPU=on/off` also chooses |
 
 ### `vyrn.game`: the maths of 3D games

@@ -157,7 +157,7 @@ fn three_d_hides_what_is_behind() {
     );
     assert_eq!(
         out,
-        "-4.0 0.0\nMesh(3 points, 1 triangles) Mesh(8 points, 12 triangles) 64\n"
+        "-4.0 0.0\nMesh(3 points, 1 triangles) Mesh(24 points, 12 triangles) 64\n"
     );
 }
 
@@ -483,6 +483,56 @@ fn the_gpu_draws_the_same_picture_as_the_software_renderer() {
         out,
         "true [\"#ffffff\", \"#87b5e0\", \"#932422\", \"#932422\", \"#932422\"]\n"
     );
+}
+
+#[test]
+fn textures_lights_and_fog_look_the_same_on_the_gpu() {
+    let out = run("use vyrn.draw\n\
+         create checker():\n\
+         \x20   let t = draw.canvas(4, 4)\n\
+         \x20   t.clear(\"white\")\n\
+         \x20   each x, y in [(0, 0), (2, 0), (1, 1), (3, 1), (0, 2), (2, 2), (1, 3), (3, 3)]:\n\
+         \x20       t.pixel(x, y, \"black\")\n\
+         \x20   end\n\
+         \x20   return t.to_image()\n\
+         end\n\
+         create picture(tex):\n\
+         \x20   let c = draw.canvas(200, 100)\n\
+         \x20   let cam = draw.camera(0, 2, 0)\n\
+         \x20   c.clear(\"#202020\")\n\
+         \x20   c.ambient(0.3)\n\
+         \x20   c.light([0, 1, 0], \"white\", 0.7)\n\
+         \x20   c.box(cam, [0, -0.05, 6, 8, 0.1, 8], \"white\", texture = tex)\n\
+         \x20   c.point_light(2, 1, 3, \"red\", 2.0, 4)\n\
+         \x20   c.box(cam, [2, 0.5, 4, 1, 1, 1], \"white\")\n\
+         \x20   return [c.get_pixel(x, y) each y in 0 until 100 each x in 0 until 200]\n\
+         end\n\
+         main:\n\
+         \x20   let tex = checker()\n\
+         \x20   draw.use_gpu(false)\n\
+         \x20   let soft = picture(tex)\n\
+         \x20   # The floor shows both squares; the box is lit red.\n\
+         \x20   let floor = soft[70 * 200:]\n\
+         \x20   print(floor.count(\"#ffffff\") > 500, floor.count(\"#000000\") > 500, soft[80 * 200 + 145], soft[20 * 200 + 20])\n\
+         \x20   if draw.use_gpu(true):\n\
+         \x20       let gpu = picture(tex)\n\
+         \x20       var differ = 0\n\
+         \x20       each i in 0 until len(soft):\n\
+         \x20           if soft[i] != gpu[i]: differ += 1\n\
+         \x20       end\n\
+         \x20       # Only texel edges far away may round differently.\n\
+         \x20       print(differ < len(soft) / 10)\n\
+         \x20   else:\n\
+         \x20       print(true)\n\
+         \x20   end\n\
+         \x20   draw.use_gpu(false)\n\
+         \x20   let c = draw.canvas(100, 100)\n\
+         \x20   c.clear(\"black\")\n\
+         \x20   c.fog(\"#8090a0\", start = 1, end = 5)\n\
+         \x20   c.box(draw.camera(0, 0, -10), [0, 0, 0, 4, 4, 1], \"white\")\n\
+         \x20   print(c.get_pixel(50, 50), c.get_pixel(1, 1))\n\
+         end\n");
+    assert_eq!(out, "true true #ea7b78 #202020\ntrue\n#8090a0 #000000\n");
 }
 
 #[test]

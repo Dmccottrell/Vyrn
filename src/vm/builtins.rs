@@ -280,7 +280,7 @@ pub static NATIVES: &[Native] = &[
     fixed("draw.camera", &["x", "y", "z"], 0, super::lib_draw::camera),
     fixed(
         "draw.mesh",
-        &["points", "triangles"],
+        &["points", "triangles", "uvs", "smooth", "texture"],
         2,
         super::lib_draw::mesh,
     ),

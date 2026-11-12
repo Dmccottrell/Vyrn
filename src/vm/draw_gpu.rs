@@ -14,31 +14,56 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-/// One corner: position in normalized device coordinates and colour.
+/// One corner: position in clip space (x, y and depth already divided out
+/// and multiplied back by `w`, the distance, so colours and texture
+/// coordinates are interpolated with perspective), colour, and texture
+/// coordinates (0 to 1, from the top left).
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Vertex {
-    pub pos: [f32; 3],
+    pub pos: [f32; 4],
     pub color: [f32; 4],
+    pub uv: [f32; 2],
+}
+
+/// An image to paint triangles with, as RGBA bytes, row by row from the top.
+#[derive(Clone)]
+pub struct TextureData {
+    /// Unique to the image, to upload it once.
+    pub id: u64,
+    pub w: u32,
+    pub h: u32,
+    pub rgba: std::rc::Rc<Vec<u8>>,
+}
+
+/// Triangles that share a texture (or have none), three corners each.
+pub struct Batch {
+    pub texture: Option<TextureData>,
+    pub verts: Vec<Vertex>,
 }
 
 const SHADER: &str = r#"
 struct Out {
     @builtin(position) pos: vec4<f32>,
     @location(0) color: vec4<f32>,
+    @location(1) uv: vec2<f32>,
 };
 
+@group(0) @binding(0) var tex: texture_2d<f32>;
+@group(0) @binding(1) var samp: sampler;
+
 @vertex
-fn vs(@location(0) pos: vec3<f32>, @location(1) color: vec4<f32>) -> Out {
+fn vs(@location(0) pos: vec4<f32>, @location(1) color: vec4<f32>, @location(2) uv: vec2<f32>) -> Out {
     var o: Out;
-    o.pos = vec4<f32>(pos, 1.0);
+    o.pos = pos;
     o.color = color;
+    o.uv = uv;
     return o;
 }
 
 @fragment
 fn fs(i: Out) -> @location(0) vec4<f32> {
-    return i.color;
+    return i.color * textureSample(tex, samp, i.uv);
 }
 "#;
 
@@ -56,6 +81,10 @@ pub struct Renderer {
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
     targets: HashMap<u64, Target>,
+    sampler: wgpu::Sampler,
+    /// Uploaded textures by image id; key 0 is plain white, for triangles
+    /// without one.
+    textures: HashMap<u64, wgpu::BindGroup>,
     pub name: String,
 }
 
@@ -107,7 +136,7 @@ pub fn description() -> String {
     })
 }
 
-/// Fills `tris` (three vertices each) into the `w`-by-`h` pixels `buf`
+/// Fills the triangles of `batches` into the `w`-by-`h` pixels `buf`
 /// (`0x00RRGGBB`) of the surface `id`, testing against that surface's
 /// depth (cleared first when `clear_depth`).
 pub fn render(
@@ -115,14 +144,14 @@ pub fn render(
     buf: &mut [u32],
     w: usize,
     h: usize,
-    tris: &[Vertex],
+    batches: &[Batch],
     clear_depth: bool,
 ) -> bool {
     RENDERER.with(|r| {
         let mut r = r.borrow_mut();
         match r.as_mut().and_then(|r| r.as_mut()) {
             Some(r) => {
-                r.draw(id, buf, w as u32, h as u32, tris, clear_depth);
+                r.draw(id, buf, w as u32, h as u32, batches, clear_depth);
                 true
             }
             None => false,
@@ -165,14 +194,19 @@ impl Renderer {
         });
         let attributes = [
             wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x3,
+                format: wgpu::VertexFormat::Float32x4,
                 offset: 0,
                 shader_location: 0,
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x4,
-                offset: 12,
+                offset: 16,
                 shader_location: 1,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: 32,
+                shader_location: 2,
             },
         ];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -214,13 +248,85 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
-        Ok(Renderer {
+        // Nearest-pixel sampling, repeating past the edges: the same as the
+        // software renderer, so both draw the same picture.
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let mut renderer = Renderer {
             device,
             queue,
             pipeline,
             targets: HashMap::new(),
+            sampler,
+            textures: HashMap::new(),
             name: format!("{} ({:?})", info.name, info.backend),
-        })
+        };
+        let white = TextureData {
+            id: 0,
+            w: 1,
+            h: 1,
+            rgba: std::rc::Rc::new(vec![255; 4]),
+        };
+        renderer.upload(&white);
+        Ok(renderer)
+    }
+
+    /// Puts an image on the GPU (once), ready to paint with.
+    fn upload(&mut self, t: &TextureData) {
+        if self.textures.contains_key(&t.id) {
+            return;
+        }
+        let size = wgpu::Extent3d {
+            width: t.w,
+            height: t.h,
+            depth_or_array_layers: 1,
+        };
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &t.rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(t.w * 4),
+                rows_per_image: Some(t.h),
+            },
+            size,
+        );
+        let view = texture.create_view(&Default::default());
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        self.textures.insert(t.id, group);
     }
 
     fn ensure_target(&mut self, id: u64, w: u32, h: u32) {
@@ -280,9 +386,14 @@ impl Renderer {
         buf: &mut [u32],
         w: u32,
         h: u32,
-        tris: &[Vertex],
+        batches: &[Batch],
         clear_depth: bool,
     ) {
+        for b in batches {
+            if let Some(t) = &b.texture {
+                self.upload(t);
+            }
+        }
         // Fresh depth for a new surface, as the software renderer starts.
         let new = !self.targets.contains_key(&id);
         self.ensure_target(id, w, h);
@@ -310,16 +421,22 @@ impl Renderer {
             },
             size,
         );
-        let vertex_bytes: Vec<u8> = tris
-            .iter()
-            .flat_map(|v| {
-                v.pos
-                    .iter()
-                    .chain(v.color.iter())
-                    .flat_map(|f| f.to_le_bytes())
-                    .collect::<Vec<u8>>()
-            })
-            .collect();
+        let mut vertex_bytes: Vec<u8> = Vec::new();
+        let mut ranges = Vec::with_capacity(batches.len());
+        let mut count = 0u32;
+        for b in batches {
+            for v in &b.verts {
+                for f in v.pos.iter().chain(&v.color).chain(&v.uv) {
+                    vertex_bytes.extend_from_slice(&f.to_le_bytes());
+                }
+            }
+            let n = b.verts.len() as u32;
+            ranges.push((b.texture.as_ref().map_or(0, |t| t.id), count..count + n));
+            count += n;
+        }
+        if count == 0 {
+            return;
+        }
         let vertices = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: vertex_bytes.len() as u64,
@@ -360,7 +477,16 @@ impl Renderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, vertices.slice(..));
-            pass.draw(0..tris.len() as u32, 0..1);
+            for (texture, range) in ranges {
+                if let Some(group) = self
+                    .textures
+                    .get(&texture)
+                    .or_else(|| self.textures.get(&0))
+                {
+                    pass.set_bind_group(0, group, &[]);
+                    pass.draw(range, 0..1);
+                }
+            }
         }
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
