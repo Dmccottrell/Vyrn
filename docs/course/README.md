@@ -102,7 +102,7 @@ plan below.
 
 | Days | Topic |
 |---|---|
-| 41–44 | HTML and CSS: structure, forms, layout, templates (`vyrn.template`) |
+| 41–44 ✅ | HTML and CSS: structure, forms, layout, templates (`vyrn.template`) |
 | 45–47 | Web scraping (`vyrn.html`), regular expressions (`vyrn.re`) |
 | 48 | Testing: `vyrn test`, `assert`, test helpers (fixtures), fakes for mocking |
 | 49–50 | Automation capstone: price tracker with alerts |

@@ -62,7 +62,7 @@ Vyrn's spelling as follows:
 | Group | Names | Status |
 |---|---|---|
 | Input and output | `print`, `input(prompt)` | runs today |
-| Conversion | `str`, `int`, `float`, `bool`, `list`, `dict`, `set`, `repr`, `chr`, `ord`, `hex`, `oct`, `bin`, `typeof` | runs today |
+| Conversion | `str`, `int` (`int("ff", 16)` reads other bases), `float`, `bool`, `list`, `dict`, `set`, `repr`, `chr`, `ord`, `hex`, `oct`, `bin`, `typeof` | runs today |
 | Sequences | `len`, `range`, `enumerate`, `zip`, `reversed`, `any`, `all`, `sum`, and `sorted`, `min`, `max` with `key =` (and `reverse =` for `sorted`), `map(f, xs)`, `filter(f, xs)` | runs today |
 | Math | `abs`, `round`, `sqrt`, `exp`, `tanh`, `floor`, `ceil`, `pow`, `divmod` | runs today |
 | Text | `format(value, spec)`; the same specs inside strings: `"{price:.2f}"`, `"{n:,}"`, `"{name:>8}"`, `"{ratio:.1%}"`, `"{n:#x}"` | runs today |

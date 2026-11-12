@@ -51,7 +51,7 @@ pub static NATIVES: &[Native] = &[
     variadic("print", print),
     fixed("len", &["x"], 1, len),
     fixed("str", &["x"], 1, to_str),
-    fixed("int", &["x"], 1, to_int),
+    fixed("int", &["x", "base"], 1, to_int),
     fixed("float", &["x"], 1, to_float),
     fixed("abs", &["x"], 1, abs),
     variadic("min", min),
@@ -644,6 +644,42 @@ fn to_str(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 }
 
 fn to_int(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    // `int("ff", 16)`: text in another base, with or without `0x`, `0o`, `0b`.
+    if let Some(base) = args
+        .get(1)
+        .filter(|b| !matches!(b, Value::None | Value::Missing))
+    {
+        let Value::Int(base) = base else {
+            return Err(type_error("the base is a whole number from 2 to 36"));
+        };
+        let Value::Str(s) = &args[0] else {
+            return Err(type_error("`int(x, base)` reads text"));
+        };
+        if !(2..=36).contains(base) {
+            return Err(err(
+                "ValueError",
+                format!("base {base} is not from 2 to 36"),
+            ));
+        }
+        let text = s.trim().replace('_', "");
+        let (negative, digits) = match text.strip_prefix('-') {
+            Some(rest) => (true, rest),
+            None => (false, text.strip_prefix('+').unwrap_or(&text)),
+        };
+        let lower = digits.to_ascii_lowercase();
+        let digits = match (*base, lower.get(..2)) {
+            (16, Some("0x")) | (8, Some("0o")) | (2, Some("0b")) => &digits[2..],
+            _ => digits,
+        };
+        return i64::from_str_radix(digits, *base as u32)
+            .map(|n| Value::Int(if negative { -n } else { n }))
+            .map_err(|_| {
+                err(
+                    "ValueError",
+                    format!("{s:?} is not an integer in base {base}"),
+                )
+            });
+    }
     match &args[0] {
         Value::Int(i) => Ok(Value::Int(*i)),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),

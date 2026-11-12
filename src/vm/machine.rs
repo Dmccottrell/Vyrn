@@ -737,7 +737,8 @@ impl Vm {
                 })
             };
             let mut args = Vec::with_capacity(route.params.len());
-            for param in &route.params {
+            let required = self.functions[route.proto].proto.required;
+            for (index, param) in route.params.iter().enumerate() {
                 let value = match param.source {
                     ParamSource::Path => {
                         let text = captured.get(&param.name).cloned().unwrap_or_default();
@@ -748,6 +749,9 @@ impl Vm {
                             convert(text, param, "query parameter")?
                         } else if let (Some(body), "body") = (body, param.name.as_str()) {
                             self.body_as(body, param.ty.as_deref())?
+                        } else if index >= required && !providers.contains_key(&param.name) {
+                            // Not sent: the parameter's default applies.
+                            Value::Missing
                         } else {
                             let simple = matches!(
                                 param.ty.as_deref(),

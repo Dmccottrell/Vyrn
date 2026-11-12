@@ -421,6 +421,23 @@ fn programs_can_test_their_own_routes() {
 }
 
 #[test]
+fn route_parameters_left_out_take_their_defaults() {
+    let program = compile_source(
+        "use vyrn.http\n\
+         route GET \"/search\" (q: str, page: int = 1, tag: str? = none): return \"{q} {page} {tag}\"\n\
+         main:\n\
+         \x20   print(http.test(\"GET\", \"/search?q=tea\").text, http.test(\"GET\", \"/search?q=tea&page=3&tag=x\").text)\n\
+         \x20   print(http.test(\"GET\", \"/search\").status, int(\"ff\", 16), int(\"-0b101\", 2))\n\
+         end\n",
+    )
+    .unwrap();
+    let out = Captured::default();
+    let mut vm = Vm::with_output(program, Box::new(out.clone()));
+    vm.run_main(&[]).unwrap();
+    assert_eq!(out.text(), "tea 1 none tea 3 x\n400 255 -5\n");
+}
+
+#[test]
 fn server_sent_events_stream_to_the_page() {
     let (port, server) = serve_program(
         "use vyrn.http\n\
