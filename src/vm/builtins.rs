@@ -472,6 +472,13 @@ pub static NATIVES: &[Native] = &[
     fixed("web.delete", &["url", "headers"], 1, S::http_delete),
     fixed("web.serve", &["port", "host", "requests"], 0, web_serve),
     fixed("web.provide", &["name", "value"], 2, web_provide),
+    // Answered by the machine, which owns the routes.
+    fixed(
+        "web.test",
+        &["method", "path", "body", "headers", "form"],
+        2,
+        S::http_test_outside,
+    ),
 ];
 
 /// The modules of the standard library that `use vyrn.<name>` brings in,

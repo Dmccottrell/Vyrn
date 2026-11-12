@@ -355,6 +355,72 @@ fn requests_responses_and_middleware() {
 }
 
 #[test]
+fn html_forms_fill_route_parameters() {
+    let (port, server) = serve_program(
+        "use vyrn.http\n\
+         route POST \"/signup\" (name: str, age: int, request):\n\
+         \x20   return {\"name\": name, \"age\": age + 1, \"form\": request.form}\n\
+         end\n\
+         main:\n\
+         \x20   http.serve(port = PORT, requests = COUNT)\n\
+         end\n",
+        1,
+    );
+    let body = "name=Ada+Lovelace&age=36&note=a%26b";
+    let out = raw(
+        port,
+        &format!("POST /signup HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{body}", body.len()),
+    );
+    assert!(
+        out.starts_with("HTTP/1.1 200")
+            && out.ends_with("{\"name\":\"Ada Lovelace\",\"age\":37,\"form\":{\"age\":\"36\",\"name\":\"Ada Lovelace\",\"note\":\"a&b\"}}"),
+        "{out}"
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn programs_can_test_their_own_routes() {
+    let program = compile_source(
+        "use vyrn.http\n\
+         struct Note:\n    title: str\nend\n\
+         route GET \"/\" (): return \"<h1>Hello</h1>\"\n\
+         route GET \"/hello/{name}\" (name: str, times: int = 1): return \"hi {name}\" * times\n\
+         route POST \"/signup\" (name: str, age: int): return 201, {\"name\": name, \"next\": age + 1}\n\
+         route POST \"/notes\" (body: Note): return {\"saved\": body.title}\n\
+         route GET \"/secret\" (): return \"cake\"\n\
+         create guard(request, next):\n\
+         \x20   if request.path == \"/secret\" and request.header(\"X-Key\") != \"k\": return http.Response(401, \"no\")\n\
+         \x20   return next(request)\n\
+         end\n\
+         main:\n\
+         \x20   http.use(guard)\n\
+         \x20   let r = http.test(\"GET\", \"/\")\n\
+         \x20   print(r, r.status, r.ok, r.text, r.headers[\"content-type\"], r[\"status\"])\n\
+         \x20   print(http.test(\"GET\", \"/hello/ada?times=2\").text)\n\
+         \x20   let s = http.test(\"POST\", \"/signup\", form = {\"name\": \"Ada L\", \"age\": 36})\n\
+         \x20   print(s.status, s.json)\n\
+         \x20   print(http.test(\"POST\", \"/notes\", {\"title\": \"milk\"}).json)\n\
+         \x20   print(http.test(\"GET\", \"/secret\").status, http.test(\"GET\", \"/secret\", headers = {\"X-Key\": \"k\"}).text)\n\
+         \x20   print(http.test(\"GET\", \"/nope\").status, http.test(\"POST\", \"/signup\", form = {\"name\": \"x\"}).status)\n\
+         end\n",
+    )
+    .unwrap();
+    let out = Captured::default();
+    let mut vm = Vm::with_output(program, Box::new(out.clone()));
+    vm.run_main(&[]).unwrap();
+    assert_eq!(
+        out.text(),
+        "<response 200> 200 true <h1>Hello</h1> text/html; charset=utf-8 200\n\
+         hi adahi ada\n\
+         201 {\"name\": \"Ada L\", \"next\": 37}\n\
+         {\"saved\": \"milk\"}\n\
+         401 cake\n\
+         404 400\n"
+    );
+}
+
+#[test]
 fn server_sent_events_stream_to_the_page() {
     let (port, server) = serve_program(
         "use vyrn.http\n\

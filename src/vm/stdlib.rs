@@ -2497,16 +2497,7 @@ pub fn http_query(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let Some(Value::Map(m)) = args.first() else {
         return Err(type_error("`http.query` takes a map of names to values"));
     };
-    let encode = |text: &str| -> String {
-        text.bytes()
-            .map(|b| match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                    (b as char).to_string()
-                }
-                _ => format!("%{b:02X}"),
-            })
-            .collect()
-    };
+    let encode = super::web::percent_encode;
     let text = |v: &Value| match v {
         Value::Str(s) => s.to_string(),
         other => ops::display(&ctx.program, other),
@@ -2571,7 +2562,7 @@ fn http_request(
         .http_status_as_error(false)
         .build()
         .into();
-    let fail = |e: ureq::Error| err("HttpError", format!("{method} {url}: {e}"));
+    let fail = |e: ureq::Error| err("NetworkError", format!("{method} {url}: {e}"));
     let mut response = match payload {
         None => {
             let mut req = match method {
@@ -2603,34 +2594,16 @@ fn http_request(
         }
     };
     let status = response.status().as_u16();
-    let mut headers_out = Vec::new();
-    for (k, v) in response.headers() {
-        headers_out.push((
-            k.as_str().to_string(),
-            Value::str(v.to_str().unwrap_or("").to_string()),
-        ));
-    }
+    let headers_out: Vec<(String, String)> = response
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
     let text = response
         .body_mut()
         .read_to_string()
-        .map_err(|e| err("HttpError", format!("{method} {url}: {e}")))?;
-    let json = super::json::parse(&text)
-        .ok()
-        .map(|j| ops::from_json(&j))
-        .unwrap_or(Value::None);
-    let headers_value = map_value(
-        headers_out
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.clone()))
-            .collect(),
-    );
-    Ok(map_value(vec![
-        ("status", Value::Int(i64::from(status))),
-        ("ok", Value::Bool((200..300).contains(&status))),
-        ("text", Value::str(text)),
-        ("json", json),
-        ("headers", headers_value),
-    ]))
+        .map_err(|e| err("NetworkError", format!("{method} {url}: {e}")))?;
+    Ok(super::web_live::HttpReply::value(status, text, headers_out))
 }
 
 #[cfg(not(all(feature = "net", not(target_arch = "wasm32"))))]
@@ -2648,6 +2621,12 @@ fn http_request(
             method.to_lowercase()
         ),
     ))
+}
+
+/// `http.test` is answered by the machine; this only runs when it can't be
+/// (inside a callback from Rust).
+pub fn http_test_outside(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
+    Err(err("Unavailable", "`http.test` needs the program's routes"))
 }
 
 // ==== vyrn.task ==============================================================

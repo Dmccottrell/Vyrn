@@ -749,7 +749,17 @@ impl Vm {
                         } else if let (Some(body), "body") = (body, param.name.as_str()) {
                             self.body_as(body, param.ty.as_deref())?
                         } else {
+                            let simple = matches!(
+                                param.ty.as_deref(),
+                                Some("str" | "int" | "float" | "bool")
+                            );
                             providers.get(&param.name).cloned().ok_or_else(|| {
+                                if simple {
+                                    return RuntimeError::new(
+                                        "BadRequest",
+                                        format!("missing `{}`", param.name),
+                                    );
+                                }
                                 RuntimeError::new(
                                     "MissingProvider",
                                     format!(
@@ -1562,14 +1572,17 @@ impl Vm {
             );
             live = true;
         }
+        // A submitted HTML form fills parameters the way a query string does.
+        let fields = match request.headers.get("content-type") {
+            Some(t) if t.contains("x-www-form-urlencoded") => {
+                let mut fields = request.query.clone();
+                fields.extend(web::parse_query(&String::from_utf8_lossy(&request.body)));
+                fields
+            }
+            _ => request.query.clone(),
+        };
         let resolved = self
-            .resolve_route(
-                method,
-                &request.path,
-                &request.query,
-                &providers,
-                body.as_ref(),
-            )
+            .resolve_route(method, &request.path, &fields, &providers, body.as_ref())
             .map_err(|e| web::Response::error(web::status_for(&e.kind), &e.kind, &e.message))?;
         let Some((handler, args)) = resolved else {
             return Err(web::Response::error(
@@ -2293,6 +2306,165 @@ impl Vm {
         }
     }
 
+    /// Natives the machine answers itself, because they need its routes or
+    /// its functions.
+    fn machine_native(&mut self, id: u16, from: usize, argc: usize) -> Option<VmResult<Value>> {
+        match builtins::NATIVES[id as usize].name {
+            "web.test" => {
+                let args = self.stack[from..from + argc].to_vec();
+                Some(self.test_request(&args))
+            }
+            _ => None,
+        }
+    }
+
+    /// `http.test(method, path, body, headers, form)`: sends a request to the
+    /// program's own routes, through its middleware, without a network, and
+    /// gives a response like `http.get`'s.
+    fn test_request(&mut self, args: &[Value]) -> VmResult<Value> {
+        let given = |i: usize| match args.get(i) {
+            None | Some(Value::None) | Some(Value::Missing) => None,
+            Some(v) => Some(v.clone()),
+        };
+        let text = |v: Option<Value>, what: &str| -> VmResult<String> {
+            match v {
+                Some(Value::Str(s)) => Ok(s.to_string()),
+                _ => Err(type_error(format!("`http.test` needs the {what} as text"))),
+            }
+        };
+        let method = text(given(0), "method")?.to_ascii_uppercase();
+        let target = text(given(1), "path")?;
+        let mut headers: HashMap<String, String> = HashMap::new();
+        if let Some(Value::Map(m)) = given(3) {
+            for (k, v) in m.borrow().entries() {
+                headers.insert(self.display(k).to_ascii_lowercase(), self.display(v));
+            }
+        }
+        let body: Vec<u8> = if let Some(form) = given(4) {
+            let Value::Map(m) = &form else {
+                return Err(type_error("`form` is a map of field names to values"));
+            };
+            let pairs: Vec<String> = m
+                .borrow()
+                .entries()
+                .iter()
+                .map(|(k, v)| {
+                    format!(
+                        "{}={}",
+                        web::percent_encode(&self.display(k)),
+                        web::percent_encode(&self.display(v))
+                    )
+                })
+                .collect();
+            headers
+                .entry("content-type".into())
+                .or_insert_with(|| "application/x-www-form-urlencoded".into());
+            pairs.join("&").into_bytes()
+        } else {
+            match given(2) {
+                None => Vec::new(),
+                Some(Value::Str(s)) => {
+                    headers
+                        .entry("content-type".into())
+                        .or_insert_with(|| "text/plain; charset=utf-8".into());
+                    s.as_bytes().to_vec()
+                }
+                Some(v) => {
+                    headers
+                        .entry("content-type".into())
+                        .or_insert_with(|| "application/json".into());
+                    self.to_json(&v).into_bytes()
+                }
+            }
+        };
+        let (path, query) = match target.split_once('?') {
+            Some((p, q)) => (web::percent_decode(p), web::parse_query(q)),
+            None => (web::percent_decode(&target), HashMap::new()),
+        };
+        let response = self.answer_locally(&method, &path, query, headers, body);
+        let mut out_headers = vec![("content-type".to_string(), response.content_type.clone())];
+        out_headers.extend(response.headers.iter().cloned());
+        Ok(super::web_live::HttpReply::value(
+            response.status,
+            response.body,
+            out_headers,
+        ))
+    }
+
+    fn answer_locally(
+        &mut self,
+        method: &str,
+        path: &str,
+        query: HashMap<String, String>,
+        headers: HashMap<String, String>,
+        body: Vec<u8>,
+    ) -> web::Response {
+        let Some(m) = HttpMethod::from_ident(method) else {
+            return web::Response::error(
+                405,
+                "MethodNotAllowed",
+                &format!("unknown method {method}"),
+            );
+        };
+        let content_type = headers.get("content-type").cloned();
+        let parsed = match request_body(&body, content_type.as_deref()) {
+            Ok(b) => b,
+            Err(response) => return response,
+        };
+        let mut fields = query.clone();
+        if content_type
+            .as_deref()
+            .is_some_and(|t| t.contains("x-www-form-urlencoded"))
+        {
+            fields.extend(web::parse_query(&String::from_utf8_lossy(&body)));
+        }
+        let request_value = super::web_live::HttpRequest {
+            method: method.to_string(),
+            path: path.to_string(),
+            headers,
+            query,
+            body,
+            client: "test".into(),
+        }
+        .value();
+        let mut providers = self.ctx.providers.clone();
+        providers.insert("request".into(), request_value.clone());
+        let resolved = match self.resolve_route(m, path, &fields, &providers, parsed.as_ref()) {
+            Ok(r) => r,
+            Err(e) => {
+                return web::Response::error(
+                    web::status_for(&e.kind),
+                    web::short_kind(&e.kind),
+                    &e.message,
+                )
+            }
+        };
+        let Some((handler, args)) = resolved else {
+            return web::Response::error(404, "NotFound", &format!("no route for {method} {path}"));
+        };
+        let result = match self
+            .program
+            .global("__http_run")
+            .map(|g| self.globals[g].clone())
+        {
+            Some(run) if !self.ctx.middleware.is_empty() => self.call_value(
+                run,
+                vec![
+                    Value::list(self.ctx.middleware.clone()),
+                    Value::Int(0),
+                    request_value,
+                    Value::Function(handler),
+                    Value::list(args),
+                ],
+            ),
+            _ => self.call_value(Value::Function(handler), args),
+        };
+        match result {
+            Ok(v) => self.response_for(Ok(v)),
+            Err(e) => self.response_for(Err(e.value)),
+        }
+    }
+
     fn ordered_by_operator(
         &mut self,
         id: u16,
@@ -2618,6 +2790,12 @@ impl Vm {
                                     save_ip!();
                                     check!(self.enter(f, at, args_at, argc));
                                     continue 'frames;
+                                }
+                                if let Some(r) = self.machine_native(id, args_at, argc) {
+                                    save_ip!();
+                                    let v = check!(r);
+                                    self.stack[at] = v;
+                                    continue;
                                 }
                                 if let Some(r) = self.ordered_by_operator(id, args_at, argc) {
                                     save_ip!();
@@ -3291,6 +3469,12 @@ impl Vm {
                                     check!(self.enter(f, at, at + 1, count));
                                     continue 'frames;
                                 }
+                                if let Some(r) = self.machine_native(id, at + 1, count) {
+                                    save_ip!();
+                                    let v = check!(r);
+                                    self.stack[at] = v;
+                                    continue;
+                                }
                                 let result = check!(builtins::call(
                                     id,
                                     &mut self.ctx,
@@ -3887,6 +4071,9 @@ fn request_body(body: &[u8], content_type: Option<&str>) -> Result<Option<Value>
         return Ok(None);
     }
     let text = String::from_utf8_lossy(body).into_owned();
+    if content_type.is_some_and(|t| t.contains("x-www-form-urlencoded")) {
+        return Ok(Some(super::web_live::text_map(&web::parse_query(&text))));
+    }
     let is_json = content_type.is_some_and(|t| t.contains("json"));
     Ok(Some(match super::json::parse(&text) {
         Ok(json) => ops::from_json(&json),

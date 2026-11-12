@@ -21,7 +21,7 @@ use super::task::{Pending, TaskHandle};
 use super::value::{Key, Map, Value};
 use super::web;
 
-fn text_map(entries: &HashMap<String, String>) -> Value {
+pub(super) fn text_map(entries: &HashMap<String, String>) -> Value {
     let mut keys: Vec<&String> = entries.keys().collect();
     keys.sort();
     let mut m = Map::default();
@@ -68,6 +68,13 @@ impl Foreign for HttpRequest {
             // Header names in lower case: `request.headers["user-agent"]`.
             "headers" => Ok(text_map(&self.headers)),
             "query" => Ok(text_map(&self.query)),
+            // The fields of a submitted HTML form (empty for other bodies).
+            "form" => Ok(text_map(&match self.headers.get("content-type") {
+                Some(t) if t.contains("x-www-form-urlencoded") => {
+                    super::web::parse_query(&String::from_utf8_lossy(&self.body))
+                }
+                _ => Default::default(),
+            })),
             "body" => Ok(Value::str(String::from_utf8_lossy(&self.body).into_owned())),
             // The body read as JSON, or none if it is not JSON.
             "json" => Ok(super::json::parse(&String::from_utf8_lossy(&self.body))
@@ -649,5 +656,71 @@ mod tests {
         let long = frame(0x2, &[7u8; 300]);
         assert_eq!(parse_frame(&long).unwrap().2.len(), 300);
         assert!(parse_frame(&long[..10]).is_none());
+    }
+}
+
+/// What `http.get`, `http.post`, ... and `http.test` give: `r.status`,
+/// `r.ok`, `r.text`, `r.json` (the body parsed, or none) and `r.headers`
+/// (names in lower case). `r["status"]` works too.
+pub struct HttpReply {
+    pub status: u16,
+    pub text: String,
+    pub json: Value,
+    pub headers: Value,
+}
+
+impl HttpReply {
+    pub fn value(status: u16, text: String, headers: Vec<(String, String)>) -> Value {
+        let json = super::json::parse(&text)
+            .ok()
+            .map(|j| ops::from_json(&j))
+            .unwrap_or(Value::None);
+        let headers: HashMap<String, String> = headers
+            .into_iter()
+            .map(|(k, v)| (k.to_ascii_lowercase(), v))
+            .collect();
+        Value::Foreign(Rc::new(Box::new(HttpReply {
+            status,
+            text,
+            json,
+            headers: text_map(&headers),
+        })))
+    }
+}
+
+impl Foreign for HttpReply {
+    fn type_name(&self) -> &'static str {
+        "Response"
+    }
+
+    fn display(&self) -> String {
+        format!("<response {}>", self.status)
+    }
+
+    fn get_attr(&self, name: &str) -> VmResult<Value> {
+        match name {
+            "status" => Ok(Value::Int(i64::from(self.status))),
+            "ok" => Ok(Value::Bool((200..300).contains(&self.status))),
+            "text" => Ok(Value::str(self.text.clone())),
+            "json" => Ok(self.json.clone()),
+            "headers" => Ok(self.headers.clone()),
+            _ => Err(err(
+                "FieldError",
+                format!(
+                    "a Response has `status`, `ok`, `text`, `json` and `headers`, not `{name}`"
+                ),
+            )),
+        }
+    }
+
+    fn index(&self, key: &Value) -> VmResult<Value> {
+        match key {
+            Value::Str(name) => self.get_attr(name),
+            _ => Err(type_error("a Response is indexed by a field name")),
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

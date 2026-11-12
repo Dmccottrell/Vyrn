@@ -140,6 +140,19 @@ pub fn parse_query(query: &str) -> HashMap<String, String> {
         .collect()
 }
 
+/// Encodes text for a URL or a form: everything but letters, digits and
+/// `-_.~` becomes `%XX`.
+pub fn percent_encode(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 pub fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

@@ -164,12 +164,13 @@ server-sent events, and one that takes `socket` is a WebSocket.
 
 | API | Purpose |
 |---|---|
-| `request` parameter | `request.method`, `path`, `headers` (names in lower case), `query`, `body` (text), `json` (the body parsed, or none), `client`, and `request.header("X-Key")` in any case |
+| `request` parameter | `request.method`, `path`, `headers` (names in lower case), `query`, `form` (the fields of a submitted HTML form), `body` (text), `json` (the body parsed, or none), `client`, and `request.header("X-Key")` in any case. Form fields also fill route parameters by name, as query parameters do |
 | `http.Response(status, body, headers)` | Full control: `return http.Response(201, item, {"Location": "/items/7"})`. A `Content-Type` header replaces the usual one |
 | `http.use(f)` | Middleware around every route: `f(request, next)` gives the response, usually `next(request)`'s, or answers by itself (a 401, a cached page). The first added runs outermost |
 | `stream` parameter | Server-sent events: `stream.send(data, event = "name")` pushes one to the page (text as it is, anything else as JSON); the stream ends with the handler. Pages listen with `new EventSource("/path")` |
 | `socket` parameter | A WebSocket: `socket.send(x)`, `msg = await socket.receive()` (JSON arrives as maps and lists, other text as text; none once the other side closes), `socket.close()`, `socket.closed` |
 | `http.get`, `http.post`, ... | Calling other services (see 5a) |
+| `http.test(method, path, body, headers, form)` | Sends a request to the program's own routes, through its middleware, without a network: `http.test("POST", "/signup", form = {"name": "Ada"})`. Gives a response like `http.get`'s. For tests and trying routes out |
 
 ```vyrn check
 use vyrn.http
@@ -327,7 +328,7 @@ All **run today** (`src/vm/stdlib.rs`).
 | `vyrn.json` | `json.parse(text)`, `json.dumps(value, indent)`, `json.load(path)`, `json.save(path, value)` |
 | `vyrn.re` | `re.test(pattern, text)`, `re.find` (a match with `text`, `start`, `end`, `groups`, `named`, or `none`), `re.matches` (every match), `re.find_all`, `re.replace(pattern, text, with)` (`$1` inserts a group; `with` can be a function of the match), `re.split` |
 | `vyrn.csv` | `csv.read(path)` and `csv.parse(text)` (a list of maps from the header, or of lists with `header = false`), `csv.write(path, rows)`, `csv.format(rows)` |
-| `vyrn.http` client | `http.get(url, headers)`, `http.post(url, body, headers)`, `http.put`, `http.delete`: a response with `status`, `ok`, `text`, `json`, `headers`. Maps and lists are sent as JSON. `http.query({"q": "tea & cake"})` builds an encoded query string for after the `?` |
+| `vyrn.http` client | `http.get(url, headers)`, `http.post(url, body, headers)`, `http.put`, `http.delete`: a response with `status`, `ok`, `text`, `json`, `headers` (`r.status` or `r["status"]`); no answer at all fails with `NetworkError`. Maps and lists are sent as JSON. `http.query({"q": "tea & cake"})` builds an encoded query string for after the `?` |
 
 ### Testing with fakes
 
