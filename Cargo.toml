@@ -68,6 +68,8 @@ jiff = { version = "0.2", default-features = false, features = ["std", "tz-syste
 gltf = { version = "1", optional = true, default-features = false, features = ["import", "utils", "names"] }
 # Gamepads for `vyrn.draw` windows (XInput on Windows, evdev on Linux).
 gilrs = { version = "0.11", optional = true }
+# `fs.map`: reading big files (model weights, logs) without copying them.
+memmap2 = "0.9"
 # `use vyrn.physics`: rigid bodies, collisions and character movement.
 rapier3d = { version = "0.36", optional = true }
 # `use vyrn.sound`: playback and decoding of WAV, Ogg Vorbis and MP3.

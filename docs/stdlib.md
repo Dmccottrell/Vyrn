@@ -230,12 +230,17 @@ end
 `MapViewOfFile` on Windows) and returns a `Mapped` value. No byte is read
 until it is touched, and nothing is copied:
 
-- `data.lines()` yields each line as a `str` **view** into the mapping. A
-  view is a borrowed slice: the borrow checker keeps it from outliving the
-  `using` block. Store a line with `str(line)` to copy it out.
-- `data.bytes(start, end)` is a `[u8]` view of a byte range.
-- `fs.tensor_view(data, dtype, shape, offset)` is a read-only tensor whose
-  storage is the mapping itself.
+- `len(data)` and `data.size` are its length in bytes; `data.text(start, end)`
+  and `data.bytes(start, end)` read a range; `data.find(text, start)` gives
+  where some text first appears (or -1); `data.count_lines()` counts lines
+  without making them; `data.lines()` gives every line as text.
+- `fs.tensor_view(data, dtype, shape, offset)` makes a tensor from `f32`,
+  `f16` or `bf16` values at a byte offset, such as one weight out of a
+  model file.
+
+Only the pages a program touches are read from disk. What it reads out
+(text, numbers, a tensor) is copied into Vyrn values; zero-copy views that
+the borrow checker keeps inside the `using` block are the next step.
 
 **Why this matters for large models.** A 14B-parameter model at 4 bits is
 about 8 GB on disk. Reading it into a buffer and then uploading it costs
@@ -247,14 +252,13 @@ and on a 32 GB machine nothing is held twice.
 `fs.walk(dir)`, `fs.mkdir` (with parents), `fs.remove` (files and
 directories), `fs.rename`, `fs.copy`, `fs.size`, `fs.modified`,
 `fs.read_text`, `fs.write_text`, `fs.append_text`, `fs.read_lines`. A file
-that is not there fails with `NotFound`. The mapping API below is design.
+that is not there fails with `NotFound`. `fs.map` and `fs.tensor_view`, as
+above. Still design:
 
 | API | Behaviour |
 |---|---|
-| `fs.map(path) -> Mapped` | Read-only mapping; `fails IoError` |
 | `fs.map_mut(path, size) -> MappedMut` | Writable mapping; changes reach the file on `flush()` or at the end of `using` |
-| `fs.read(path) -> [u8]`, `fs.write(path, data)` | Whole-file helpers |
-| `fs.walk(dir)`, `fs.glob(pattern)`, `fs.stat(path)`, `fs.remove`, `fs.rename` | Directory work |
+| `fs.glob(pattern)`, `fs.stat(path)` | Directory work beyond `fs.walk` |
 | `fs.watch(path)` | A `Channel` of change events, for `async for` |
 
 On WebAssembly there is no `mmap`, so `fs.map` reads the file into linear
@@ -556,18 +560,38 @@ language (`on gpu[0]:`, `x on gpu[1]`), not of a library.
 model formats change, and sampling strategies are a matter of taste. These
 need versioning, so they live in a module:
 
+**Runs today:**
+
 | API | Purpose |
 |---|---|
-| `nn.load(path, dtype = "q4", devices = gpu[0])` | Loads safetensors through `fs.map`, quantizes on the way if asked, and spreads layers over devices with `fit` |
+| `nn.load(path, dtype = "q4")` | The tensors of a safetensors file as a map of name to tensor, read one at a time (never the whole file twice) and converted on the way if asked; `fit` then spreads them over devices |
+| `nn.save(path, tensors)` | Writes a map of name to tensor |
+| `nn.tokenizer(path)` | A Hugging Face `tokenizer.json`: `tok.encode(text)`, `tok.decode(ids)` |
+| `nn.sample(logits, temperature = 1, top_k = 0, top_p = 1)` | The next token from logits (a list, or a tensor's last row). Temperature 0 picks the likeliest; `random.seed` makes runs repeat |
+| `nn.generate(step, tokens, max_new = 50, temperature, top_k, top_p, stop_at)` | A generator of new tokens: your `step(tokens)` runs the model and gives the logits, so any architecture written in Vyrn works. `each t in nn.generate(...)` streams them |
+
+```vyrn
+use vyrn.nn
+
+create reply(model, tok, prompt: str) -> str:
+    create step(tokens: list): return model.forward(tokens)
+    var out = []
+    each t in nn.generate(step, tok.encode(prompt), max_new = 100, temperature = 0.7, top_p = 0.9):
+        out.append(t)
+    end
+    return tok.decode(out)
+end
+```
+
+**Design, next:**
+
+| API | Purpose |
+|---|---|
 | `nn.Linear`, `nn.Embedding`, `nn.RMSNorm`, `nn.Attention`, `nn.MLP` | Layers as structs: weights are fields, `forward` is a `kernel` function |
 | `nn.KVCache(layers, max_tokens)` | Preallocated attention cache, placed with the layers |
-| `nn.Tokenizer.load(path)` | Hugging Face `tokenizer.json` (BPE, byte-level and SentencePiece) |
-| `nn.sample(logits, temperature, top_k, top_p)` | Next-token sampling |
-| `nn.generate(model, tokens, max_new)` | An `async` stream of tokens, for `async for` |
 
-`load_weights`, `save_weights` and `load_tokenizer` run today as Prelude
-functions. They move to `vyrn.nn` as `nn.load_weights`, `nn.save_weights` and
-`nn.Tokenizer.load`, with the Prelude names kept as aliases for one release.
+`load_weights`, `save_weights` and `load_tokenizer` remain in the Prelude
+as other names for `nn.load`, `nn.save` and `nn.tokenizer`.
 
 ## 7. Two complete programs
 
@@ -667,9 +691,10 @@ end
 | Green threads, channels, timers | `src/vm/machine.rs`, `src/vm/task.rs` | runs |
 | `vyrn.task` groups, timeouts, select, cancel, pools, bounded channels, `yield_now` | `src/vm/stdlib.rs`, `src/vm/parallel.rs`, `src/vm/machine.rs` (`await_race`, `apply_cancels`) | runs |
 | `vyrn.fs` files and directories | `src/vm/stdlib.rs` | runs |
-| `vyrn.fs` mapping and views | | design; views depend on borrow checking of slices (`src/check.rs`) |
+| `vyrn.fs` mapping (`fs.map`, `fs.tensor_view`) | `src/vm/lib_nn.rs` | runs; zero-copy views depend on borrow checking of slices (`src/check.rs`) |
 | Tensor math on CPU and GPU | `src/vm/tensor.rs`, `src/vm/gpu.rs` | runs |
-| `vyrn.nn` | `src/vm/weights.rs`, `src/vm/tokenizer.rs` hold its first pieces | design |
+| `vyrn.nn` load, save, tokenizer, sample, generate | `src/vm/weights.rs`, `src/vm/tokenizer.rs`, `src/vm/lib_nn.rs`, `src/prelude.vyrn` (`__nn_generate`) | runs; layer structs and `KVCache` are design |
 
-Build order from here: `vyrn.fs.map` with views (the large-model path), then
-`vyrn.nn.load` and `generate` on top of it, then the rest of `vyrn.http`.
+Build order from here: zero-copy views of mapped files (borrowed slices),
+then `vyrn.nn` layer structs and the `KVCache`, then `http.Router` values
+and multi-threaded serving.

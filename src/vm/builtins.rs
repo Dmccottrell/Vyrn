@@ -336,6 +336,43 @@ pub static NATIVES: &[Native] = &[
         super::web_live::response,
     ),
     fixed("web.use", &["middleware"], 1, web_use),
+    fixed("fs.map", &["path"], 1, super::lib_nn::fs_map),
+    fixed(
+        "fs.tensor_view",
+        &["data", "dtype", "shape", "offset"],
+        3,
+        super::lib_nn::tensor_view,
+    ),
+    fixed("nn.load", &["path", "dtype"], 1, load_weights),
+    fixed("nn.save", &["path", "tensors"], 2, save_weights),
+    fixed("nn.tokenizer", &["path"], 1, load_tokenizer),
+    fixed(
+        "nn.sample",
+        &["logits", "temperature", "top_k", "top_p"],
+        1,
+        super::lib_nn::sample,
+    ),
+    // For the Prelude's `__nn_generate`, which can't name `nn.sample`.
+    fixed(
+        "__nn_sample",
+        &["logits", "temperature", "top_k", "top_p"],
+        1,
+        super::lib_nn::sample,
+    ),
+    fixed(
+        "nn.generate",
+        &[
+            "step",
+            "tokens",
+            "max_new",
+            "temperature",
+            "top_k",
+            "top_p",
+            "stop_at",
+        ],
+        2,
+        super::lib_nn::generate,
+    ),
     fixed("sound.stop_all", &[], 0, super::lib_sound::stop_all),
     fixed(
         "task.parallel",
@@ -458,6 +495,7 @@ pub fn std_module(name: &str) -> Option<&'static str> {
         "net" => Some("net"),
         "sound" => Some("sound"),
         "physics" => Some("physics"),
+        "nn" => Some("nn"),
         "host" => Some("host"),
         _ => None,
     }
@@ -466,7 +504,7 @@ pub fn std_module(name: &str) -> Option<&'static str> {
 /// The library's modules, for messages: `vyrn.os`, `vyrn.fs`, ...
 pub const LIBRARY: &[&str] = &[
     "os", "fs", "path", "time", "random", "math", "json", "re", "csv", "http", "task", "db",
-    "draw", "html", "template", "table", "chart", "mail", "game", "net", "sound", "physics",
+    "draw", "html", "template", "table", "chart", "mail", "game", "net", "sound", "physics", "nn",
     "host",
 ];
 

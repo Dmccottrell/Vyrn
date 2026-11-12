@@ -709,6 +709,49 @@ fn physics_bodies_fall_collide_and_characters_walk() {
 }
 
 #[test]
+fn a_tiny_model_generates_text_and_files_map() {
+    let dir = std::env::temp_dir().join(format!("vyrn-nn-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let d = dir.display().to_string().replace('\\', "/");
+    let out = run(&format!(
+        "use vyrn.nn\nuse vyrn.fs\nuse vyrn.math\nuse vyrn.random\n\
+         const TEXT = \"the cat sat on the mat. the cat ate the rat.\"\n\
+         main:\n\
+         \x20   let letters = sorted(list(set(TEXT)))\n\
+         \x20   let index = {{c: i each i, c in enumerate(letters)}}\n\
+         \x20   let n = len(letters)\n\
+         \x20   var counts = [[0.01 each _ in 0 until n] each _ in 0 until n]\n\
+         \x20   each i in 0 until len(TEXT) - 1: counts[index[TEXT[i]]][index[TEXT[i + 1]]] += 1\n\
+         \x20   nn.save(\"{d}/bigram.safetensors\", {{\"table\": tensor([[math.log(x) each x in row] each row in counts])}})\n\
+         \x20   let weights = nn.load(\"{d}/bigram.safetensors\")[\"table\"]\n\
+         \x20   create step(tokens: list) -> list: return [weights[tokens[-1], j] each j in 0 until n]\n\
+         \x20   let start = [index[\"t\"]]\n\
+         \x20   print(\"t\" + \"\".join([letters[t] each t in nn.generate(step, start, max_new = 12, temperature = 0)]))\n\
+         \x20   print(\"t\" + \"\".join([letters[t] each t in nn.generate(step, start, temperature = 0, stop_at = index[\" \"])]))\n\
+         \x20   random.seed(3)\n\
+         \x20   let a = list(nn.generate(step, start, 20, temperature = 1.0, top_k = 3))\n\
+         \x20   random.seed(3)\n\
+         \x20   print(a == list(nn.generate(step, start, 20, temperature = 1.0, top_k = 3)), len(a))\n\
+         \x20   print(nn.sample([0.1, 5.0, 0.2], temperature = 0), nn.sample(tensor([[1.0, 0.0], [0.0, 9.0]]), 0), nn.sample([1.0, 1.0, 50.0], top_p = 0.5))\n\
+         \x20   fs.write_text(\"{d}/log.txt\", \"INFO start\\nERROR disk\\nINFO ok\\nERROR net\\n\")\n\
+         \x20   using fs.map(\"{d}/log.txt\") as data:\n\
+         \x20       print(len(data), data.count_lines(), data.find(\"ERROR\"), data.find(\"ERROR\", 12), data.text(0, 10), data.bytes(0, 2))\n\
+         \x20       print([line each line in data.lines() if line.startswith(\"ERROR\")])\n\
+         \x20   end\n\
+         \x20   let t = tensor([1.5, -2.0, 0.25])\n\
+         \x20   nn.save(\"{d}/t.safetensors\", {{\"t\": t}})\n\
+         \x20   let raw = fs.map(\"{d}/t.safetensors\")\n\
+         \x20   print(fs.tensor_view(raw, \"f32\", [3], raw.size - 12))\n\
+         end\n"
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        out,
+        "the the the t\nthe\ntrue 20\n1 1 2\n40 4 11 30 INFO start [73, 78]\n[\"ERROR disk\", \"ERROR net\"]\ntensor([1.5, -2.0, 0.25])\n"
+    );
+}
+
+#[test]
 fn line_charts_take_text_on_the_x_axis() {
     let out = run("use vyrn.chart\n\
          main:\n\

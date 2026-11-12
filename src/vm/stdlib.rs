@@ -1867,7 +1867,7 @@ fn next_u64() -> u64 {
     })
 }
 
-fn next_f64() -> f64 {
+pub(crate) fn next_f64() -> f64 {
     (next_u64() >> 11) as f64 / (1u64 << 53) as f64
 }
 

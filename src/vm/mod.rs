@@ -34,6 +34,7 @@ pub mod lib_host;
 pub mod lib_html;
 pub mod lib_mail;
 pub mod lib_net;
+pub mod lib_nn;
 #[cfg(feature = "physics")]
 pub mod lib_physics;
 #[cfg(not(feature = "physics"))]

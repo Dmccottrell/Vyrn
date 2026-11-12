@@ -50,6 +50,20 @@ create __http_run(chain, i, request, handler, args):
     return await chain[i](request, r => __http_run(chain, i + 1, r, handler, args))
 end
 
+## `nn.generate(step, tokens, ...)`: new tokens one at a time, as a
+## generator. `step(tokens)` runs the model and gives the logits for the
+## next token; `stop_at` is a token (or list of them) that ends it.
+create __nn_generate(step, tokens, max_new = 50, temperature = 1.0, top_k = 0, top_p = 1.0, stop_at = none):
+    var context = list(tokens)
+    let stops = (stop_at if stop_at is list else [stop_at]) if stop_at != none else []
+    each _ in 0 until max_new:
+        let next = __nn_sample(step(context), temperature, top_k, top_p)
+        if next in stops: return
+        context.append(next)
+        yield next
+    end
+end
+
 ## ---- lists ---------------------------------------------------------------
 
 ## `xs.sort(key = none, reverse = false)`: sorts in place.

@@ -3412,6 +3412,7 @@ dependencies = [
  "lettre",
  "libffi",
  "libloading 0.9.0",
+ "memmap2",
  "minifb",
  "png",
  "pollster",

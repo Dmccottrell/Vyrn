@@ -2274,6 +2274,8 @@ impl Vm {
         argc: usize,
     ) -> Option<Rc<super::value::Closure>> {
         let helper = match builtins::NATIVES[id as usize].name {
+            // Written in Vyrn, as it calls the model's `step`.
+            "nn.generate" => "__nn_generate",
             "re.replace"
                 if argc == 3
                     && matches!(
@@ -3277,6 +3279,11 @@ impl Vm {
                                 continue 'frames;
                             }
                             Value::Native(id) => {
+                                if let Some(f) = self.prelude_handoff(id, at + 1, count) {
+                                    save_ip!();
+                                    check!(self.enter(f, at, at + 1, count));
+                                    continue 'frames;
+                                }
                                 let result = check!(builtins::call(
                                     id,
                                     &mut self.ctx,
