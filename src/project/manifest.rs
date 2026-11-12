@@ -1,10 +1,17 @@
-//! `vyrn.toml`: a project's name, edition and main file.
+//! `vyrn.toml`: a project's name, edition and main file, and what the
+//! package registry shows about it.
 //!
 //! ```toml
 //! [package]
 //! name = "hello"
 //! edition = "2026"
 //! main = "main.vyrn"
+//! # For `vyrn publish`:
+//! version = "1.0.0"
+//! description = "Says hello"
+//! repository = "github.com/ann/hello"
+//! keywords = "greeting, example"
+//! license = "MIT"
 //! ```
 //!
 //! Dependencies are not listed here. A module is declared once, by the
@@ -24,6 +31,14 @@ pub struct Manifest {
     pub edition: String,
     /// The main file, relative to the project directory.
     pub main: String,
+    /// For the registry (`vyrn publish`); empty when not given.
+    pub version: String,
+    pub description: String,
+    /// The module URL others `use`, without a version: `github.com/ann/hello`.
+    pub repository: String,
+    /// Comma-separated words people might search for.
+    pub keywords: String,
+    pub license: String,
 }
 
 impl Manifest {
@@ -32,6 +47,11 @@ impl Manifest {
             name: name.to_string(),
             edition: EDITION.to_string(),
             main: "main.vyrn".to_string(),
+            version: String::new(),
+            description: String::new(),
+            repository: String::new(),
+            keywords: String::new(),
+            license: String::new(),
         }
     }
 
@@ -60,6 +80,11 @@ impl Manifest {
                 ("package", "name") => m.name = value,
                 ("package", "edition") => m.edition = value,
                 ("package", "main") => m.main = value,
+                ("package", "version") => m.version = value,
+                ("package", "description") => m.description = value,
+                ("package", "repository") => m.repository = value,
+                ("package", "keywords") => m.keywords = value,
+                ("package", "license") => m.license = value,
                 (s, k) => {
                     return Err(format!(
                         "vyrn.toml line {}: unknown setting `{k}`{}",
@@ -86,10 +111,22 @@ impl Manifest {
     }
 
     pub fn render(&self) -> String {
-        format!(
+        let mut out = format!(
             "[package]\nname = \"{}\"\nedition = \"{}\"\nmain = \"{}\"\n",
             self.name, self.edition, self.main
-        )
+        );
+        for (key, value) in [
+            ("version", &self.version),
+            ("description", &self.description),
+            ("repository", &self.repository),
+            ("keywords", &self.keywords),
+            ("license", &self.license),
+        ] {
+            if !value.is_empty() {
+                out.push_str(&format!("{key} = \"{value}\"\n"));
+            }
+        }
+        out
     }
 }
 

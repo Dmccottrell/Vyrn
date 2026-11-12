@@ -22,7 +22,7 @@ use vyrn::project::bundle::{Bundle, Recorder};
 use vyrn::project::deploy::{self, Target};
 use vyrn::project::loader::{self, Disk, SourceFile};
 use vyrn::project::manifest::{self, Manifest};
-use vyrn::project::{self, lock, resolve};
+use vyrn::project::{self, lock, registry, resolve};
 use vyrn::vm::{self, Vm};
 use vyrn::{parse_recovering, pretty, Diagnostic, Lexer};
 
@@ -40,7 +40,11 @@ usage: vyrn <command> [arguments]
                          the commands); `debug --dap` serves editors
   test [path]            run the test_* functions in tests/
   fmt [--check] [files]  format code in the one Vyrn style
-  add <url>              fetch and lock a module, e.g. github.com/ann/neural@v1
+  add <name or url>      fetch and lock a module: a registry name (neural,
+                         neural@v2) or a URL (github.com/ann/neural@v1)
+  search [words]         find packages in the registry
+  info <name>            a registry package's versions and how to use it
+  publish [--to <dir>]   check, test and write this package's registry entry
   fetch                  download every locked module, to work offline
   build [file] [-o out] [--target=T]
                          make one executable file; T is native (default),
@@ -81,6 +85,9 @@ fn main() -> ExitCode {
         "test" => test(rest),
         "fmt" => fmt(rest),
         "add" => add(rest),
+        "search" => search(rest),
+        "info" => info(rest),
+        "publish" => publish(rest),
         "fetch" => fetch(),
         "build" => build(rest),
         "bytecode" | "parse" | "lex" => {
@@ -642,14 +649,265 @@ fn with_resolver(work: impl FnOnce(&mut resolve::Resolver) -> Result<(), String>
     }
 }
 
+/// The registry's packages, or a message saying why there are none.
+fn registry_entries() -> Result<Vec<registry::Entry>, String> {
+    let (text, note) = registry::fetch_index(project::offline_requested())?;
+    if let Some(note) = note {
+        eprintln!("note: {note}");
+    }
+    registry::parse_index(&text)
+}
+
+/// `vyrn search [words]`: packages whose name, keywords or description
+/// have every word (all of them with no words).
+fn search(args: &[String]) -> ExitCode {
+    let entries = match registry_entries() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let found = registry::search(&entries, args);
+    if found.is_empty() {
+        println!("no packages match {}", args.join(" "));
+        return ExitCode::SUCCESS;
+    }
+    for e in found {
+        println!(
+            "{} {}  {}",
+            e.name,
+            e.latest().unwrap_or("(no releases)"),
+            e.description
+        );
+    }
+    println!(
+        "
+add one to a project with: vyrn add <name>"
+    );
+    ExitCode::SUCCESS
+}
+
+/// `vyrn info <name>`.
+fn info(args: &[String]) -> ExitCode {
+    let Some(name) = args.first() else {
+        eprintln!("usage: vyrn info <name>");
+        return ExitCode::from(2);
+    };
+    let entries = match registry_entries() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(e) = entries.iter().find(|e| &e.name == name) else {
+        eprintln!("error: there is no package `{name}` in the registry; try `vyrn search {name}`");
+        return ExitCode::FAILURE;
+    };
+    println!("{}: {}", e.name, e.description);
+    println!("  source:   {}", e.url);
+    println!(
+        "  versions: {}",
+        if e.versions.is_empty() {
+            "none yet".to_string()
+        } else {
+            e.versions.join(", ")
+        }
+    );
+    if !e.keywords.is_empty() {
+        println!("  keywords: {}", e.keywords.join(", "));
+    }
+    if !e.license.is_empty() {
+        println!("  license:  {}", e.license);
+    }
+    println!(
+        "
+  vyrn add {}
+  use \"{}\"",
+        e.name,
+        e.module_url(None)
+    );
+    ExitCode::SUCCESS
+}
+
+/// `vyrn publish [--to <registry clone>] [--skip-tests]`: checks and tests
+/// this package, checks its version is tagged, and writes its registry
+/// entry (into a clone of the registry with `--to`, ready for a pull
+/// request).
+fn publish(args: &[String]) -> ExitCode {
+    let mut to: Option<PathBuf> = None;
+    let mut skip_tests = false;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--to" => to = it.next().map(PathBuf::from),
+            "--skip-tests" => skip_tests = true,
+            other => {
+                eprintln!("error: unknown option `{other}`; usage: vyrn publish [--to <registry dir>] [--skip-tests]");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let Some(root) = manifest::find_root(Path::new(".")) else {
+        eprintln!("error: run `vyrn publish` inside a project (a folder with vyrn.toml)");
+        return ExitCode::FAILURE;
+    };
+    let m = match std::fs::read_to_string(root.join(manifest::MANIFEST))
+        .map_err(|e| e.to_string())
+        .and_then(|t| Manifest::parse(&t))
+    {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut missing = Vec::new();
+    for (key, value, example) in [
+        ("version", &m.version, "\"1.0.0\""),
+        ("description", &m.description, "\"What it does, in a line\""),
+        (
+            "repository",
+            &m.repository,
+            "\"github.com/you/your-package\"",
+        ),
+    ] {
+        if value.is_empty() {
+            missing.push(format!("    {key} = {example}"));
+        }
+    }
+    if !missing.is_empty() {
+        eprintln!(
+            "error: to publish, vyrn.toml needs these under [package]:\n{}",
+            missing.join("\n")
+        );
+        return ExitCode::FAILURE;
+    }
+    let tag = format!("v{}", m.version.trim_start_matches('v'));
+    if let Err(e) = project::url::ModuleUrl::parse(&format!("{}@{tag}", m.repository)) {
+        eprintln!("error: `repository` in vyrn.toml: {e}");
+        return ExitCode::FAILURE;
+    }
+    // It must build, and its tests must pass.
+    let previous = std::env::current_dir().ok();
+    let _ = std::env::set_current_dir(&root);
+    let checked = check(&[]) == ExitCode::SUCCESS
+        && (skip_tests || !root.join("tests").is_dir() || test(&[]) == ExitCode::SUCCESS);
+    if let Some(p) = previous {
+        let _ = std::env::set_current_dir(p);
+    }
+    if !checked {
+        eprintln!("error: fix the problems above before publishing");
+        return ExitCode::FAILURE;
+    }
+    // Others fetch the tag, so it must exist.
+    let tagged = std::process::Command::new("git")
+        .args(["tag", "--list", &tag])
+        .current_dir(&root)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == tag);
+    match tagged {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!(
+                "error: there is no git tag {tag}. Tag this version and push it, so others can fetch it:\n\n    git tag {tag}\n    git push origin {tag}"
+            );
+            return ExitCode::FAILURE;
+        }
+        Err(_) => eprintln!("warning: git is not installed, so the tag {tag} could not be checked"),
+    }
+    let entry = registry::Entry {
+        name: m.name.clone(),
+        description: m.description.clone(),
+        url: m.repository.clone(),
+        versions: vec![tag.clone()],
+        keywords: m
+            .keywords
+            .split(',')
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+            .collect(),
+        license: m.license.clone(),
+    };
+    match to {
+        Some(dir) => {
+            let index = if dir.is_dir() {
+                dir.join("index.json")
+            } else {
+                dir
+            };
+            let text =
+                std::fs::read_to_string(&index).unwrap_or_else(|_| "{\"packages\": []}".into());
+            let mut entries = match registry::parse_index(&text) {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("error: {}: {e}", index.display());
+                    return ExitCode::FAILURE;
+                }
+            };
+            if let Err(e) = registry::merge(&mut entries, entry) {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+            if let Err(e) = std::fs::write(&index, registry::render_index(&entries)) {
+                eprintln!("error: cannot write {}: {e}", index.display());
+                return ExitCode::FAILURE;
+            }
+            println!(
+                "added {} {tag} to {}\n\nnow commit it and open a pull request:\n\n    git checkout -b add-{}-{tag}\n    git commit -am \"Add {} {tag}\"\n    git push origin HEAD",
+                m.name,
+                index.display(),
+                m.name,
+                m.name
+            );
+        }
+        None => {
+            let path = root.join("registry-entry.json");
+            if let Err(e) = std::fs::write(&path, registry::render_index(&[entry])) {
+                eprintln!("error: cannot write {}: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+            println!(
+                "{} {tag} is ready. Its registry entry is in {}.\n\nTo publish it, add the entry to index.json in {} (fork it and open a pull request),\nor with a clone of the registry:\n\n    vyrn publish --to path/to/vyrn-registry",
+                m.name,
+                path.display(),
+                registry::DEFAULT_REGISTRY_REPO
+            );
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn add(args: &[String]) -> ExitCode {
     let Some(url) = args.first() else {
         eprintln!(
-            "usage: vyrn add <host/owner/repo@version>, e.g. vyrn add github.com/ann/neural@v1"
+            "usage: vyrn add <name or host/owner/repo@version>, e.g. vyrn add neural or vyrn add github.com/ann/neural@v1"
         );
         return ExitCode::from(2);
     };
-    let url = url.trim_matches('"').to_string();
+    let mut url = url.trim_matches('"').to_string();
+    // A registry name (no slash): look up its repository.
+    if !url.contains('/') {
+        let (name, version) = match url.split_once('@') {
+            Some((n, v)) => (n.to_string(), Some(v.to_string())),
+            None => (url.clone(), None),
+        };
+        let entries = match registry_entries() {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let Some(entry) = entries.iter().find(|e| e.name == name) else {
+            eprintln!(
+                "error: there is no package `{name}` in the registry; try `vyrn search {name}`, or give its URL"
+            );
+            return ExitCode::FAILURE;
+        };
+        url = entry.module_url(version.as_deref());
+    }
     with_resolver(|resolver| {
         // Resolve afresh, so `vyrn add` also moves a module to its newest match.
         resolver.lock.modules.remove(&url);

@@ -12,6 +12,7 @@ pub mod fetch;
 pub mod loader;
 pub mod lock;
 pub mod manifest;
+pub mod registry;
 pub mod resolve;
 pub mod url;
 
