@@ -535,6 +535,51 @@ fn textures_lights_and_fog_look_the_same_on_the_gpu() {
     assert_eq!(out, "true true #ea7b78 #202020\ntrue\n#8090a0 #000000\n");
 }
 
+#[cfg(feature = "physics")]
+#[test]
+fn physics_bodies_fall_collide_and_characters_walk() {
+    let out = run("use vyrn.physics\n\
+         main:\n\
+         \x20   let world = physics.world()\n\
+         \x20   let floor = world.box(0, -0.5, 0, 20, 1, 20, fixed = true, name = \"floor\")\n\
+         \x20   let crate = world.box(0, 5, 0, 1, 1, 1, mass = 2, name = \"crate\")\n\
+         \x20   var hits = []\n\
+         \x20   each _ in 0 until 120:\n\
+         \x20       world.step(1 / 60)\n\
+         \x20       each pair in world.collisions(): hits.append(sorted([b.name each b in pair]))\n\
+         \x20   end\n\
+         \x20   print(crate.y.round(2), crate.mass, crate.size, hits, [b.name each b in crate.touching()])\n\
+         \x20   let hit = world.raycast([0, 10, 0], [0, -1, 0])\n\
+         \x20   print(hit[\"body\"].name, hit[\"distance\"].round(2), world.raycast([0, 10, 0], [0, 1, 0]))\n\
+         \x20   crate.push(0, 10, 0)\n\
+         \x20   world.step(1 / 60)\n\
+         \x20   print(crate.velocity[1] > 3)\n\
+         \x20   world.box(5, 1, 0, 1, 2, 10, fixed = true)\n\
+         \x20   world.box(-3, 0.1, 0, 2, 0.2, 2, fixed = true)\n\
+         \x20   let player = world.character(1, 1, 0)\n\
+         \x20   each _ in 0 until 100:\n\
+         \x20       player.move(0.1, -0.3, 0)\n\
+         \x20       world.step(1 / 60)\n\
+         \x20   end\n\
+         \x20   print(player.x.round(1), player.grounded)\n\
+         \x20   # Out of the way, then walk up the step.\n\
+         \x20   world.remove(crate)\n\
+         \x20   player.move_to(1, 1, 0)\n\
+         \x20   var peak = 0.0\n\
+         \x20   each _ in 0 until 120:\n\
+         \x20       player.move(-0.05, -0.3, 0)\n\
+         \x20       world.step(1 / 60)\n\
+         \x20       if player.x < -2.5 and player.x > -3.5: peak = max(peak, player.y)\n\
+         \x20   end\n\
+         \x20   print(peak.round(2), player.y.round(2))\n\
+         \x20   print(len(world.bodies))\n\
+         end\n");
+    assert_eq!(
+        out,
+        "0.5 2.0 [1.0, 1.0, 1.0] [[\"crate\", \"floor\"]] [\"floor\"]\ncrate 9.0 none\ntrue\n4.1 true\n1.12 0.92\n4\n"
+    );
+}
+
 #[test]
 fn line_charts_take_text_on_the_x_axis() {
     let out = run("use vyrn.chart\n\

@@ -425,6 +425,23 @@ call.
 
 A host function that fails raises a `HostError`, which `catch` can handle.
 
+### `vyrn.physics`: a physics engine for games
+
+Bodies fall, bounce, stack, tumble and settle (Rapier underneath). Units
+are metres, kilograms and seconds; y is up.
+
+| API | Does |
+|---|---|
+| `physics.world(gravity = -9.81)` | An empty world; `world.step(dt)` moves time on |
+| `world.box(x, y, z, width, height, depth)`, `world.ball(x, y, z, radius)`, `world.capsule(x, y, z, radius, height)` | Bodies. Options: `mass`, `bounce` (0 to 1), `friction`, `fixed = true` (floors, walls), `kinematic = true` (moved only by the program), `upright = true` (never tips over), `sensor = true` (detects but doesn't block), `name` |
+| `world.character(x, y, z, radius = 0.4, height = 1.8, step = 0.3)` | A player or enemy: `ch.move(dx, dy, dz)` walks, sliding along walls, climbing steps and slopes, staying on the ground; `ch.grounded` |
+| `body.x`, `.y`, `.z`, `.position`, `.rotation` (degrees, as `win.cube` takes it), `.velocity`, `.spin`, `.size`, `.box`, `.mass`, `.kind`, `.name`, `.sleeping` | Where it is and how it moves |
+| `body.push(x, y, z)`, `body.spin_by(x, y, z)`, `body.set_velocity(...)`, `body.move_to(...)`, `body.turn_to(...)`, `body.touching()` | Shoving, placing and contacts |
+| `world.raycast(origin, direction, max = 100, ignore = body)` | The first body along a line: `body`, `point`, `normal`, `distance`, or none |
+| `world.collisions()`, `world.remove(body)`, `world.bodies` | Pairs that started touching in the last step; removing bodies |
+
+`examples/physics.vyrn` is a room of crates to walk around and knock over.
+
 ### `vyrn.html`: reading web pages
 
 `html.parse(text)` gives a page; `page.select(css)` and

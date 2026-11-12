@@ -30,7 +30,9 @@ libloading = { version = "0.9", optional = true }
 libffi = { version = "5", optional = true }
 
 [features]
-default = ["net", "native", "db", "draw", "html", "mail", "sound", "gpu"]
+default = ["net", "native", "db", "draw", "html", "mail", "sound", "gpu", "physics"]
+# `use vyrn.physics`: a physics engine (Rapier) for games (not on WebAssembly).
+physics = ["dep:rapier3d"]
 # `use vyrn.mail`: sending email.
 mail = ["dep:lettre"]
 # `use vyrn.html`: parsing web pages.
@@ -59,6 +61,8 @@ ffi = ["dep:libloading", "dep:libffi"]
 rustyline = { version = "15", default-features = false, features = ["with-file-history"] }
 # `vyrn.time` with time zones: the system's zone database (bundled on Windows).
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo", "tzdb-bundle-platform"] }
+# `use vyrn.physics`: rigid bodies, collisions and character movement.
+rapier3d = { version = "0.36", optional = true }
 # `use vyrn.sound`: playback and decoding of WAV, Ogg Vorbis and MP3.
 rodio = { version = "0.23", optional = true, default-features = false, features = ["playback", "wav", "vorbis", "mp3"] }
 # `use vyrn.draw`: windows (minifb), PNG images, and a bitmap font.

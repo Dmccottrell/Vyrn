@@ -34,6 +34,11 @@ pub mod lib_host;
 pub mod lib_html;
 pub mod lib_mail;
 pub mod lib_net;
+#[cfg(feature = "physics")]
+pub mod lib_physics;
+#[cfg(not(feature = "physics"))]
+#[path = "lib_physics_off.rs"]
+pub mod lib_physics;
 pub mod lib_sound;
 pub mod lib_table;
 pub mod lib_template;

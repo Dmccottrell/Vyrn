@@ -39,7 +39,7 @@ fn io_error(what: &str, e: std::io::Error) -> Value {
     err(kind, format!("{what}: {e}"))
 }
 
-fn map_value(entries: Vec<(&str, Value)>) -> Value {
+pub(crate) fn map_value(entries: Vec<(&str, Value)>) -> Value {
     let mut map = Map::default();
     for (k, v) in entries {
         let key = Value::str(k);

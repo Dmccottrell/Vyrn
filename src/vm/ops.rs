@@ -909,6 +909,20 @@ pub fn set_attr(value: &mut Value, name: &str, new: Value) -> VmResult<()> {
             }
         }
     }
+    // The same for a number or text read from a foreign value
+    // (`body.y.round(2)`): its methods cannot have changed it.
+    if let Value::Foreign(f) = &*value {
+        if matches!(
+            new,
+            Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) | Value::None
+        ) {
+            if let Ok(current) = f.get_attr(name) {
+                if equals(&current, &new) {
+                    return Ok(());
+                }
+            }
+        }
+    }
     if let Value::Tensor(t) = value {
         let slot = match name {
             "x" => 0,

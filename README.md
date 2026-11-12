@@ -35,6 +35,7 @@ run on the interpreter (`docs/deploy.md` section 3).
 - [`examples/snake.vyrn`](examples/snake.vyrn): a Snake game in a window
 - [`examples/cube3d.vyrn`](examples/cube3d.vyrn): a 3D scene you can move through
 - [`examples/tips.vyrn`](examples/tips.vyrn): a desktop app with text fields and buttons
+- [`examples/physics.vyrn`](examples/physics.vyrn): a first-person room of crates to knock over, with a physics engine, textures and a lamp
 - [`examples/settings.vyrn`](examples/settings.vyrn): a settings window laid out automatically, with a slider
 
 ## Install
