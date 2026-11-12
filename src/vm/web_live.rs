@@ -628,37 +628,6 @@ pub fn response_of(v: &Value, program: &Program) -> Option<web::Response> {
     Some(out)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_handshake_answer_matches_the_standard() {
-        // The example in RFC 6455, section 1.3.
-        assert_eq!(
-            accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
-            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
-        );
-        assert_eq!(base64(&sha1(b"abc")), "qZk+NkcGgWq6PiVxeFDCbJzQ2J0=");
-    }
-
-    #[test]
-    fn frames_round_trip() {
-        let f = frame(0x1, b"hello");
-        let (fin, op, payload, used) = parse_frame(&f).unwrap();
-        assert!(fin && op == 1 && payload == b"hello" && used == f.len());
-        // A masked frame, as browsers send.
-        let mask = [1u8, 2, 3, 4];
-        let mut masked = vec![0x81, 0x80 | 3];
-        masked.extend_from_slice(&mask);
-        masked.extend(b"abc".iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
-        assert_eq!(parse_frame(&masked).unwrap().2, b"abc");
-        let long = frame(0x2, &[7u8; 300]);
-        assert_eq!(parse_frame(&long).unwrap().2.len(), 300);
-        assert!(parse_frame(&long[..10]).is_none());
-    }
-}
-
 /// What `http.get`, `http.post`, ... and `http.test` give: `r.status`,
 /// `r.ok`, `r.text`, `r.json` (the body parsed, or none) and `r.headers`
 /// (names in lower case). `r["status"]` works too.
@@ -722,5 +691,36 @@ impl Foreign for HttpReply {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_handshake_answer_matches_the_standard() {
+        // The example in RFC 6455, section 1.3.
+        assert_eq!(
+            accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        );
+        assert_eq!(base64(&sha1(b"abc")), "qZk+NkcGgWq6PiVxeFDCbJzQ2J0=");
+    }
+
+    #[test]
+    fn frames_round_trip() {
+        let f = frame(0x1, b"hello");
+        let (fin, op, payload, used) = parse_frame(&f).unwrap();
+        assert!(fin && op == 1 && payload == b"hello" && used == f.len());
+        // A masked frame, as browsers send.
+        let mask = [1u8, 2, 3, 4];
+        let mut masked = vec![0x81, 0x80 | 3];
+        masked.extend_from_slice(&mask);
+        masked.extend(b"abc".iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+        assert_eq!(parse_frame(&masked).unwrap().2, b"abc");
+        let long = frame(0x2, &[7u8; 300]);
+        assert_eq!(parse_frame(&long).unwrap().2.len(), 300);
+        assert!(parse_frame(&long[..10]).is_none());
     }
 }
