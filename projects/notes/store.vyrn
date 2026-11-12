@@ -1,0 +1,57 @@
+# store.vyrn: the notes, kept in a SQLite database.
+#
+# The web routes in main.vyrn never touch the database directly; they ask
+# a NoteStore. That keeps the routes short, and lets tests use a store
+# that lives only in memory (":memory:") instead of a file.
+
+use vyrn.db
+use vyrn.time
+
+## One note, as the API sends it.
+struct Note:
+    id: int
+    title: str
+    body: str
+    created: str   # when it was written, like "2026-11-12 14:03"
+end
+
+object NoteStore:
+    path: str
+    private conn: any = none
+
+    # Opens the database (creating the file the first time) and makes the
+    # table if it isn't there yet.
+    create init(self):
+        self.conn = db.open(self.path)
+        self.conn.create_table("notes", {"title": "text", "body": "text", "created": "text"})
+    end
+
+    ## Saves a note and gives it back with its new id.
+    create add(self, title: str, body: str) -> Note:
+        let created = time.format(time.now(), "%Y-%m-%d %H:%M")
+        # `insert` takes a map of column -> value and gives the new id;
+        # the values are passed safely, never pasted into SQL.
+        let id = self.conn.insert("notes", {"title": title, "body": body, "created": created})
+        return Note(id, title, body, created)
+    end
+
+    ## Every note, newest first.
+    create all(self) -> list:
+        let rows = self.conn.query("select * from notes order by id desc")
+        return [Note(r["id"], r["title"], r["body"], r["created"]) each r in rows]
+    end
+
+    ## Notes whose title or text contains `words` (any capitals).
+    create search(self, words: str) -> list:
+        # `like` with % on both sides means "contains"; SQLite's `like`
+        # ignores capitals for English letters.
+        let pattern = "%{words}%"
+        let rows = self.conn.query("select * from notes where title like ? or body like ? order by id desc", [pattern, pattern])
+        return [Note(r["id"], r["title"], r["body"], r["created"]) each r in rows]
+    end
+
+    ## Removes a note. Gives whether it was there.
+    create remove(self, id: int) -> bool:
+        return self.conn.delete("notes", {"id": id}) > 0
+    end
+end

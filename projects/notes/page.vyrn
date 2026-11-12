@@ -1,0 +1,89 @@
+# page.vyrn: the web page people see at http://localhost:8080/
+#
+# One page of HTML, CSS and JavaScript. The JavaScript runs in the
+# browser and talks to the API in main.vyrn with `fetch`, so the page
+# updates without reloading: the same way most modern web apps work.
+#
+# It's written as a raw string (r"""...""") so the {braces} that CSS and
+# JavaScript use are kept as they are, instead of being filled in by Vyrn.
+
+const PAGE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vyrn Notes</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; background: #f6f7f9; color: #222; }
+  h1 { margin-bottom: 0.2rem; }
+  form, .note { background: white; border-radius: 10px; padding: 1rem; margin: 1rem 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  input, textarea { width: 100%; box-sizing: border-box; padding: 0.5rem; margin-bottom: 0.5rem; border: 1px solid #ccc; border-radius: 6px; font: inherit; }
+  button { padding: 0.5rem 1rem; border: 0; border-radius: 6px; background: #3b5bdb; color: white; font: inherit; cursor: pointer; }
+  .note h2 { margin: 0 0 0.3rem; font-size: 1.1rem; }
+  .note small { color: #888; }
+  .note button { background: #e03131; float: right; padding: 0.2rem 0.6rem; }
+</style>
+</head>
+<body>
+<h1>Vyrn Notes</h1>
+<p>A small web app written in Vyrn.</p>
+
+<form id="new">
+  <input id="title" placeholder="Title" required>
+  <textarea id="body" rows="3" placeholder="Write something..."></textarea>
+  <button>Add note</button>
+</form>
+
+<input id="search" placeholder="Search notes...">
+<div id="notes"></div>
+
+<script>
+// Shows a list of notes on the page.
+function show(notes) {
+  const list = document.getElementById("notes");
+  list.innerHTML = "";
+  if (notes.length === 0) list.textContent = "No notes yet.";
+  for (const n of notes) {
+    const div = document.createElement("div");
+    div.className = "note";
+    const del = document.createElement("button");
+    del.textContent = "Delete";
+    del.onclick = async () => { await fetch("/api/notes/" + n.id, { method: "DELETE" }); load(); };
+    const h2 = document.createElement("h2");
+    h2.textContent = n.title;                   // textContent, so notes can't inject HTML
+    const p = document.createElement("p");
+    p.textContent = n.body;
+    const small = document.createElement("small");
+    small.textContent = n.created;
+    div.append(del, h2, p, small);
+    list.append(div);
+  }
+}
+
+// Asks the Vyrn server for the notes (all, or those matching the search).
+async function load() {
+  const q = document.getElementById("search").value;
+  const url = q ? "/api/search?q=" + encodeURIComponent(q) : "/api/notes";
+  show(await (await fetch(url)).json());
+}
+
+// Sends a new note to the server as JSON.
+document.getElementById("new").onsubmit = async (event) => {
+  event.preventDefault();
+  const title = document.getElementById("title").value;
+  const body = document.getElementById("body").value;
+  await fetch("/api/notes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, body }),
+  });
+  event.target.reset();
+  load();
+};
+
+document.getElementById("search").oninput = load;
+load();
+</script>
+</body>
+</html>
+"""

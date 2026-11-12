@@ -1365,7 +1365,12 @@ impl Vm {
             Err(failure) => {
                 let (kind, message) = match &failure {
                     Value::Error(e) => (e.kind.to_string(), e.message.clone()),
-                    Value::Struct(inst) => (self.type_name(inst.ty), self.display(&failure)),
+                    // `fail BadRequest("a note needs a title")`: a failure
+                    // with one text field says just that text.
+                    Value::Struct(inst) => match inst.fields.as_slice() {
+                        [Value::Str(text)] => (self.type_name(inst.ty), text.to_string()),
+                        _ => (self.type_name(inst.ty), self.display(&failure)),
+                    },
                     Value::Object(obj) => (self.type_name(obj.borrow().ty), self.display(&failure)),
                     other => ("Failure".to_string(), self.display(other)),
                 };
