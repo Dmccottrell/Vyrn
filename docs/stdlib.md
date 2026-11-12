@@ -387,6 +387,19 @@ and directions are `[x, y, z]`.
 Data travels as JSON. Nothing waits, so sockets fit in a game loop;
 `examples/multiplayer.vyrn` is a server and its players.
 
+### `vyrn.sound`: sound effects and music
+
+| API | Does |
+|---|---|
+| `sound.load(path)` | A WAV, Ogg Vorbis or MP3 file, decoded once so playing it is instant |
+| `sound.tone(frequency, seconds, wave, volume)` | A sound made from a `"sine"`, `"square"`, `"triangle"`, `"saw"` or `"noise"` wave |
+| `snd.play(volume = 1.0, loop = false, speed = 1.0)` | Plays it, mixed with anything else playing; gives a handle |
+| `playing.stop()`, `pause()`, `resume()`, `set_volume(v)`, `set_speed(s)`, `playing.playing` | Controlling it |
+| `snd.duration`, `snd.save("beep.wav")`, `sound.available()`, `sound.stop_all()` | Length; writing a WAV; whether there is a sound device; silence |
+
+Without a sound device, playing is silent rather than an error, so games
+still run.
+
 `docs/course/game-dev.md` teaches game programming with them, and
 `examples/fps.vyrn` is a complete small shooter.
 

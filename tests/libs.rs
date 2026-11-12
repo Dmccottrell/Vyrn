@@ -434,3 +434,24 @@ fn programs_talk_over_udp_and_tcp() {
         "{\"x\": 1, \"names\": [\"a\"]}\npong none\n[\"hi\", [1, 2]]\n"
     );
 }
+
+#[test]
+fn sounds_are_made_saved_and_loaded() {
+    let dir = std::env::temp_dir().join(format!("vyrn-sound-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("beep.wav");
+    let out = run(&format!(
+        "use vyrn.sound\n\
+         main:\n\
+         \x20   let beep = sound.tone(440, 0.5, wave = \"square\")\n\
+         \x20   beep.save({wav:?})\n\
+         \x20   let back = sound.load({wav:?})\n\
+         \x20   print(back.duration, back.channels, back.sample_rate)\n\
+         \x20   let p = back.play(volume = 0.1)\n\
+         \x20   p.stop()\n\
+         \x20   print(p.playing)\n\
+         end\n"
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(out, "0.5 1 44100\nfalse\n");
+}

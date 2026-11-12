@@ -30,6 +30,7 @@ pub mod lib_game;
 pub mod lib_html;
 pub mod lib_mail;
 pub mod lib_net;
+pub mod lib_sound;
 pub mod lib_table;
 pub mod lib_template;
 pub mod machine;
