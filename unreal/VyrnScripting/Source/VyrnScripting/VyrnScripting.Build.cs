@@ -12,7 +12,7 @@ public class VyrnScripting : ModuleRules
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "Json" });
-		PrivateDependencyModuleNames.AddRange(new string[] { "InputCore", "Projects" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "InputCore", "Projects", "EnhancedInput", "AIModule", "GameplayTasks", "NavigationSystem" });
 
 		string VyrnDir = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "ThirdParty", "Vyrn"));
 		PublicIncludePaths.Add(Path.Combine(VyrnDir, "include"));

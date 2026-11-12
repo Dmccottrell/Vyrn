@@ -147,3 +147,87 @@ end
 ## Whether a key is held: "W", "SpaceBar", "LeftMouseButton", "Gamepad_FaceButton_Bottom"...
 ## (Unreal's key names.)
 create key_down(key: str) -> bool: return host.call("key_down", key)
+
+# --- Any property, any function (Unreal's reflection) --------------------
+#
+# `actor` is a name from find/spawn_actor/player, or "self" for this one.
+# A property of a component is "Component.Property", such as
+# "Mesh.RelativeScale3D". Numbers, true/false, text, vectors ({x, y, z}),
+# rotators and actors come back as Vyrn values; anything else as Unreal's
+# text for it.
+
+## A variable of an actor or its Blueprint: `get("BP_Door_1", "IsOpen")`.
+create get(actor: str, property: str) -> any: return host.call("get_property", actor, property)
+
+## Sets one: `set("self", "Health", 50)`.
+create set(actor: str, property: str, value: any): host.call("set_property", actor, property, value)
+
+## Calls a function or custom event of an actor, by name:
+## `call("BP_Door_1", "Open")`, `call("self", "TakeDamage", 25)`.
+create call(actor: str, function: str, args...) -> any:
+    return host.call("call_function", actor, function, args...)
+end
+
+# --- Other actors --------------------------------------------------------
+
+create set_location_of(actor: str, p: Vec3, sweep: bool = false) -> bool:
+    return host.call("set_location_of", actor, p.x, p.y, p.z, sweep)
+end
+
+create rotation_of(actor: str) -> Rotator: return to_rot(host.call("rotation_of", actor))
+
+create set_rotation_of(actor: str, r: Rotator):
+    host.call("set_rotation_of", actor, r.pitch, r.yaw, r.roll)
+end
+
+## The class of an actor, such as "BP_Enemy_C".
+create class_of(actor: str) -> str?: return host.call("class_of", actor)
+create tags_of(actor: str) -> list: return host.call("tags_of", actor)
+
+## Every actor of a class: `find_class("/Game/Enemies/BP_Enemy.BP_Enemy_C")`.
+create find_class(class_path: str) -> list: return host.call("find_class", class_path)
+
+# --- Enhanced Input ------------------------------------------------------
+
+## An Input Action's value now: true/false, a number, or [x, y] for 2D
+## actions such as movement. `action("/Game/Input/IA_Move.IA_Move")`.
+create action(path: str) -> any: return host.call("action", path)
+
+## Turns on an Input Mapping Context (do it in begin_play).
+create add_input_context(path: str, priority: int = 0) -> bool:
+    return host.call("add_input_context", path, priority)
+end
+
+# --- AI (needs a Nav Mesh Bounds Volume in the level) ------------------
+
+## Walks a pawn with an AI Controller to a place, around obstacles. Gives
+## false if there is no way there.
+create ai_move_to(actor: str, to: Vec3, accept: float = 50.0) -> bool:
+    return host.call("ai_move_to", actor, to.x, to.y, to.z, accept)
+end
+
+create ai_stop(actor: str): host.call("ai_stop", actor)
+create ai_moving(actor: str) -> bool: return host.call("ai_moving", actor)
+
+# --- Animation -----------------------------------------------------------
+
+## Plays an Anim Montage on a Character (reload, wave, die); gives its length.
+create play_montage(actor: str, montage_path: str, rate: float = 1.0) -> float:
+    return host.call("play_montage", actor, montage_path, rate)
+end
+
+create stop_montage(actor: str): host.call("stop_montage", actor)
+
+# --- Multiplayer ---------------------------------------------------------
+#
+# In a multiplayer game the script runs on every machine. Let the server
+# decide (damage, scores, spawning): do those only when `has_authority()`.
+
+## "standalone", "client", "listen_server" or "dedicated_server".
+create net_mode() -> str: return host.call("net_mode")
+
+## Whether this machine is in charge of the actor (the server, or the only one).
+create has_authority(actor: str = "self") -> bool: return host.call("has_authority", actor)
+
+## Sends the actor (and its movement) to every player's game.
+create set_replicates(on: bool = true, actor: str = "self"): host.call("set_replicates", on, actor)

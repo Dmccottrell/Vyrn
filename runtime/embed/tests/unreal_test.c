@@ -18,6 +18,9 @@ static double me[3] = {0, 0, 100}, rot[3] = {0, 0, 0};
 static double player[3] = {1000, 0, 100};
 static double now = 0;
 static int spawned = 0, events = 0;
+static double health = 100;
+static int calls = 0, ai_moves = 0, ai_stops = 0, montages = 0, authority = 1;
+static VyrnEngine *current;
 static char answer[512], last_event[128];
 
 static double arg(const char *args, int n) {
@@ -54,6 +57,31 @@ static const char *host(void *user, const char *args) {
         if (strstr(args, "speed")) return "180";
         return "null";
     }
+    else if (!strcmp(name, "get_property")) {
+        if (strstr(args, "\"Health\"")) { snprintf(answer, sizeof answer, "%g", health); return answer; }
+        vyrn_host_error(current, "no such property");
+        return NULL;
+    }
+    else if (!strcmp(name, "set_property")) return "";
+    else if (!strcmp(name, "call_function")) {
+        if (strstr(args, "\"TakeHit\"")) { health -= arg(args, 2); calls++; return "null"; }
+        snprintf(answer, sizeof answer, "%s", args);
+        return answer;
+    }
+    else if (!strcmp(name, "ai_move_to")) { ai_moves++; return "true"; }
+    else if (!strcmp(name, "ai_stop")) { ai_stops++; return ""; }
+    else if (!strcmp(name, "ai_moving")) return "false";
+    else if (!strcmp(name, "play_montage")) { montages++; return "0.8"; }
+    else if (!strcmp(name, "stop_montage") || !strcmp(name, "set_replicates") || !strcmp(name, "set_rotation_of")) return "";
+    else if (!strcmp(name, "has_authority")) return authority ? "true" : "false";
+    else if (!strcmp(name, "net_mode")) return "\"listen_server\"";
+    else if (!strcmp(name, "action")) return "[0.5,1]";
+    else if (!strcmp(name, "add_input_context")) return "true";
+    else if (!strcmp(name, "class_of")) return "\"BP_Enemy_C\"";
+    else if (!strcmp(name, "tags_of")) return "[\"enemy\"]";
+    else if (!strcmp(name, "find_class")) return "[\"BP_Enemy_C_1\",\"BP_Enemy_C_2\"]";
+    else if (!strcmp(name, "rotation_of")) return "{\"pitch\":0,\"yaw\":45,\"roll\":0}";
+    else if (!strcmp(name, "set_location_of")) return "true";
     else if (!strcmp(name, "set_var") || !strcmp(name, "log") || !strcmp(name, "warn")
              || !strcmp(name, "error") || !strcmp(name, "screen")) return "";
     else return NULL;
@@ -62,12 +90,17 @@ static const char *host(void *user, const char *args) {
 
 static const char *NAMES[] = {"log", "warn", "error", "screen", "event", "owner", "get_location",
     "set_location", "move", "get_rotation", "set_rotation", "rotate", "forward", "right", "time",
-    "spawn", "find", "player", "location_of", "destroy", "trace", "key_down", "get_var", "set_var"};
+    "spawn", "find", "player", "location_of", "destroy", "trace", "key_down", "get_var", "set_var",
+    "get_property", "set_property", "call_function", "ai_move_to", "ai_stop", "ai_moving",
+    "play_montage", "stop_montage", "has_authority", "net_mode", "set_replicates", "action",
+    "add_input_context", "class_of", "tags_of", "find_class", "rotation_of", "set_rotation_of",
+    "set_location_of"};
 
 static void quiet(void *user, const char *line) { (void)user; printf("  | %s\n", line); }
 
 static VyrnEngine *start(const char *dir, const char *file) {
     VyrnEngine *e = vyrn_new();
+    current = e;
     vyrn_set_print(e, quiet, NULL);
     for (size_t i = 0; i < sizeof NAMES / sizeof *NAMES; i++)
         vyrn_register(e, NAMES[i], host, (void *)NAMES[i]);
@@ -121,8 +154,26 @@ int main(int argc, char **argv) {
     CHECK(events == spawned && strstr(last_event, "turret_fired") && strstr(last_event, "PlayerPawn_0"), "turret events %s", last_event);
     vyrn_free(e);
 
+    /* enemy: chases while far, then hits on a cooldown, on the server only. */
+    me[0] = 0; me[1] = 0; me[2] = 100; player[0] = 1000; player[1] = 0; events = 0;
+    e = start(dir, "enemy.vyrn");
+    for (int i = 0; i < 5; i++) { now += 0.1; call(e, "tick", "[0.1]"); }
+    CHECK(ai_moves == 5 && calls == 0, "enemy chases: %d moves, %d hits", ai_moves, calls);
+    player[0] = 100;
+    for (int i = 0; i < 30; i++) { now += 0.1; call(e, "tick", "[0.1]"); }
+    /* Three seconds near: hits at 0, 1.2 and 2.4 seconds. */
+    CHECK(calls == 3 && health == 70, "enemy hits: %d hits, health %g", calls, health);
+    CHECK(events == 3 && strstr(last_event, "enemy_attacked"), "enemy events: %d %s", events, last_event);
+    authority = 0;
+    int before = calls;
+    for (int i = 0; i < 30; i++) { now += 0.1; call(e, "tick", "[0.1]"); }
+    CHECK(calls == before, "clients don't decide: %d hits", calls - before);
+    authority = 1;
+    vyrn_free(e);
+
     /* The rest of unreal.vyrn, through a test script. */
     e = vyrn_new();
+    current = e;
     for (size_t i = 0; i < sizeof NAMES / sizeof *NAMES; i++)
         vyrn_register(e, NAMES[i], host, (void *)NAMES[i]);
     vyrn_set_print(e, quiet, NULL);
@@ -138,6 +189,11 @@ int main(int argc, char **argv) {
           "            unreal.get_var(\"missing\", 7), unreal.forward().length(), unreal.distance_to(\"p\") > 0,\n"
           "            str(unreal.Vec3(3.0, 4.0, 0.0).normalized()), unreal.spawn_actor(\"/Script/Engine.PointLight\", unreal.Vec3()),\n"
           "            unreal.move(unreal.Vec3(1.0, 0.0, 0.0)), str(unreal.rotation())]\n"
+          "end\n"
+          "create deep() -> list:\n"
+          "    return [unreal.get(\"BP_Hero\", \"Health\"), unreal.call(\"self\", \"Greet\", \"hi\", 2), unreal.action(\"/Game/IA_Move.IA_Move\"),\n"
+          "            unreal.net_mode(), unreal.has_authority(), unreal.class_of(\"x\"), unreal.tags_of(\"x\"), len(unreal.find_class(\"/Game/BP_Enemy.BP_Enemy_C\")),\n"
+          "            str(unreal.rotation_of(\"x\")), unreal.add_input_context(\"/Game/IMC.IMC\"), unreal.ai_moving(\"x\")]\n"
           "end\n"
           "create chatter():\n"
           "    unreal.log(\"hi\")\n"
@@ -160,6 +216,14 @@ int main(int argc, char **argv) {
     }
     vyrn_string_free(r);
     CHECK(call(e, "chatter", NULL) && rot[1] == 50 && strstr(last_event, "scored"), "chatter: yaw %g", rot[1]);
+    r = vyrn_call(e, "deep", NULL);
+    CHECK(r != NULL, "deep: %s", vyrn_last_error(e));
+    if (r) {
+        printf("deep -> %s\n", r);
+        CHECK(strstr(r, "[\"self\",\"Greet\",\"hi\",2]") != NULL, "call passes its arguments: %s", r);
+        CHECK(strstr(r, "[0.5,1],\"listen_server\",true,\"BP_Enemy_C\",[\"enemy\"],2,\"(pitch 0.0, yaw 45.0, roll 0.0)\",true,false]") != NULL, "deep values: %s", r);
+    }
+    vyrn_string_free(r);
     remove(path);
     vyrn_free(e);
 

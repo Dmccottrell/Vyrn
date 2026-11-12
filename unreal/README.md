@@ -217,7 +217,57 @@ in quotes and add `_C`: `"/Game/FPS/BP_Rocket.BP_Rocket_C"`. Engine
 classes are written like `"/Script/Engine.PointLight"`.
 
 Actors are referred to by name, the text that `find`, `player` and
-`spawn_actor` give. Names stay valid until the actor is destroyed.
+`spawn_actor` give. Names stay valid until the actor is destroyed. `"self"`
+means the script's own actor.
+
+**Any property, any function** (Unreal's reflection: no C++ needed)
+
+| Function | What |
+|---|---|
+| `get(actor, "Health")` | a variable of an actor or its Blueprint; `"Mesh.RelativeScale3D"` reaches a component's |
+| `set(actor, "Health", 50)` | changes one |
+| `call(actor, "OpenDoor", args...)` | runs any Blueprint-callable function or custom event; gives its return value (or a map of its outputs) |
+
+Numbers, true/false, text, names, vectors (`{"x", "y", "z"}`), rotators
+and actors come across as Vyrn values; anything else (an enum, a colour)
+as Unreal's text for it, which `set` also accepts.
+
+**Other actors**
+
+| Function | What |
+|---|---|
+| `set_location_of(actor, p, sweep = false)`, `rotation_of(actor)`, `set_rotation_of(actor, r)` | moving and turning any actor |
+| `class_of(actor)`, `tags_of(actor)` | what it is |
+| `find_class("/Game/Enemies/BP_Enemy.BP_Enemy_C")` | every actor of a class |
+
+**Enhanced Input**
+
+| Function | What |
+|---|---|
+| `add_input_context("/Game/Input/IMC_Default.IMC_Default", priority = 0)` | turns on an Input Mapping Context (in `begin_play`) |
+| `action("/Game/Input/IA_Move.IA_Move")` | an Input Action's value now: true/false, a number, or [x, y] for movement and looking |
+
+**AI and animation**
+
+| Function | What |
+|---|---|
+| `ai_move_to(actor, to, accept = 50)` | walks a pawn with an AI Controller there on the navigation mesh (add a Nav Mesh Bounds Volume); false if there is no way |
+| `ai_stop(actor)`, `ai_moving(actor)` | stopping, and whether it is still walking |
+| `play_montage(actor, "/Game/Anims/AM_Reload.AM_Reload", rate = 1)` | plays an Anim Montage on a Character; gives its length |
+| `stop_montage(actor)` | stops it |
+
+**Multiplayer**
+
+In a multiplayer game every machine runs the script. Let the server decide
+anything that matters (damage, scores, spawning): do it only where
+`has_authority()` is true. Set Blueprint variables that are marked
+*Replicated* with `set` on the server, and every player sees them.
+
+| Function | What |
+|---|---|
+| `has_authority(actor = "self")` | whether this machine is in charge of the actor |
+| `net_mode()` | `"standalone"`, `"client"`, `"listen_server"` or `"dedicated_server"` |
+| `set_replicates(on = true, actor = "self")` | sends the actor and its movement to every player |
 
 ### The examples
 
@@ -226,6 +276,7 @@ Actors are referred to by name, the text that `find`, `player` and
 | `spinner.vyrn` | the three event functions, Variables, state that lasts between frames |
 | `door.vyrn` | reacting to the player's distance, easing, telling Blueprints with `event` |
 | `turret.vyrn` | an FPS turret: turning towards the player, line-of-sight traces, spawning projectiles on a cooldown |
+| `enemy.vyrn` | an enemy that chases the player on the navigation mesh, plays an attack montage, and hits by calling the player's Blueprint event, deciding only on the server |
 
 ## Vyrn and Blueprints
 
@@ -298,8 +349,9 @@ end
 ```
 
 A host function with the same name as a built-in one replaces it. For
-example, register your own `"key_down"` to read Enhanced Input actions
-instead of raw keys.
+example, register your own `"spawn"` to take spawned actors from a pool.
+Before writing one, check whether `get`, `set` and `call` already reach
+what you need: they cover any Blueprint variable, function and event.
 
 `host.available()` is true inside Unreal, so a script can tell whether it
 is running in the game or under `vyrn run` and `vyrn test`.
@@ -350,7 +402,7 @@ the first error line names the file and the API to adjust.
   component's script has its own globals.
 - Values cross as JSON, so pass names and numbers, not object handles.
   Actors are referred to by name.
-- Unreal properties and functions aren't reflected automatically yet.
-  Reach them through a host function (above) or a Blueprint event.
-- Enhanced Input actions aren't wrapped yet. Use `key_down`, or register
-  a host function that reads your Input Actions.
+- Arrays, maps and structs other than vectors and rotators are read and
+  written as Unreal's text form, not as Vyrn lists and maps.
+- Calls from one machine to another (RPCs) are made in Blueprints:
+  have a script `call` a Blueprint event marked *Run on Server*.
