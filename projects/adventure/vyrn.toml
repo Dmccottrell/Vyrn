@@ -1,0 +1,4 @@
+[package]
+name = "adventure"
+edition = "2026"
+main = "main.vyrn"

@@ -107,6 +107,9 @@ pub fn format(src: &str) -> Result<String, String> {
     let mut indent: Vec<Option<usize>> = vec![None; lines.len()];
     // The depth of the statement that opened the current brackets.
     let mut statement_depth = 0usize;
+    // Bracket depth after each line (of the current statement) that left
+    // brackets open, innermost last.
+    let mut open_lines: Vec<usize> = Vec::new();
     for (n, line) in lines.iter().enumerate() {
         let li = &info[n];
         if li.verbatim || line.trim().is_empty() || li.first.is_none() {
@@ -114,9 +117,28 @@ pub fn format(src: &str) -> Result<String, String> {
         }
         let first = li.first.clone().unwrap_or(Tk::Eof);
         if li.continues || li.brackets_before > 0 {
+            // One level for each earlier line whose brackets are still
+            // open, so nested data stays nested:
+            //     return {
+            //         "gate": Room(
+            //             "Castle Gate",
+            //         ),
+            //     }
+            while open_lines.last().is_some_and(|&d| d > li.brackets_before) {
+                open_lines.pop();
+            }
             let closes = matches!(first, Tk::Punct(P::RParen | P::RBracket | P::RBrace));
-            indent[n] = Some(statement_depth + usize::from(!closes));
+            let levels = open_lines.len().max(1);
+            indent[n] = Some(statement_depth + if closes { levels - 1 } else { levels });
+            if li.brackets_after > li.brackets_before {
+                open_lines.push(li.brackets_after);
+            }
             continue;
+        }
+        // A new statement: brackets it opens start a fresh nesting.
+        open_lines.clear();
+        if li.brackets_after > 0 {
+            open_lines.push(li.brackets_after);
         }
         let body = stack.last().map_or(0, |f| match f {
             Frame::Block(d) | Frame::Arm(d) => d + 1,
@@ -234,6 +256,14 @@ mod tests {
         let src = "main:\nwhen x:\nis 1:\nprint(\"one\")\nis _: print(\"other\")\nend\nattempt:\nrisky()\ncatch:\n# handled\nprint(\"no\")\nend\nxs = [\n1,\n2,\n]\nend\n";
         let want = "main:\n    when x:\n        is 1:\n            print(\"one\")\n        is _: print(\"other\")\n    end\n    attempt:\n        risky()\n    catch:\n        # handled\n        print(\"no\")\n    end\n    xs = [\n        1,\n        2,\n    ]\nend\n";
         assert_eq!(format(src).unwrap(), want);
+    }
+
+    #[test]
+    fn nested_brackets_stay_nested() {
+        let src = "main:\nx = {\n\"a\": f(\n1,\n[\n2,\n],\n),\n\"b\": 3,\n}\nend\n";
+        let want = "main:\n    x = {\n        \"a\": f(\n            1,\n            [\n                2,\n            ],\n        ),\n        \"b\": 3,\n    }\nend\n";
+        assert_eq!(format(src).unwrap(), want);
+        assert_eq!(format(want).unwrap(), want);
     }
 
     #[test]

@@ -1,0 +1,29 @@
+# The Crown of Vyrn: a text adventure.
+#
+#   vyrn run
+#
+# Explore a castle, pick things up, unlock the keep and take the crown.
+# Commands: look, go <direction> (or just n/s/e/w), take <item>,
+# drop <item>, inventory (i), save, load, help, quit.
+#
+# What this project shows: structs for data and an object for the
+# player's changing state, a world kept as data (world.vyrn), the rules
+# in their own module (game.vyrn) so they can be tested, a command parser
+# built with `when`, and saving and loading the game as JSON.
+
+use world (make_world)
+use game (Game, Player)
+
+main:
+    let game = Game(make_world(), Player())
+    print("THE CROWN OF VYRN")
+    print(game.describe())
+    # The game loop: read a command, answer it, until the game is over or
+    # the input ends (`input` gives none at the end).
+    loop not game.over:
+        let line = input("> ")
+        if line == none: stop
+        let answer = game.handle(line)
+        if answer != "": print(answer)
+    end
+end

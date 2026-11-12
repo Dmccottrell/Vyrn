@@ -1,0 +1,52 @@
+# world.vyrn: the map of the game, as data.
+#
+# Keeping the rooms in data (instead of in `if`s all over the code) means
+# the world can grow without touching the game logic: add a room here and
+# it just works. Real games load this from a file made by a level editor.
+
+## One place the player can be.
+struct Room:
+    name: str
+    description: str
+    exits: map          # direction -> room id, like {"north": "hall"}
+    items: list         # things lying here, like ["lamp"]
+    locked: map = {}    # direction -> the item needed to go that way
+end
+
+## Every room in the castle, by id.
+create make_world() -> map:
+    return {
+        "gate": Room(
+            "Castle Gate",
+            "A rusty portcullis stands open. A path leads north into the courtyard.",
+            {"north": "courtyard"},
+            [],
+        ),
+        "courtyard": Room(
+            "Courtyard",
+            "Weeds grow between the stones. Doors lead east and west; the keep is north.",
+            {"south": "gate", "east": "armoury", "west": "kitchen", "north": "keep"},
+            ["rope"],
+            # The keep's door is locked until you have the key.
+            {"north": "key"},
+        ),
+        "armoury": Room(
+            "Armoury",
+            "Empty weapon racks line the walls. Something glints in a corner.",
+            {"west": "courtyard"},
+            ["key", "shield"],
+        ),
+        "kitchen": Room(
+            "Kitchen",
+            "A cold fireplace and a long table covered in dust.",
+            {"east": "courtyard"},
+            ["bread"],
+        ),
+        "keep": Room(
+            "The Keep",
+            "A tall hall. On a pedestal in the middle lies the Crown of Vyrn.",
+            {"south": "courtyard"},
+            ["crown"],
+        ),
+    }
+end
