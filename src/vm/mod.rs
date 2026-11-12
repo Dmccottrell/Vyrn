@@ -29,6 +29,7 @@ pub mod lib_draw;
 pub mod lib_draw;
 pub mod lib_fake;
 pub mod lib_game;
+pub mod lib_host;
 pub mod lib_html;
 pub mod lib_mail;
 pub mod lib_net;

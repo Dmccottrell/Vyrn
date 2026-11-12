@@ -22,6 +22,7 @@ run on the interpreter (`docs/deploy.md` section 3).
 - [`docs/ffi.md`](docs/ffi.md): the Python and C bridges, zero-copy tensors, and the decentralized module resolver
 - [`docs/nn.md`](docs/nn.md): `kernel` function on tensors, its lowering to WGSL, and tensor memory layout
 - [`docs/deploy.md`](docs/deploy.md): `vyrn build --target=...` for static Linux binaries and edge WebAssembly, and the LLVM backend design
+- [`unreal/README.md`](unreal/README.md): gameplay scripting in Unreal Engine 5 with the VyrnScripting plugin, and `vyrn.dll` for embedding Vyrn in any C or C++ program
 
 ## Examples
 
@@ -116,8 +117,10 @@ Python's are good ones (`docs/stdlib.md` has the full list):
 - **Applications**: `vyrn.db` (SQLite), `vyrn.draw` (2D and 3D graphics,
   windows with keyboard, mouse and widgets, turtle, images), `vyrn.html`
   (reading web pages), `vyrn.template` (pages from data), `vyrn.table`
-  (data analysis), `vyrn.chart` (charts to PNG or SVG) and `vyrn.mail`
-  (email). No Python needed.
+  (data analysis), `vyrn.chart` (charts to PNG or SVG), `vyrn.mail`
+  (email), `vyrn.game`, `vyrn.sound` and `vyrn.net` (games and
+  multiplayer), and `vyrn.host` (scripts inside Unreal Engine or another
+  program). No Python needed.
 
 Runtime errors show the file, the line, the code and a hint, like compile
 errors do.

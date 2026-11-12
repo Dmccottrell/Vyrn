@@ -1,0 +1,23 @@
+[package]
+name = "vyrn-embed"
+version = "0.4.0"
+edition = "2021"
+description = "Vyrn inside other programs: a C API (include/vyrn.h) for game engines such as Unreal Engine, and any C or C++ program"
+license = "MIT"
+publish = false
+
+[lib]
+# A DLL / shared library for engines to load, and a static library for
+# programs that link Vyrn in.
+name = "vyrn"
+crate-type = ["cdylib", "staticlib"]
+path = "src/lib.rs"
+
+[dependencies]
+# Scripts in an engine get the language, the native compiler, databases
+# and HTML, but not windows or sound: the engine has its own.
+vyrn = { path = "../..", default-features = false, features = ["native", "db", "html", "net"] }
+
+[profile.release]
+lto = true
+codegen-units = 1

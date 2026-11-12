@@ -35,6 +35,9 @@ pub fn type_error(message: impl Into<String>) -> Value {
 }
 
 /// State the builtins and tensor operations need.
+/// See [`Ctx::host`].
+pub type HostFn = Rc<dyn Fn(&str, &str) -> Result<String, String>>;
+
 pub struct Ctx {
     pub program: Rc<Program>,
     pub out: Box<dyn Write>,
@@ -49,6 +52,10 @@ pub struct Ctx {
     /// Builds another copy of the program, for `task.parallel`'s worker
     /// threads.
     pub rebuild: Option<super::parallel::Rebuild>,
+    /// The program embedding Vyrn (such as a game engine), for
+    /// `host.call(name, args...)`: takes a function name and its arguments
+    /// as JSON, gives back the result as JSON or an error message.
+    pub host: Option<HostFn>,
     /// Timers started by `sleep`, each finishing its task when it expires.
     pub timers: Vec<(std::time::Instant, Rc<super::task::TaskHandle>)>,
     /// Tasks made ready by builtins, such as a channel receiving a value.

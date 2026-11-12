@@ -89,3 +89,36 @@ jobs:
       - name: Run it under Node
         working-directory: runtime/wasm
         run: node test.mjs
+
+  embed:
+    name: embedding library (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Linux build dependencies (sound)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: runtime/embed
+      - name: Clippy and formatting
+        working-directory: runtime/embed
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --release -- -D warnings
+      - name: C tests (the C API, and the Unreal scripts against a fake Unreal)
+        if: runner.os != 'Windows'
+        run: runtime/embed/tests/run.sh
+      - name: Build vyrn.dll
+        if: runner.os == 'Windows'
+        working-directory: runtime/embed
+        run: cargo build --locked --release
+      - name: Vyrn checks of the Unreal scripts
+        run: cargo run --locked -q -- fmt --check unreal/VyrnScripting/Scripts

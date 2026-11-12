@@ -1,0 +1,149 @@
+# unreal.vyrn: Vyrn's side of the VyrnScripting plugin for Unreal Engine.
+#
+# Put this file next to your scripts (Content/Scripts/) and start a script
+# with `use unreal`. Each function here asks Unreal to do something through
+# `host.call`, which the plugin answers on the game thread.
+#
+# Unreal's units: centimetres for positions, degrees for rotations, and
+# seconds for time. X is forward, Y is right and Z is up.
+
+use vyrn.host
+use vyrn.math
+
+## A position or a direction in the level.
+object Vec3:
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+
+    create operator +(self, o: Vec3) -> Vec3: return Vec3(self.x + o.x, self.y + o.y, self.z + o.z)
+    create operator -(self, o: Vec3) -> Vec3: return Vec3(self.x - o.x, self.y - o.y, self.z - o.z)
+    create operator *(self, k: float) -> Vec3: return Vec3(self.x * k, self.y * k, self.z * k)
+    create operator -(self) -> Vec3: return Vec3(-self.x, -self.y, -self.z)
+    create operator ==(self, o: Vec3) -> bool: return self.x == o.x and self.y == o.y and self.z == o.z
+
+    ## How long the vector is.
+    create length(self) -> float: return math.sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
+
+    ## The same direction, 1 long (or zero, for a zero vector).
+    create normalized(self) -> Vec3:
+        let n = self.length()
+        if n == 0: return Vec3()
+        return self * (1.0 / n)
+    end
+
+    create dot(self, o: Vec3) -> float: return self.x * o.x + self.y * o.y + self.z * o.z
+    create to_text(self) -> str: return "({self.x}, {self.y}, {self.z})"
+end
+
+## Which way something faces, in degrees.
+object Rotator:
+    pitch: float = 0.0    # up and down
+    yaw: float = 0.0      # left and right
+    roll: float = 0.0     # tilting sideways
+
+    create to_text(self) -> str: return "(pitch {self.pitch}, yaw {self.yaw}, roll {self.roll})"
+end
+
+## What a trace hit.
+object Hit:
+    actor: str = ""
+    point: Vec3 = Vec3()
+    normal: Vec3 = Vec3()
+    distance: float = 0.0
+end
+
+# Unreal's answers are JSON maps; these turn them into Vyrn objects.
+create to_vec(m: map) -> Vec3: return Vec3(float(m["x"]), float(m["y"]), float(m["z"]))
+create to_rot(m: map) -> Rotator: return Rotator(float(m["pitch"]), float(m["yaw"]), float(m["roll"]))
+
+# --- Messages ------------------------------------------------------------
+
+## Writes to Unreal's Output Log. (`print` goes there too.)
+create log(text: any): host.call("log", str(text))
+create warn(text: any): host.call("warn", str(text))
+create error(text: any): host.call("error", str(text))
+
+## Shows text on the game screen for a few seconds.
+create screen(text: any, seconds: float = 2.0, color: str = "white"):
+    host.call("screen", str(text), seconds, color)
+end
+
+## Tells Blueprints something happened: the component's "On Script Event"
+## fires with this name and data (sent as JSON text).
+create event(name: str, data: any = none): host.call("event", name, data)
+
+# --- The actor this script belongs to ------------------------------------
+
+## The name of the actor the script component is on.
+create me() -> str: return host.call("owner")
+
+create location() -> Vec3: return to_vec(host.call("get_location"))
+
+## Puts the actor somewhere. With `sweep`, it stops at walls; gives false
+## if something blocked it.
+create set_location(p: Vec3, sweep: bool = false) -> bool:
+    return host.call("set_location", p.x, p.y, p.z, sweep)
+end
+
+## Moves the actor by an offset, stopping at walls. Gives false if blocked.
+create move(by: Vec3, sweep: bool = true) -> bool:
+    return host.call("move", by.x, by.y, by.z, sweep)
+end
+
+create rotation() -> Rotator: return to_rot(host.call("get_rotation"))
+create set_rotation(r: Rotator): host.call("set_rotation", r.pitch, r.yaw, r.roll)
+
+## Turns the actor by some degrees.
+create rotate(pitch: float = 0.0, yaw: float = 0.0, roll: float = 0.0):
+    host.call("rotate", pitch, yaw, roll)
+end
+
+## The direction the actor faces, 1 long.
+create forward() -> Vec3: return to_vec(host.call("forward"))
+create right() -> Vec3: return to_vec(host.call("right"))
+
+## A value from the component's Variables (set in the editor), or `default`.
+create get_var(name: str, default: any = none) -> any:
+    let v = host.call("get_var", name)
+    return default if v == none else v
+end
+
+## Stores a value in the component's Variables, where Blueprints can read it.
+create set_var(name: str, value: any): host.call("set_var", name, value)
+
+# --- The world -----------------------------------------------------------
+
+## Seconds since the level started (game time: it stops when paused).
+create time() -> float: return host.call("time")
+
+## Places a new actor of a class (a path such as
+## "/Game/Blueprints/BP_Rocket.BP_Rocket_C" or "/Script/Engine.PointLight").
+## Gives its name, or none if it could not be spawned.
+create spawn_actor(class_path: str, at: Vec3, facing: Rotator = Rotator()) -> str?:
+    return host.call("spawn", class_path, at.x, at.y, at.z, facing.pitch, facing.yaw, facing.roll)
+end
+
+## Names of the actors with a tag (Actor > Tags in the Details panel).
+create find(tag: str) -> list: return host.call("find", tag)
+
+## The player's pawn, or none if there isn't one.
+create player() -> str?: return host.call("player")
+
+create location_of(actor: str) -> Vec3: return to_vec(host.call("location_of", actor))
+create destroy(actor: str) -> bool: return host.call("destroy", actor)
+
+## How far away another actor is, in centimetres.
+create distance_to(actor: str) -> float: return (location_of(actor) - location()).length()
+
+## A straight line through the world (ignoring this actor). Gives the first
+## thing it hits, or none.
+create trace(start: Vec3, finish: Vec3) -> Hit?:
+    let h = host.call("trace", start.x, start.y, start.z, finish.x, finish.y, finish.z)
+    if h == none: return none
+    return Hit(h["actor"], to_vec(h["point"]), to_vec(h["normal"]), float(h["distance"]))
+end
+
+## Whether a key is held: "W", "SpaceBar", "LeftMouseButton", "Gamepad_FaceButton_Bottom"...
+## (Unreal's key names.)
+create key_down(key: str) -> bool: return host.call("key_down", key)

@@ -408,6 +408,20 @@ Everything is drawn in software, so it looks the same on every machine.
 `examples/snake.vyrn`, `examples/cube3d.vyrn` and `examples/tips.vyrn`
 are a game, a 3D scene and a small app.
 
+### `vyrn.host`: the program Vyrn runs inside
+
+When Vyrn runs inside another program, such as a game in Unreal Engine
+(`unreal/README.md`) or any C or C++ program using `vyrn.dll` and
+`vyrn.h` (`runtime/embed`), that program can give scripts functions to
+call.
+
+| API | Does |
+|---|---|
+| `host.call(name, args...)` | Calls the host's function `name`; the arguments and the result travel as JSON |
+| `host.available()` | Whether Vyrn is running inside a host (false under `vyrn run`) |
+
+A host function that fails raises a `HostError`, which `catch` can handle.
+
 ### `vyrn.html`: reading web pages
 
 `html.parse(text)` gives a page; `page.select(css)` and

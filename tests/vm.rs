@@ -1306,6 +1306,18 @@ fn types_define_their_own_operators_and_text() {
 }
 
 #[test]
+fn a_type_can_have_both_minus_operators() {
+    assert_eq!(
+        run("struct V:\n    x: int\n\
+             \x20   create operator -(self, o: V) -> V: return V(self.x - o.x)\n\
+             \x20   create operator -(self) -> V: return V(-self.x)\n\
+             end\n\
+             main:\n    print((V(5) - V(2)).x, (-V(5)).x)\nend\n"),
+        "3 -5\n"
+    );
+}
+
+#[test]
 fn generators_make_values_as_they_are_asked_for() {
     assert_eq!(
         run("create naturals():\n    var n = 0\n    loop:\n        n += 1\n        yield n\n    end\nend\n\

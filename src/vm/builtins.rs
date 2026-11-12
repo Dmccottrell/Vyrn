@@ -286,6 +286,8 @@ pub static NATIVES: &[Native] = &[
     ),
     fixed("game.distance", &["a", "b"], 2, super::lib_game::distance),
     fixed("net.udp", &["port"], 0, super::lib_net::udp),
+    variadic("host.call", super::lib_host::call),
+    fixed("host.available", &[], 0, super::lib_host::available),
     fixed("sound.load", &["path"], 1, super::lib_sound::load),
     fixed(
         "sound.tone",
@@ -413,6 +415,7 @@ pub fn std_module(name: &str) -> Option<&'static str> {
         "game" => Some("game"),
         "net" => Some("net"),
         "sound" => Some("sound"),
+        "host" => Some("host"),
         _ => None,
     }
 }
@@ -420,7 +423,7 @@ pub fn std_module(name: &str) -> Option<&'static str> {
 /// The library's modules, for messages: `vyrn.os`, `vyrn.fs`, ...
 pub const LIBRARY: &[&str] = &[
     "os", "fs", "path", "time", "random", "math", "json", "re", "csv", "http", "task", "db",
-    "draw", "html", "template", "table", "chart", "mail", "game", "net", "sound",
+    "draw", "html", "template", "table", "chart", "mail", "game", "net", "sound", "host",
 ];
 
 pub fn library_list() -> String {

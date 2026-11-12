@@ -290,6 +290,7 @@ impl Vm {
             rng: 0x9E37_79B9_7F4A_7C15,
             scripted_input: None,
             rebuild: None,
+            host: None,
             timers: Vec::new(),
             wakeups: Vec::new(),
             next_task: super::task::ROOT_TASK,
@@ -351,6 +352,11 @@ impl Vm {
 
     /// Runs the `main:` block. `args` is passed if `main` declares a
     /// parameter.
+    /// Connects `host.call` to the program embedding Vyrn.
+    pub fn set_host(&mut self, host: super::ops::HostFn) {
+        self.ctx.host = Some(host);
+    }
+
     /// How worker threads get their own copy of the program
     /// (`task.parallel`).
     pub fn set_rebuild(&mut self, rebuild: super::parallel::Rebuild) {
@@ -2590,8 +2596,8 @@ impl Vm {
                             Value::Float(x) => Value::Float(-x),
                             v @ (Value::Struct(_) | Value::Object(_)) => {
                                 let v = v.clone();
-                                match self.method_named(&v, "operator -") {
-                                    Some(m) if m.proto.params.len() == 1 => {
+                                match self.method_named(&v, "operator unary -") {
+                                    Some(m) => {
                                         save_ip!();
                                         check!(self.call_method_value(m, vec![v]))
                                     }

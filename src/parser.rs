@@ -614,6 +614,20 @@ impl Parser {
         if let Some(fail) = self.python_habit() {
             return fail;
         }
+        if self.at_kw(K::Fn) {
+            if let Tk::Keyword(k) = self.kind_at(1) {
+                let k = k.as_str();
+                self.bump();
+                let span = self.span();
+                return self.error(
+                    format!("`{k}` is a keyword, so it cannot be a function's name"),
+                    span,
+                    Some(&format!(
+                        "choose another name, such as `{k}_it` or `do_{k}`"
+                    )),
+                );
+            }
+        }
         if self.at_kw(K::End) {
             let span = self.span();
             return self.error(
@@ -898,6 +912,11 @@ impl Parser {
         let generics = self.opt_generics()?;
         self.expect_p(P::LParen, "`(` to start the parameter list")?;
         let params = self.params()?;
+        // `-a` and `a - b` are different operators: give the one that
+        // takes only `self` its own name, so a type can have both.
+        if name.name == "operator -" && params.len() == 1 {
+            name.name = "operator unary -".into();
+        }
         let result = self.result_spec()?;
         let body = match mode {
             FnMode::Body => FnBody::Block(self.suite("create", header)?),
