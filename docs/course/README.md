@@ -77,8 +77,8 @@ plan below.
 | 22 ✅ | Collisions and movement | Pong |
 | 23 ✅ | Many objects at once | Road crossing game |
 | 24 ✅ | Files: read, write, append, binary files, `using` | Mail merge |
-| 25 | CSV files and tables | State guessing game |
-| 26 | Comprehensions; `map`, `filter`, `reduce`; pipelines `\|>` | Phonetic alphabet |
+| 25 ✅ | CSV files and tables | State guessing game |
+| 26 ✅ | Comprehensions; `map`, `filter`, `reduce`; pipelines `\|>` | Phonetic alphabet |
 | 27 | GUI widgets; rest parameters `args...` and spread `xs...` | Unit converter app |
 | 28 | Timers and events | Focus timer |
 | 29 | Saving data | Password manager |

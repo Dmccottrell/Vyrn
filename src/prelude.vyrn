@@ -26,6 +26,21 @@ create map(f, xs):
     return [f(x) each x in xs]
 end
 
+## `reduce(f, xs, start)`: combines the items two at a time, left to
+## right, as Python's `functools.reduce`: `reduce((a, b) => a + b, [1, 2, 3])`
+## is 6. Without `start`, the first item starts it.
+create reduce(f, xs, start = none):
+    var items = list(xs)
+    var total = start
+    if start == none:
+        if len(items) == 0: fail ValueError("`reduce` of an empty list needs a `start`")
+        total = items[0]
+        items = items[1:]
+    end
+    each x in items: total = f(total, x)
+    return total
+end
+
 create filter(f, xs):
     if f == none: return [x each x in xs if x]
     return [x each x in xs if f(x)]

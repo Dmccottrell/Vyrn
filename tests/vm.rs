@@ -1322,6 +1322,14 @@ fn bounded_channels_pools_and_yielding() {
 }
 
 #[test]
+fn methods_on_items_of_text_and_tuples_work() {
+    assert_eq!(
+        run("main:\n    let w = \"vyrn\"\n    let t = (1, \"x\")\n    print(w[0].upper(), t[1].upper(), {k: k[0].upper() each k in [\"ab\"]})\nend\n"),
+        "V X {\"ab\": \"A\"}\n"
+    );
+}
+
+#[test]
 fn a_type_can_have_both_minus_operators() {
     assert_eq!(
         run("struct V:\n    x: int\n\

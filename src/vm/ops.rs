@@ -822,8 +822,32 @@ pub fn set_index(obj: &mut Value, index: &Value, value: Value) -> VmResult<()> {
                 .set(&indices, number as f32)
                 .map_err(tensor_error)
         }
-        Value::Tuple(_) => Err(type_error("tuples cannot be changed; build a new one")),
-        Value::Str(_) => Err(type_error("strings cannot be changed; build a new one")),
+        // A method called on `t[i]` stores the item back afterwards; text and
+        // tuples can't change, so storing what is already there is fine.
+        Value::Tuple(items) => {
+            let unchanged = int_index(index)
+                .and_then(|i| normalize_index(i, items.len()))
+                .is_some_and(|at| equals(&items[at], &value));
+            if unchanged {
+                Ok(())
+            } else {
+                Err(type_error("tuples cannot be changed; build a new one"))
+            }
+        }
+        Value::Str(text) => {
+            let n = text.chars().count();
+            let unchanged = match (int_index(index).and_then(|i| normalize_index(i, n)), &value) {
+                (Some(at), Value::Str(v)) => {
+                    text.chars().nth(at).map(String::from).as_deref() == Some(v.as_str())
+                }
+                _ => false,
+            };
+            if unchanged {
+                Ok(())
+            } else {
+                Err(type_error("strings cannot be changed; build a new one"))
+            }
+        }
         other => Err(type_error(format!(
             "{} does not support item assignment",
             other.type_name()
