@@ -95,8 +95,8 @@ plan below.
 | 35 ✅ | API keys, environment variables, secrets | Weather alert |
 | 36 ✅ | Combining APIs | News digest |
 | 37 ✅ | POST, headers, authentication | Habit tracker |
-| 38 | Databases: SQL, SQLite, records without SQL | Workout log |
-| 39–40 | Capstone | Deal finder |
+| 38 ✅ | Databases: SQL, SQLite, records without SQL | Workout log |
+| 39–40 ✅ | Capstone | Deal finder |
 
 ### Unit 5: The web (days 41–60)
 
