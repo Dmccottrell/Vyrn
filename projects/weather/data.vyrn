@@ -1,0 +1,63 @@
+# data.vyrn: makes the weather data the report analyses.
+#
+# Real projects download data (a weather service, a company database);
+# this one makes a realistic year of daily weather for four cities, so the
+# project works offline and always gives the same results. The numbers
+# follow real seasons: summer peaks in July in the north and in January
+# in Lima, in the southern hemisphere.
+
+use vyrn.csv
+use vyrn.math
+use vyrn.random
+use vyrn.time
+
+## What a city's year looks like, roughly.
+struct Climate:
+    city: str
+    average_high: float   # the yearly average daytime high, in °C
+    swing: float          # how far summer and winter go from that average
+    south: bool           # southern hemisphere: seasons are reversed
+    rain_chance: float    # chance of rain on a day, 0 to 1
+    rain_amount: float    # average rain on a rainy day, in mm
+end
+
+const CLIMATES = [
+    Climate("Oslo", 10.5, 11.0, false, 0.38, 6.0),
+    Climate("London", 15.0, 6.5, false, 0.42, 4.5),
+    Climate("Madrid", 21.0, 10.0, false, 0.16, 7.0),
+    Climate("Lima", 22.5, 3.5, true, 0.05, 1.5),
+]
+
+## Writes `path`: one row per city per day of 2025.
+create generate(path: str):
+    # The same seed gives the same "random" weather every time.
+    random.seed(2025)
+    let start = time.parse("2025-01-01", "%Y-%m-%d")
+    var rows = []
+    each c in CLIMATES:
+        each day in 0 until 365:
+            let t = start + day * 86400
+            # A cosine wave over the year: +1 around 20 July (day 200),
+            # -1 six months later. The southern hemisphere is the opposite.
+            var season = math.cos(2 * math.pi * (day - 200) / 365)
+            if c.south: season = -season
+            # The day's high: the season, plus a few degrees of chance.
+            let high = c.average_high + c.swing * season + random.float(-3.5, 3.5)
+            let low = high - random.float(5, 10)
+            # Rain: a coin flip weighted by the climate, then an amount.
+            var rain = 0.0
+            if random.float(0, 1) < c.rain_chance:
+                rain = c.rain_amount * random.float(0.2, 2.5)
+            end
+            rows.append({
+                "date": time.format(t, "%Y-%m-%d"),
+                "month": time.date(t)["month"],
+                "city": c.city,
+                "high": round(high, 1),
+                "low": round(low, 1),
+                "rain": round(rain, 1),
+            })
+        end
+    end
+    csv.write(path, rows)
+end

@@ -1,0 +1,54 @@
+# report.vyrn: the HTML report, made from a template.
+#
+# The template is HTML with {{placeholders}} that vyrn.template fills in:
+# {{name}} inserts text safely (characters like < are escaped), {{{svg}}}
+# with three braces inserts HTML as it is (here, the charts), and
+# {{#each cities}} ... {{/each}} repeats a part once per item.
+
+use vyrn.template
+
+const TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Weather {{year}}</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0 2rem; }
+  th, td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #ddd; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  .chart { margin: 1rem 0 2rem; }
+</style>
+</head>
+<body>
+<h1>Weather in {{year}}</h1>
+<p>{{days}} days of weather in {{city_count}} cities, analysed with Vyrn.</p>
+
+<h2>The year in each city</h2>
+<table>
+  <tr><th>City</th><th>Average high</th><th>Hottest day</th><th>Coldest night</th><th>Rain</th><th>Rainy days</th></tr>
+  {{#each cities}}
+  <tr>
+    <td>{{city}}</td>
+    <td>{{average_high}} °C</td>
+    <td>{{hottest}} °C on {{hottest_day}}</td>
+    <td>{{coldest}} °C on {{coldest_day}}</td>
+    <td>{{rain_total}} mm</td>
+    <td>{{rainy_days}}</td>
+  </tr>
+  {{/each}}
+</table>
+
+<h2>Average high by month</h2>
+<div class="chart">{{{temperature_chart}}}</div>
+
+<h2>Total rain</h2>
+<div class="chart">{{{rain_chart}}}</div>
+</body>
+</html>
+"""
+
+## The finished page. `data` is a map with the names used above.
+create render(data: map) -> str:
+    return template.render(TEMPLATE, data)
+end

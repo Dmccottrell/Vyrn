@@ -484,3 +484,14 @@ fn the_gpu_draws_the_same_picture_as_the_software_renderer() {
         "true [\"#ffffff\", \"#87b5e0\", \"#932422\", \"#932422\", \"#932422\"]\n"
     );
 }
+
+#[test]
+fn line_charts_take_text_on_the_x_axis() {
+    let out = run("use vyrn.chart\n\
+         main:\n\
+         \x20   let c = chart.line([\"Jan\", \"Feb\", \"Mar\"], {\"a\": [1, 3, 2]}, title = \"°C\")\n\
+         \x20   let svg = c.svg()\n\
+         \x20   print(\"Jan\" in svg, \"Mar\" in svg)\n\
+         end\n");
+    assert_eq!(out, "true true\n");
+}

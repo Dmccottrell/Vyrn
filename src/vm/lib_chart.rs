@@ -335,6 +335,31 @@ impl Frame {
         (tl, th)
     }
 
+    /// Text labels at 1, 2, 3, ... along the x axis.
+    fn x_labels(&mut self, labels: &[String]) -> (f64, f64) {
+        let (tl, th) = (1.0, (labels.len() as f64).max(2.0));
+        for (i, text) in labels.iter().enumerate() {
+            let x = self.x_of(i as f64 + 1.0, (tl, th));
+            self.prims.push(Prim::Line {
+                x1: x,
+                y1: self.y1,
+                x2: x,
+                y2: self.y1 + 4.0,
+                color: AXIS,
+                width: 1.0,
+            });
+            self.prims.push(Prim::Text {
+                x,
+                y: self.y1 + 8.0,
+                text: text.clone(),
+                color: AXIS,
+                size: 1.0,
+                centered: true,
+            });
+        }
+        (tl, th)
+    }
+
     fn x_of(&self, v: f64, (tl, th): (f64, f64)) -> f64 {
         self.x0 + (v - tl) / (th - tl) * (self.x1 - self.x0)
     }
@@ -359,11 +384,21 @@ fn wrap(c: Chart) -> Value {
 
 fn xy_chart(ctx: &Ctx, args: &[Value], named: &[(String, Value)], points: bool) -> VmResult<Value> {
     let o = opts(named)?;
-    let xs = numbers(
-        args.first()
-            .ok_or_else(|| err("CallError", "a chart needs x values"))?,
-        "an x value",
-    )?;
+    let first = args
+        .first()
+        .ok_or_else(|| err("CallError", "a chart needs x values"))?;
+    // Text on the x axis (`["Jan", "Feb", ...]`): the points go at 1, 2,
+    // 3, ... and each is labelled with its text.
+    let x_labels: Option<Vec<String>> = {
+        let items = ops::collect(first)?;
+        (!items.is_empty() && items.iter().all(|v| matches!(v, Value::Str(_))))
+            .then(|| labels(ctx, first))
+            .transpose()?
+    };
+    let xs: Vec<f64> = match &x_labels {
+        Some(l) => (1..=l.len()).map(|i| i as f64).collect(),
+        None => numbers(first, "an x value")?,
+    };
     let ys = series(
         ctx,
         args.get(1)
@@ -390,7 +425,10 @@ fn xy_chart(ctx: &Ctx, args: &[Value], named: &[(String, Value)], points: bool) 
     let mut f = Frame::new(&o, &names);
     let yr = range(ys.iter().flat_map(|(_, y)| y.iter().copied()));
     let ymap = f.y_axis(yr.0.min(if points { yr.0 } else { yr.0.min(0.0) }), yr.1);
-    let xmap = f.x_ticks(range(xs.iter().copied()).0, range(xs.iter().copied()).1);
+    let xmap = match &x_labels {
+        Some(l) => f.x_labels(l),
+        None => f.x_ticks(range(xs.iter().copied()).0, range(xs.iter().copied()).1),
+    };
     f.axes();
     for (i, (_, y)) in ys.iter().enumerate() {
         let c = PALETTE[i % PALETTE.len()];

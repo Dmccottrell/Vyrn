@@ -1,0 +1,32 @@
+# Run with `vyrn test` inside projects/weather.
+#
+# A few hand-made rows are enough to check each question gets the right
+# answer; the real data file is too big to check by eye.
+
+use vyrn.table
+use analysis (summarize, cities, rain_totals, monthly_highs)
+
+create sample() -> any:
+    return table.from_csv("date,month,city,high,low,rain\n2025-01-01,1,Oslo,-2.0,-9.0,4.0\n2025-01-02,1,Oslo,1.0,-6.0,0.0\n2025-02-01,2,Oslo,3.0,-4.0,0.5\n2025-01-01,1,Lima,27.0,20.0,0.0\n2025-02-01,2,Lima,29.0,21.0,1.5\n")
+end
+
+create test_cities_keep_their_order():
+    assert(cities(sample()) == ["Oslo", "Lima"])
+end
+
+create test_a_city_summary():
+    let s = summarize(sample(), "Oslo")
+    assert(s.hottest == 3.0 and s.hottest_day == "2025-02-01")
+    assert(s.coldest == -9.0 and s.coldest_day == "2025-01-01")
+    assert(s.rain_total == 4.5)
+    # Only days with at least 1 mm count as rainy.
+    assert(s.rainy_days == 1)
+end
+
+create test_rain_totals_are_wettest_first():
+    assert(rain_totals(sample()) == [("Oslo", 4.5), ("Lima", 1.5)])
+end
+
+create test_monthly_highs():
+    assert(monthly_highs(sample())["Oslo"] == [-0.5, 3.0])
+end

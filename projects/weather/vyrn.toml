@@ -1,0 +1,4 @@
+[package]
+name = "weather"
+edition = "2026"
+main = "main.vyrn"

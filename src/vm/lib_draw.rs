@@ -489,8 +489,13 @@ impl Pixels {
                 cy += 9 * scale;
                 continue;
             }
+            // ASCII, then accented letters and signs such as °, é and ñ,
+            // then Greek and box drawing; anything else shows as `?`.
             let glyph = font8x8::BASIC_FONTS
                 .get(ch)
+                .or_else(|| font8x8::LATIN_FONTS.get(ch))
+                .or_else(|| font8x8::GREEK_FONTS.get(ch))
+                .or_else(|| font8x8::BOX_FONTS.get(ch))
                 .or_else(|| font8x8::BASIC_FONTS.get('?'))
                 .unwrap_or([0; 8]);
             for (row, bits) in glyph.iter().enumerate() {
