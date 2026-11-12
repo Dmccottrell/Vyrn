@@ -493,7 +493,9 @@ are metres, kilograms and seconds; y is up.
 `"div.price"`, `"#main > p"`). An element has `text`, `raw_text`, `tag`,
 `html`, `outer_html`, `id`, `classes`, `attrs`, `children`, `parent`,
 `attr(name)`, `has_class(name)` and its own `select`. `page.title`,
-`page.text`. `html.escape(text)`. Pages are read as browsers read them.
+`page.text`. `html.escape(text)` makes text safe for a page (`<` to
+`&lt;`), and `html.unescape(text)` turns entities back (`&quot;` to `"`,
+`&#39;` to `'`). Pages are read as browsers read them.
 
 ### `vyrn.template`: pages made from data
 

@@ -42,6 +42,81 @@ pub fn escape(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     Ok(Value::str(escape_text(text_arg(args, 0, "the text")?)))
 }
 
+/// `html.unescape(text)`: `&quot;Hi&quot; &amp; bye` back to `"Hi" & bye`,
+/// as text from web pages and APIs often needs.
+pub fn unescape(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    Ok(Value::str(unescape_text(text_arg(args, 0, "the text")?)))
+}
+
+pub fn unescape_text(s: &str) -> String {
+    const NAMED: &[(&str, &str)] = &[
+        ("amp", "&"),
+        ("lt", "<"),
+        ("gt", ">"),
+        ("quot", "\""),
+        ("apos", "'"),
+        ("nbsp", "\u{a0}"),
+        ("copy", "©"),
+        ("reg", "®"),
+        ("eacute", "é"),
+        ("egrave", "è"),
+        ("aacute", "á"),
+        ("oacute", "ó"),
+        ("uuml", "ü"),
+        ("ouml", "ö"),
+        ("auml", "ä"),
+        ("ntilde", "ñ"),
+        ("ccedil", "ç"),
+        ("hellip", "…"),
+        ("mdash", "—"),
+        ("ndash", "–"),
+        ("lsquo", "‘"),
+        ("rsquo", "’"),
+        ("ldquo", "“"),
+        ("rdquo", "”"),
+    ];
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 1..];
+        let end = after.find(';').filter(|e| *e <= 10);
+        let decoded = end.and_then(|e| {
+            let name = &after[..e];
+            let ch = if let Some(hex) = name.strip_prefix("#x").or_else(|| name.strip_prefix("#X"))
+            {
+                u32::from_str_radix(hex, 16)
+                    .ok()
+                    .and_then(char::from_u32)
+                    .map(String::from)
+            } else if let Some(dec) = name.strip_prefix('#') {
+                dec.parse::<u32>()
+                    .ok()
+                    .and_then(char::from_u32)
+                    .map(String::from)
+            } else {
+                NAMED
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, v)| v.to_string())
+            };
+            ch.map(|c| (c, e))
+        });
+        match decoded {
+            Some((text, e)) => {
+                out.push_str(&text);
+                rest = &after[e + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 pub fn escape_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -55,6 +130,17 @@ pub fn escape_text(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod unescape_tests {
+    #[test]
+    fn entities() {
+        assert_eq!(
+            super::unescape_text("&quot;Hi&quot; &amp; it&#039;s &#x263A; &bogus; & caf&eacute;"),
+            "\"Hi\" & it's ☺ &bogus; & café"
+        );
+    }
 }
 
 #[cfg(feature = "html")]

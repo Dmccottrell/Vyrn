@@ -376,6 +376,14 @@ pub fn make_index_error(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     error_of("IndexError", args)
 }
 
+pub fn make_network_error(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    error_of("NetworkError", args)
+}
+
+pub fn make_io_error(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    error_of("IoError", args)
+}
+
 // ==== format specs ==========================================================
 
 /// `format(value, spec)`: what `"{value:spec}"` shows. Specs follow Python:

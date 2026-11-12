@@ -147,6 +147,8 @@ pub static NATIVES: &[Native] = &[
     fixed("TypeError", &["message"], 1, S::make_type_error),
     fixed("KeyError", &["message"], 1, S::make_key_error),
     fixed("IndexError", &["message"], 1, S::make_index_error),
+    fixed("NetworkError", &["message"], 1, S::make_network_error),
+    fixed("IoError", &["message"], 1, S::make_io_error),
     // ---- vyrn.os ----
     fixed("os.args", &[], 0, S::os_args),
     fixed("os.env", &["name", "default"], 1, S::os_env),
@@ -399,6 +401,7 @@ pub static NATIVES: &[Native] = &[
     // ---- vyrn.html ----
     fixed("html.parse", &["text"], 1, super::lib_html::parse),
     fixed("html.escape", &["text"], 1, super::lib_html::escape),
+    fixed("html.unescape", &["text"], 1, super::lib_html::unescape),
     // ---- vyrn.template ----
     fixed(
         "template.render",
