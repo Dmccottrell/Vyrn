@@ -267,6 +267,17 @@ pub fn arith(ctx: &mut Ctx, op: Arith, a: &Value, b: &Value) -> VmResult<Value> 
             None => Err(operand_error(op, a, b)),
         },
         (Value::Str(x), Value::Str(y)) if op == Arith::Add => Ok(Value::str(format!("{x}{y}"))),
+        // `defaults | changes`: a new map with both, the right winning, as
+        // in Python.
+        (Value::Map(x), Value::Map(y)) if op == Arith::BitOr => {
+            let mut merged = x.borrow().clone();
+            for (k, v) in y.borrow().entries() {
+                if let Some(h) = Key::from_value(k) {
+                    merged.insert(h, k.clone(), v.clone());
+                }
+            }
+            Ok(Value::Map(Rc::new(RefCell::new(merged))))
+        }
         (Value::Str(s), Value::Int(n)) | (Value::Int(n), Value::Str(s)) if op == Arith::Mul => {
             Ok(Value::str(s.repeat((*n).max(0) as usize)))
         }

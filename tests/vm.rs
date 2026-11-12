@@ -1322,6 +1322,14 @@ fn bounded_channels_pools_and_yielding() {
 }
 
 #[test]
+fn maps_merge_with_a_bar() {
+    assert_eq!(
+        run("main:\n    let a = {\"x\": 1, \"y\": 2}\n    print(a | {\"y\": 9, \"z\": 3}, a)\nend\n"),
+        "{\"x\": 1, \"y\": 9, \"z\": 3} {\"x\": 1, \"y\": 2}\n"
+    );
+}
+
+#[test]
 fn methods_on_items_of_text_and_tuples_work() {
     assert_eq!(
         run("main:\n    let w = \"vyrn\"\n    let t = (1, \"x\")\n    print(w[0].upper(), t[1].upper(), {k: k[0].upper() each k in [\"ab\"]})\nend\n"),

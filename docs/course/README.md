@@ -79,10 +79,10 @@ plan below.
 | 24 ✅ | Files: read, write, append, binary files, `using` | Mail merge |
 | 25 ✅ | CSV files and tables | State guessing game |
 | 26 ✅ | Comprehensions; `map`, `filter`, `reduce`; pipelines `\|>` | Phonetic alphabet |
-| 27 | GUI widgets; rest parameters `args...` and spread `xs...` | Unit converter app |
-| 28 | Timers and events | Focus timer |
-| 29 | Saving data | Password manager |
-| 30 | Errors in depth, custom error types, JSON | Password manager, part 2 |
+| 27 ✅ | GUI widgets; rest parameters `args...` and spread `xs...` | Unit converter app |
+| 28 ✅ | Timers and events | Focus timer |
+| 29 ✅ | Saving data | Password manager |
+| 30 ✅ | Errors in depth, custom error types, JSON | Password manager, part 2 |
 
 ### Unit 4: Automation and APIs (days 31–40)
 
