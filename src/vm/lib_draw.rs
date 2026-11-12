@@ -225,6 +225,24 @@ pub struct Pixels {
     pub buf: Vec<u32>,
     /// Depth of what is drawn in 3D, nearest wins.
     depth: Vec<f32>,
+    /// Which surface this is, for its GPU resources.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    id: u64,
+    /// 3D triangles waiting to be filled on the GPU, three corners each.
+    #[cfg(feature = "gpu")]
+    gpu: Vec<super::draw_gpu::Vertex>,
+    /// The GPU depth buffer must start over (after `clear`).
+    #[cfg(feature = "gpu")]
+    depth_reset: bool,
+}
+
+static NEXT_SURFACE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+#[cfg(feature = "gpu")]
+impl Drop for Pixels {
+    fn drop(&mut self) {
+        super::draw_gpu::forget(self.id);
+    }
 }
 
 impl Pixels {
@@ -234,10 +252,39 @@ impl Pixels {
             h,
             buf: vec![0; w * h],
             depth: vec![f32::INFINITY; w * h],
+            id: NEXT_SURFACE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            #[cfg(feature = "gpu")]
+            gpu: Vec::new(),
+            #[cfg(feature = "gpu")]
+            depth_reset: true,
+        }
+    }
+
+    /// Fills the 3D triangles waiting for the GPU, before anything reads or
+    /// draws over the pixels.
+    #[inline]
+    fn sync(&mut self) {
+        #[cfg(feature = "gpu")]
+        if !self.gpu.is_empty() {
+            let tris = std::mem::take(&mut self.gpu);
+            super::draw_gpu::render(
+                self.id,
+                &mut self.buf,
+                self.w,
+                self.h,
+                &tris,
+                self.depth_reset,
+            );
+            self.depth_reset = false;
         }
     }
 
     fn clear(&mut self, c: Color) {
+        #[cfg(feature = "gpu")]
+        {
+            self.gpu.clear();
+            self.depth_reset = true;
+        }
         self.buf.fill(c.rgb);
         self.depth.fill(f32::INFINITY);
     }
@@ -246,6 +293,7 @@ impl Pixels {
         if x < 0 || y < 0 || x >= self.w as i64 || y >= self.h as i64 {
             return;
         }
+        self.sync();
         let i = y as usize * self.w + x as usize;
         self.buf[i] = blend(self.buf[i], c);
     }
@@ -255,6 +303,7 @@ impl Pixels {
             return;
         }
         let (a, b) = (x0.max(0), x1.min(self.w as i64 - 1));
+        self.sync();
         for x in a..=b {
             let i = y as usize * self.w + x as usize;
             self.buf[i] = blend(self.buf[i], c);
@@ -361,6 +410,28 @@ impl Pixels {
 
     /// A 3D triangle already projected: screen x, y and depth per corner.
     fn triangle_depth(&mut self, p: [(f64, f64, f64); 3], c: Color) {
+        #[cfg(feature = "gpu")]
+        if super::draw_gpu::active() {
+            let (w, h) = (self.w as f64, self.h as f64);
+            let color = [
+                ((c.rgb >> 16) & 0xff) as f32 / 255.0,
+                ((c.rgb >> 8) & 0xff) as f32 / 255.0,
+                (c.rgb & 0xff) as f32 / 255.0,
+                f32::from(c.alpha) / 255.0,
+            ];
+            for q in p {
+                self.gpu.push(super::draw_gpu::Vertex {
+                    pos: [
+                        (q.0 / w * 2.0 - 1.0) as f32,
+                        (1.0 - q.1 / h * 2.0) as f32,
+                        // Nearer is smaller, from 0 at the near plane to 1.
+                        (1.0 - NEAR / q.2.max(NEAR)) as f32,
+                    ],
+                    color,
+                });
+            }
+            return;
+        }
         let minx = p
             .iter()
             .map(|q| q.0)
@@ -596,7 +667,7 @@ impl Camera {
     }
 
     fn project(&self, v: [f64; 3], w: usize, h: usize) -> Option<(f64, f64, f64)> {
-        if v[2] < 0.05 {
+        if v[2] < NEAR - 1e-9 {
             return None;
         }
         let f = (h as f64 / 2.0) / (self.fov.get().to_radians() / 2.0).tan();
@@ -828,6 +899,28 @@ fn plane_mesh() -> Mesh {
 /// Draws a mesh placed at `pos`, turned by `rot` (degrees about x, y, z)
 /// and scaled, with one shade per triangle from a light above and behind
 /// the camera.
+/// Nearest distance in front of the camera that is drawn.
+const NEAR: f64 = 0.06;
+
+/// The part of a triangle (in camera space) in front of the near plane:
+/// none, three or four corners.
+fn clip_near(tri: [[f64; 3]; 3]) -> Vec<[f64; 3]> {
+    let mut out = Vec::with_capacity(4);
+    for i in 0..3 {
+        let a = tri[i];
+        let b = tri[(i + 1) % 3];
+        let (ina, inb) = (a[2] >= NEAR, b[2] >= NEAR);
+        if ina {
+            out.push(a);
+        }
+        if ina != inb {
+            let t = (NEAR - a[2]) / (b[2] - a[2]);
+            out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, NEAR]);
+        }
+    }
+    out
+}
+
 fn draw_mesh(
     px: &mut Pixels,
     cam: &Camera,
@@ -873,12 +966,17 @@ fn draw_mesh(
         } else {
             1.0
         };
-        let pts: Option<Vec<(f64, f64, f64)>> = [a, b, d]
+        // Cut away the part behind the camera, so a wall right in front
+        // of you is drawn instead of vanishing.
+        let visible = clip_near([cam.view(a), cam.view(b), cam.view(d)]);
+        let pts: Option<Vec<(f64, f64, f64)>> = visible
             .iter()
-            .map(|p| cam.project(cam.view(*p), px.w, px.h))
+            .map(|v| cam.project(*v, px.w, px.h))
             .collect();
         if let Some(p) = pts {
-            px.triangle_depth([p[0], p[1], p[2]], c.scaled(shade));
+            for k in 1..p.len().saturating_sub(1) {
+                px.triangle_depth([p[0], p[k], p[k + 1]], c.scaled(shade));
+            }
         }
     }
 }
@@ -915,6 +1013,7 @@ fn surface_method(
                 if x < 0 || y < 0 || x >= p.w as i64 || y >= p.h as i64 {
                     return Ok(Value::None);
                 }
+                p.sync();
                 return Ok(Value::str(color_text(p.buf[y as usize * p.w + x as usize])));
             }
             "line" => {
@@ -1006,6 +1105,7 @@ fn surface_method(
             }
             "save" => {
                 let path = a.text(0, "path")?;
+                p.sync();
                 p.save_png(&path)?
             }
             // `win.box(cam, [x, y, z, width, height, depth], colour)`: the
@@ -1540,6 +1640,7 @@ impl Foreign for Window {
             // `win.show()`: puts the frame on screen, waits for the next
             // (60 a second by default), and gives the seconds since the last.
             "show" => {
+                self.px.borrow_mut().sync();
                 let p = self.px.borrow();
                 self.win
                     .borrow_mut()
@@ -2014,6 +2115,39 @@ pub fn text_width(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         _ => 2.0,
     };
     Ok(Value::Int((n as f64 * 8.0 * size) as i64))
+}
+
+/// `draw.use_gpu(true)`: fill 3D shapes on the GPU (false: in software).
+/// Without it, a real GPU is used when there is one. Gives whether the GPU
+/// is now in use.
+pub fn use_gpu(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let on = args.first().is_some_and(Value::truthy);
+    #[cfg(feature = "gpu")]
+    {
+        super::draw_gpu::choose(if on {
+            super::draw_gpu::Choice::On
+        } else {
+            super::draw_gpu::Choice::Off
+        });
+        Ok(Value::Bool(super::draw_gpu::active()))
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        let _ = on;
+        Ok(Value::Bool(false))
+    }
+}
+
+/// `draw.renderer()`: what fills 3D shapes, "gpu: <name>" or "software".
+pub fn renderer(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
+    #[cfg(feature = "gpu")]
+    {
+        Ok(Value::str(super::draw_gpu::description()))
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        Ok(Value::str("software"))
+    }
 }
 
 /// `draw.load_obj("ship.obj")`: a model saved as a Wavefront OBJ file (the

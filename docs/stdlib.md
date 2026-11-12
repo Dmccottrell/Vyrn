@@ -362,6 +362,7 @@ from the SQL, so input cannot change a statement. Errors are
 | `cam.direction`, `cam.position`, `cam.strafe(d)`, `cam.fly(d)` | First-person aiming and movement |
 | `win.mouse_dx`, `win.mouse_dy`, `win.hide_cursor()`, `win.show_cursor()` | Mouse look |
 | `draw.load_obj(path)` | A model exported from Blender and other 3D tools |
+| `draw.renderer()`, `draw.use_gpu(on)` | What fills 3D shapes: a real GPU when there is one (Vulkan, Metal or DirectX 12), otherwise Vyrn's software renderer; `VYRN_GPU=on/off` also chooses |
 
 ### `vyrn.game`: the maths of 3D games
 

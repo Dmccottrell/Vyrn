@@ -13,6 +13,7 @@
 use vyrn.draw
 use vyrn.game
 use vyrn.random
+use vyrn.sound
 
 const WIDTH = 800
 const HEIGHT = 500
@@ -83,6 +84,9 @@ end
 
 main:
     let win = draw.window(WIDTH, HEIGHT, "Target Range")
+    let shot_sound = sound.tone(140, 0.09, wave = "noise", volume = 0.35)
+    let hit_sound = sound.tone(900, 0.06, wave = "square", volume = 0.25)
+    let empty_sound = sound.tone(300, 0.03, wave = "square", volume = 0.15)
     win.hide_cursor()
     let cam = draw.camera(0, EYE, -12)
     let walls = arena()
@@ -135,11 +139,14 @@ main:
             if reload_timer > 0:
                 reload_timer -= dt
                 if reload_timer <= 0: player.ammo = MAG
+            else if (win.clicked() or win.key_pressed("f")) and player.ammo == 0:
+                empty_sound.play()
             else if win.key_pressed("r") and player.ammo < MAG:
                 reload_timer = 1.2
             else if (win.clicked() or win.key_pressed("f")) and player.ammo > 0:
                 player.ammo -= 1
                 player.shots += 1
+                shot_sound.play()
                 flash = 0.06
                 let alive = targets.filter(t => t.alive())
                 let solid = walls + [t.bounds() each t in alive]
@@ -148,6 +155,7 @@ main:
                     let target = alive[hit["index"] - len(walls)]
                     target.health -= 1
                     player.hits += 1
+                    hit_sound.play(speed = 1.0 + (3 - target.health) * 0.2)
                     if not target.alive(): player.score += 100
                 end
             end

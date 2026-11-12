@@ -455,3 +455,32 @@ fn sounds_are_made_saved_and_loaded() {
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(out, "0.5 1 44100\nfalse\n");
 }
+
+#[test]
+fn the_gpu_draws_the_same_picture_as_the_software_renderer() {
+    let out = run("use vyrn.draw\n\
+         create scene(c, cam):\n\
+         \x20   c.clear(\"#87b5e0\")\n\
+         \x20   c.box(cam, [0, -0.05, 0, 30, 0.1, 30], \"#5d7a4a\")\n\
+         \x20   c.box(cam, [0, 1, 5, 2, 2, 2], \"tomato\")\n\
+         \x20   c.box(cam, [0.5, 1, 3.5, 1, 1, 1], [0, 0, 255, 128])\n\
+         \x20   c.box(cam, [0, 1, 0.5, 6, 2, 3], \"red\")\n\
+         \x20   c.rect(95, 45, 10, 10, \"white\")\n\
+         end\n\
+         main:\n\
+         \x20   var seen = []\n\
+         \x20   each on in [false, true]:\n\
+         \x20       if draw.use_gpu(on) == on:\n\
+         \x20           let c = draw.canvas(200, 100)\n\
+         \x20           scene(c, draw.camera(0, 1.6, -3))\n\
+         \x20           seen.append([c.get_pixel(x, y) each x, y in [(100, 50), (100, 5), (20, 95), (110, 70), (190, 60)]])\n\
+         \x20       end\n\
+         \x20   end\n\
+         \x20   draw.use_gpu(false)\n\
+         \x20   print(len(seen) == 1 or seen[0] == seen[1], seen[0])\n\
+         end\n");
+    assert_eq!(
+        out,
+        "true [\"#ffffff\", \"#87b5e0\", \"#932422\", \"#932422\", \"#932422\"]\n"
+    );
+}

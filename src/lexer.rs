@@ -366,9 +366,14 @@ impl<'src> Lexer<'src> {
     /// `bx, by = ...`, `pet.type`, `type = "cat"`.
     fn soft_word_is_name(&self, text: &str) -> bool {
         let rest = self.src[self.index..].trim_start_matches([' ', '\t']);
+        // A following word that is itself a keyword joining expressions
+        // (`each on in xs`, `move or stay`) means this word is a name.
+        let next_word: String = rest.chars().take_while(|c| is_ident_continue(*c)).collect();
         let next_is_word = rest.chars().next().is_some_and(is_ident_start)
-            && !rest.starts_with("and ")
-            && !rest.starts_with("or ");
+            && !matches!(
+                next_word.as_str(),
+                "and" | "or" | "in" | "is" | "if" | "else" | "not" | "to" | "until" | "by" | "as"
+            );
         let prev = self.tokens.last().map(|t| &t.kind);
         // After a value: `1 to 10`, `xs until n`, `x on gpu`.
         let after_value = matches!(
@@ -973,6 +978,7 @@ mod tests {
         assert_eq!(kinds("f(to, by)")[2], ident("to"));
         assert_eq!(kinds("create move(self)")[1], ident("move"));
         assert_eq!(kinds("type = 1")[0], ident("type"));
+        assert_eq!(kinds("each on in xs")[1], ident("on"));
         assert_eq!(kinds("route = []")[0], ident("route"));
         assert_eq!(kinds("1 to 9 by 2")[1], T::Keyword(K::To));
         assert_eq!(kinds("1 to 9 by 2")[3], T::Keyword(K::By));

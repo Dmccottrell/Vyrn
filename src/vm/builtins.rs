@@ -270,6 +270,8 @@ pub static NATIVES: &[Native] = &[
     ),
     variadic("draw.overlaps", super::lib_draw::overlaps),
     fixed("draw.load_obj", &["path"], 1, super::lib_draw::load_obj),
+    fixed("draw.use_gpu", &["on"], 1, super::lib_draw::use_gpu),
+    fixed("draw.renderer", &[], 0, super::lib_draw::renderer),
     fixed(
         "game.raycast",
         &["origin", "direction", "boxes", "max_distance"],

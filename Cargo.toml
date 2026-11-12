@@ -30,7 +30,7 @@ libloading = { version = "0.9", optional = true }
 libffi = { version = "5", optional = true }
 
 [features]
-default = ["net", "native", "db", "draw", "html", "mail", "sound"]
+default = ["net", "native", "db", "draw", "html", "mail", "sound", "gpu"]
 # `use vyrn.mail`: sending email.
 mail = ["dep:lettre"]
 # `use vyrn.html`: parsing web pages.

@@ -274,8 +274,33 @@ Game code runs every frame, so speed matters:
 - **Do less per frame**: remove finished entities, don't rebuild lists
   that don't change, and keep the number of shapes drawn reasonable.
 
-The built-in renderer draws in software, the same on every computer: a
-room of a few dozen boxes takes about 2 ms per frame at 800 by 500.
+3D shapes are filled on the **GPU** when the computer has one (through
+Vulkan, Metal or DirectX 12), and by Vyrn's own software renderer
+otherwise; both give the same picture. `draw.renderer()` says which is in
+use, and `draw.use_gpu(false)` switches to software. A room of a few dozen
+boxes takes about 2 ms per frame in software at 800 by 500; the GPU keeps
+big scenes fast.
+
+**Sound** comes from `vyrn.sound`: load effects and music once, play them
+whenever something happens.
+
+```vyrn
+use vyrn.sound
+
+main:
+    let shot = sound.tone(180, 0.08, wave = "noise", volume = 0.4)
+    let hit = sound.tone(880, 0.05, wave = "square", volume = 0.3)
+    print(shot, hit)
+    shot.play()
+end
+```
+
+```text
+Sound(0.08 seconds) Sound(0.05 seconds)
+```
+
+Use `sound.load("shot.wav")` for recorded effects and
+`music.play(volume = 0.4, loop = true)` for background music.
 
 ## 9. The complete game: Target Range
 
@@ -350,8 +375,8 @@ roadmap, roughly in order:
 | 4 | Weapons as data: damage, fire rate, recoil, spread | ✅ structs and maps |
 | 5 | Menus, settings, saved progress | ✅ widgets, files, `vyrn.db` |
 | 6 | Models from Blender | ✅ `draw.load_obj` |
-| 7 | Textures, lighting and a GPU renderer for big scenes | planned |
-| 8 | Sound effects and music | planned |
+| 7 | A GPU renderer for big scenes | ✅ automatic with a GPU; textures and per-pixel lighting planned |
+| 8 | Sound effects and music | ✅ `vyrn.sound` |
 | 9 | Online multiplayer (a server, client prediction, lag compensation) | ✅ `vyrn.net` (UDP and TCP); prediction and lag compensation are yours to build on it |
 
 Start with step 1 (done!), then make the targets fight back.
