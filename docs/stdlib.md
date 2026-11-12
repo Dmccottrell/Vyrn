@@ -283,11 +283,11 @@ All **run today** (`src/vm/stdlib.rs`).
 | (built in) | `read_text`, `write_text`, `append_text`, `read_bytes` / `write_bytes` (lists of 0 to 255), `open(path, mode)` |
 | `vyrn.os` | `os.args()` (the arguments after the file name), `os.env(name, default)`, `os.set_env`, `os.environ()`, `os.cwd()`, `os.chdir`, `os.exit(code)`, `os.platform()`, `os.run(command, input)`: a list (`["git", "status"]`) or a shell line; gives `code`, `ok`, `out`, `err` |
 | `vyrn.path` | `path.join(a, b, ...)`, `path.name`, `path.stem`, `path.ext`, `path.parent`, `path.absolute`, `path.home()` |
-| `vyrn.time` | `time.now()` (seconds since 1970), `time.format(t, "%Y-%m-%d %H:%M:%S")`, `time.parse(text, pattern)`, `time.date(t)` (year, month, day, hour, minute, second, weekday), `time.monotonic()`, `time.sleep`. Times are UTC |
+| `vyrn.time` | `time.now()` (seconds since 1970), `time.format(t, "%Y-%m-%d %H:%M:%S", zone)` (also `%z` and `%Z`), `time.parse(text, pattern, zone)`, `time.date(t, zone)` (year, month, day, hour, minute, second, weekday, zone, offset), `time.make(year, month, day, hour, minute, second, zone)`, `time.add(t, years, months, days, hours, minutes, seconds, zone)` (calendar arithmetic that keeps the clock time across daylight saving), `time.zone()`, `time.monotonic()`, `time.sleep`. A `zone` is `"UTC"` (the default), `"local"`, a name such as `"America/New_York"`, or an offset such as `"+05:30"` |
 | `vyrn.random` | `random.int(low, high)` (both included), `random.float(low, high)`, `random.choice`, `random.shuffle` (in place), `random.sample(xs, k)`, `random.seed(n)` |
 | `vyrn.math` | `sqrt`, `exp`, `log(x, base)`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `hypot`, `degrees`, `radians`, `floor`, `ceil`, `gcd`, `factorial`, `clamp`, `isnan`, `isinf`; constants `pi`, `e`, `tau`, `inf`, `nan` |
 | `vyrn.json` | `json.parse(text)`, `json.dumps(value, indent)`, `json.load(path)`, `json.save(path, value)` |
-| `vyrn.re` | `re.test(pattern, text)`, `re.find` (a match with `text`, `start`, `end`, `groups`, `named`, or `none`), `re.find_all`, `re.replace(pattern, text, with)` (`$1` inserts a group), `re.split` |
+| `vyrn.re` | `re.test(pattern, text)`, `re.find` (a match with `text`, `start`, `end`, `groups`, `named`, or `none`), `re.matches` (every match), `re.find_all`, `re.replace(pattern, text, with)` (`$1` inserts a group; `with` can be a function of the match), `re.split` |
 | `vyrn.csv` | `csv.read(path)` and `csv.parse(text)` (a list of maps from the header, or of lists with `header = false`), `csv.write(path, rows)`, `csv.format(rows)` |
 | `vyrn.http` client | `http.get(url, headers)`, `http.post(url, body, headers)`, `http.put`, `http.delete`: a response with `status`, `ok`, `text`, `json`, `headers`. Maps and lists are sent as JSON |
 
@@ -352,6 +352,8 @@ from the SQL, so input cannot change a statement. Errors are
 | `win.key_down(k)`, `win.key_pressed(k)` | Keys by name: `"left"`, `"space"`, `"a"`, `"1"`, ... |
 | `win.mouse_x`, `win.mouse_y`, `win.mouse_down(button)`, `win.clicked()`, `win.typed()` | The mouse, and text typed this frame |
 | `win.button(label, x, y)`, `win.input(name, x, y, w, hint)`, `win.checkbox(label, x, y, checked)`, `win.set_input(name, text)` | Widgets for apps: a button is true on the frame it is clicked; an input gives its text |
+| `win.label(text)`, `win.slider(name, low, high, value)` | Text, and a slider to drag (gives its value) |
+| `win.layout(x, y, gap = 10)`, `win.row()`, `win.end_row()`, `win.space(px)` | Leave out x and y and widgets lay themselves out: one under another, or side by side between `row()` and `end_row()` |
 | `draw.turtle(surface)` | `forward`, `back`, `left`, `right`, `goto`, `home`, `pen_up`, `pen_down`, `color`, `width`, `circle`, `dot`, `write`, `begin_fill`, `end_fill` |
 | `draw.image(path)` | A PNG, drawn with `surface.image(img, x, y, scale)` |
 | `draw.camera(x, y, z)` | 3D: `move`, `move_to`, `forward`, `turn`, `look_at`, `set_fov` |

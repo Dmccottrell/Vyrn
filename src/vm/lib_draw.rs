@@ -1307,6 +1307,35 @@ pub struct Ui {
     typed: String,
     fields: std::collections::HashMap<String, String>,
     focus: Option<String>,
+    /// Where the next widget goes when it is given no position.
+    flow: Option<Flow>,
+    /// The slider being dragged.
+    dragging: Option<String>,
+}
+
+/// The layout cursor: widgets without a position go one under another, or
+/// side by side inside `win.row()` ... `win.end_row()`.
+#[derive(Clone, Copy)]
+struct Flow {
+    left: f64,
+    x: f64,
+    y: f64,
+    gap: f64,
+    in_row: bool,
+    row_height: f64,
+}
+
+impl Flow {
+    fn at(x: f64, y: f64, gap: f64) -> Flow {
+        Flow {
+            left: x,
+            x,
+            y,
+            gap,
+            in_row: false,
+            row_height: 0.0,
+        }
+    }
 }
 
 const BUTTON: u32 = 0x3949ab;
@@ -1323,6 +1352,119 @@ impl Ui {
         self.down = down;
         self.mouse = mouse;
         self.typed = typed;
+        // Each frame lays out from the top again.
+        self.flow = None;
+        if !down {
+            self.dragging = None;
+        }
+    }
+
+    /// Starts laying out widgets at (x, y), `gap` pixels apart.
+    pub fn layout(&mut self, x: f64, y: f64, gap: f64) {
+        self.flow = Some(Flow::at(x, y, gap));
+    }
+
+    fn flow(&mut self) -> &mut Flow {
+        self.flow.get_or_insert(Flow::at(16.0, 16.0, 10.0))
+    }
+
+    /// From here to `end_row`, widgets go side by side.
+    pub fn row(&mut self) {
+        let f = self.flow();
+        if !f.in_row {
+            f.in_row = true;
+            f.row_height = 0.0;
+        }
+    }
+
+    pub fn end_row(&mut self) {
+        let f = self.flow();
+        if f.in_row {
+            f.in_row = false;
+            f.y += f.row_height + f.gap;
+            f.x = f.left;
+        }
+    }
+
+    /// Empty space: down in a column, across in a row.
+    pub fn space(&mut self, pixels: f64) {
+        let f = self.flow();
+        if f.in_row {
+            f.x += pixels;
+        } else {
+            f.y += pixels;
+        }
+    }
+
+    /// The position for a widget of this size, moving the cursor past it.
+    pub fn place(&mut self, w: f64, h: f64) -> (f64, f64) {
+        let f = self.flow();
+        let at = (f.x, f.y);
+        if f.in_row {
+            f.x += w + f.gap;
+            f.row_height = f.row_height.max(h);
+        } else {
+            f.y += h + f.gap;
+        }
+        at
+    }
+
+    /// A slider named `name` from `low` to `high`; gives its value, which
+    /// follows the mouse while it is dragged.
+    #[allow(clippy::too_many_arguments)]
+    pub fn slider(
+        &mut self,
+        px: &mut Pixels,
+        name: &str,
+        x: f64,
+        y: f64,
+        w: f64,
+        low: f64,
+        high: f64,
+        value: f64,
+    ) -> f64 {
+        let h = 24.0;
+        if self.down && !self.was_down && self.inside(x, y, w, h) {
+            self.dragging = Some(name.to_string());
+        }
+        let mut value = value;
+        if self.down && self.dragging.as_deref() == Some(name) && w > 0.0 {
+            let t = ((self.mouse.0 - x) / w).clamp(0.0, 1.0);
+            value = low + t * (high - low);
+        }
+        let t = if high == low {
+            0.0
+        } else {
+            ((value - low) / (high - low)).clamp(0.0, 1.0)
+        };
+        px.rect(
+            x,
+            y + h / 2.0 - 3.0,
+            w,
+            6.0,
+            Color::opaque(FIELD_EDGE),
+            true,
+            1.0,
+        );
+        px.rect(
+            x,
+            y + h / 2.0 - 3.0,
+            w * t,
+            6.0,
+            Color::opaque(BUTTON),
+            true,
+            1.0,
+        );
+        let knob = x + w * t;
+        px.circle(
+            knob,
+            y + h / 2.0,
+            9.0,
+            Color::opaque(BUTTON_HOVER),
+            true,
+            1.0,
+        );
+        value
     }
 
     /// The mouse button went down this frame.
@@ -1499,6 +1641,15 @@ pub struct Window {
 
 impl Window {
     /// Reads the mouse and what was typed, for the frame about to start.
+    /// A widget's position: x and y if given (at `i` and `i + 1`),
+    /// otherwise the next place in the layout.
+    fn position(&self, a: &Args<'_>, i: usize, w: f64, h: f64) -> VmResult<(f64, f64)> {
+        if a.get(i, "x").is_some() {
+            return Ok((a.num(i, "x")?, a.num(i + 1, "y")?));
+        }
+        Ok(self.ui.borrow_mut().place(w, h))
+    }
+
     fn poll(&self) {
         let w = self.win.borrow();
         let mouse = w
@@ -1658,26 +1809,31 @@ impl Foreign for Window {
                 self.poll();
                 Ok(Value::Float(dt))
             }
-            // `if win.button("Save", x, y): ...` (optional `w`, `h`).
+            // `if win.button("Save", x, y): ...` (optional `w`, `h`). Without
+            // x and y, it goes where the layout puts it.
             "button" => {
                 let label = a.text(0, "label")?;
                 let w = match a.get(3, "w") {
-                    Some(v) => Some(number(v, "the width")?),
-                    None => None,
+                    Some(v) => number(v, "the width")?,
+                    None => 16.0 * label.chars().count() as f64 + 24.0,
                 };
                 let h = a.num_or(4, "h", 32.0)?;
-                let (x, y) = (a.num(1, "x")?, a.num(2, "y")?);
-                let clicked =
-                    self.ui
-                        .borrow_mut()
-                        .button(&mut self.px.borrow_mut(), &label, x, y, w, h);
+                let (x, y) = self.position(&a, 1, w, h)?;
+                let clicked = self.ui.borrow_mut().button(
+                    &mut self.px.borrow_mut(),
+                    &label,
+                    x,
+                    y,
+                    Some(w),
+                    h,
+                );
                 Ok(Value::Bool(clicked))
             }
             // `name = win.input("name", x, y, w, hint = "Your name")`
             "input" => {
                 let name = a.text(0, "name")?;
-                let (x, y) = (a.num(1, "x")?, a.num(2, "y")?);
                 let w = a.num_or(3, "w", 240.0)?;
+                let (x, y) = self.position(&a, 1, w, 28.0)?;
                 let hint = match a.get(4, "hint") {
                     Some(Value::Str(s)) => s.to_string(),
                     _ => String::new(),
@@ -1695,16 +1851,74 @@ impl Foreign for Window {
                 self.ui.borrow_mut().set_field(&name, &text);
                 Ok(Value::None)
             }
-            // `done = win.checkbox("Done", x, y, done)`
+            // `done = win.checkbox("Done", x, y, done)`, or with the layout
+            // `done = win.checkbox("Done", checked = done)`.
             "checkbox" => {
                 let label = a.text(0, "label")?;
-                let (x, y) = (a.num(1, "x")?, a.num(2, "y")?);
                 let checked = a.flag_or(3, "checked", false);
+                let w = 28.0 + 16.0 * label.chars().count() as f64;
+                let (x, y) = self.position(&a, 1, w, 20.0)?;
                 let now =
                     self.ui
                         .borrow_mut()
                         .checkbox(&mut self.px.borrow_mut(), &label, x, y, checked);
                 Ok(Value::Bool(now))
+            }
+            // `win.label("Name:", x, y, color = "white", size = 2)`
+            "label" => {
+                let text = match a.get(0, "text") {
+                    Some(Value::Str(s)) => s.to_string(),
+                    Some(v) => super::ops::display(&ctx.program, v),
+                    None => a.text(0, "text")?,
+                };
+                let size = a.num_or(4, "size", 2.0)?;
+                let color = a.color_or(3, "color", 0xffffff)?;
+                let w = 8.0 * size * text.chars().count() as f64;
+                let (x, y) = self.position(&a, 1, w, 8.0 * size)?;
+                self.px.borrow_mut().text(&text, x, y, color, size);
+                Ok(Value::None)
+            }
+            // `volume = win.slider("volume", 0, 100, volume, x, y, w = 240)`
+            "slider" => {
+                let name = a.text(0, "name")?;
+                let low = a.num_or(1, "low", 0.0)?;
+                let high = a.num_or(2, "high", 1.0)?;
+                let value = a.num_or(3, "value", low)?;
+                let w = a.num_or(6, "w", 240.0)?;
+                let (x, y) = self.position(&a, 4, w, 24.0)?;
+                let v = self.ui.borrow_mut().slider(
+                    &mut self.px.borrow_mut(),
+                    &name,
+                    x,
+                    y,
+                    w,
+                    low,
+                    high,
+                    value,
+                );
+                Ok(Value::Float(v))
+            }
+            // `win.layout(x, y, gap = 10)`: where widgets without a position
+            // start this frame; `row()` ... `end_row()` puts them side by
+            // side, `space(pixels)` leaves a gap.
+            "layout" => {
+                let (x, y) = (a.num_or(0, "x", 16.0)?, a.num_or(1, "y", 16.0)?);
+                let gap = a.num_or(2, "gap", 10.0)?;
+                self.ui.borrow_mut().layout(x, y, gap);
+                Ok(Value::None)
+            }
+            "row" => {
+                self.ui.borrow_mut().row();
+                Ok(Value::None)
+            }
+            "end_row" => {
+                self.ui.borrow_mut().end_row();
+                Ok(Value::None)
+            }
+            "space" => {
+                let pixels = a.num_or(0, "pixels", 10.0)?;
+                self.ui.borrow_mut().space(pixels);
+                Ok(Value::None)
             }
             "clicked" => Ok(Value::Bool(self.ui.borrow().clicked())),
             // What was typed during the last frame.
@@ -2316,5 +2530,53 @@ mod tests {
         assert!(!ui.checkbox(&mut px, "Done", 10.0, 100.0, false));
         ui.next_frame((15.0, 105.0), true, String::new());
         assert!(ui.checkbox(&mut px, "Done", 10.0, 100.0, false));
+    }
+
+    #[test]
+    fn layout_places_widgets_in_columns_and_rows() {
+        let mut ui = Ui::default();
+        ui.next_frame((0.0, 0.0), false, String::new());
+        // Without a layout, widgets start at (16, 16), 10 apart.
+        assert_eq!(ui.place(100.0, 32.0), (16.0, 16.0));
+        assert_eq!(ui.place(100.0, 28.0), (16.0, 58.0));
+        ui.layout(40.0, 40.0, 8.0);
+        assert_eq!(ui.place(50.0, 20.0), (40.0, 40.0));
+        ui.row();
+        assert_eq!(ui.place(50.0, 32.0), (40.0, 68.0));
+        assert_eq!(ui.place(30.0, 20.0), (98.0, 68.0));
+        ui.end_row();
+        ui.space(12.0);
+        assert_eq!(ui.place(10.0, 10.0), (40.0, 120.0));
+        // The next frame starts at the top again.
+        ui.next_frame((0.0, 0.0), false, String::new());
+        assert_eq!(ui.place(10.0, 10.0), (16.0, 16.0));
+    }
+
+    #[test]
+    fn sliders_follow_a_drag() {
+        let mut px = Pixels::new(300, 100);
+        let mut ui = Ui::default();
+        ui.next_frame((60.0, 22.0), false, String::new());
+        assert_eq!(
+            ui.slider(&mut px, "v", 10.0, 10.0, 200.0, 0.0, 100.0, 30.0),
+            30.0
+        );
+        // Pressing on the track picks up the slider; dragging moves it,
+        // even past the end.
+        ui.next_frame((60.0, 22.0), true, String::new());
+        assert_eq!(
+            ui.slider(&mut px, "v", 10.0, 10.0, 200.0, 0.0, 100.0, 30.0),
+            25.0
+        );
+        ui.next_frame((400.0, 90.0), true, String::new());
+        assert_eq!(
+            ui.slider(&mut px, "v", 10.0, 10.0, 200.0, 0.0, 100.0, 25.0),
+            100.0
+        );
+        ui.next_frame((400.0, 90.0), false, String::new());
+        assert_eq!(
+            ui.slider(&mut px, "v", 10.0, 10.0, 200.0, 0.0, 100.0, 100.0),
+            100.0
+        );
     }
 }

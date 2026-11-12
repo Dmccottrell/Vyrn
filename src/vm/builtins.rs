@@ -188,9 +188,29 @@ pub static NATIVES: &[Native] = &[
     fixed("path.home", &[], 0, S::path_home),
     // ---- vyrn.time ----
     fixed("time.now", &[], 0, S::time_now),
-    fixed("time.format", &["time", "pattern"], 0, S::time_format),
-    fixed("time.date", &["time"], 0, S::time_date),
-    fixed("time.parse", &["text", "pattern"], 1, S::time_parse),
+    fixed(
+        "time.format",
+        &["time", "pattern", "zone"],
+        0,
+        S::time_format,
+    ),
+    fixed("time.date", &["time", "zone"], 0, S::time_date),
+    fixed("time.parse", &["text", "pattern", "zone"], 1, S::time_parse),
+    fixed(
+        "time.make",
+        &["year", "month", "day", "hour", "minute", "second", "zone"],
+        3,
+        S::time_make,
+    ),
+    fixed(
+        "time.add",
+        &[
+            "time", "years", "months", "days", "hours", "minutes", "seconds", "zone",
+        ],
+        1,
+        S::time_add,
+    ),
+    fixed("time.zone", &[], 0, S::time_zone_name),
     fixed("time.monotonic", &[], 0, now),
     fixed("time.sleep", &["seconds"], 1, sleep),
     // ---- vyrn.random ----
@@ -234,6 +254,9 @@ pub static NATIVES: &[Native] = &[
     fixed("re.find_all", &["pattern", "text"], 2, S::re_find_all),
     fixed("re.replace", &["pattern", "text", "with"], 3, S::re_replace),
     fixed("re.split", &["pattern", "text"], 2, S::re_split),
+    fixed("re.matches", &["pattern", "text"], 2, S::re_matches),
+    // For the Prelude's `__re_replace_with`, which can't name `re.matches`.
+    fixed("__re_matches", &["pattern", "text"], 2, S::re_matches),
     // ---- vyrn.csv ----
     fixed("csv.parse", &["text", "header", "sep"], 1, S::csv_parse),
     fixed("csv.read", &["path", "header", "sep"], 1, S::csv_read),

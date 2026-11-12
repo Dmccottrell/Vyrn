@@ -31,6 +31,18 @@ create filter(f, xs):
     return [x each x in xs if f(x)]
 end
 
+## `re.replace(pattern, text, f)` with a function: each match `m` (as
+## `re.find` gives it) is replaced by `str(f(m))`.
+create __re_replace_with(pattern, text, f):
+    var out = ""
+    var last = 0
+    each m in __re_matches(pattern, text):
+        out = out + text[last:m["start"]] + str(f(m))
+        last = m["end"]
+    end
+    return out + text[last:]
+end
+
 ## ---- lists ---------------------------------------------------------------
 
 ## `xs.sort(key = none, reverse = false)`: sorts in place.

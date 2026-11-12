@@ -57,6 +57,8 @@ ffi = ["dep:libloading", "dep:libffi"]
 # The interactive prompt: line editing and history. Not needed on the web.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rustyline = { version = "15", default-features = false, features = ["with-file-history"] }
+# `vyrn.time` with time zones: the system's zone database (bundled on Windows).
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo", "tzdb-bundle-platform"] }
 # `use vyrn.sound`: playback and decoding of WAV, Ogg Vorbis and MP3.
 rodio = { version = "0.23", optional = true, default-features = false, features = ["playback", "wav", "vorbis", "mp3"] }
 # `use vyrn.draw`: windows (minifb), PNG images, and a bitmap font.

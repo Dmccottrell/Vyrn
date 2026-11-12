@@ -1959,6 +1959,32 @@ impl Vm {
 
     /// `sorted(xs)`, `__sorted(xs, reverse)`, `min(xs)` and `max(xs)` on
     /// values whose type defines `operator <`. `None` for anything else.
+    /// A Prelude function that does a native's job when its arguments need
+    /// Vyrn code run: `re.replace(pattern, text, f)` with a function `f`.
+    fn prelude_handoff(
+        &self,
+        id: u16,
+        from: usize,
+        argc: usize,
+    ) -> Option<Rc<super::value::Closure>> {
+        let helper = match builtins::NATIVES[id as usize].name {
+            "re.replace"
+                if argc == 3
+                    && matches!(
+                        self.stack[from + 2],
+                        Value::Function(_) | Value::Native(_) | Value::Foreign(_)
+                    ) =>
+            {
+                "__re_replace_with"
+            }
+            _ => return None,
+        };
+        match self.program.global(helper).map(|g| &self.globals[g]) {
+            Some(Value::Function(f)) => Some(f.clone()),
+            _ => None,
+        }
+    }
+
     fn ordered_by_operator(
         &mut self,
         id: u16,
@@ -2276,6 +2302,11 @@ impl Vm {
                                 if matches!(builtins::NATIVES[id as usize].name, "print" | "str") {
                                     save_ip!();
                                     check!(self.apply_to_text(at + 1, argc));
+                                }
+                                if let Some(f) = self.prelude_handoff(id, at + 1, argc) {
+                                    save_ip!();
+                                    check!(self.enter(f, at, at + 1, argc));
+                                    continue 'frames;
                                 }
                                 if let Some(r) = self.ordered_by_operator(id, at + 1, argc) {
                                     save_ip!();

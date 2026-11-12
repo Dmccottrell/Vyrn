@@ -121,6 +121,33 @@ fn files() {
 }
 
 #[test]
+fn time_zones_and_calendar_arithmetic() {
+    let out = main(
+        "use vyrn.time",
+        "t = time.make(2026, 7, 4, 12, 0, 0, zone = \"America/New_York\")\n\
+         print(time.format(t), time.format(t, \"%H:%M %Z %z\", zone = \"America/New_York\"), time.format(t, \"%H:%M\", zone = \"+05:45\"))\n\
+         before = time.make(2026, 3, 7, 9, 0, zone = \"America/New_York\")\n\
+         after = time.add(before, days = 1, zone = \"America/New_York\")\n\
+         print(time.format(after, \"%d %H:%M %Z\", zone = \"America/New_York\"), (after - before) / 3600)\n\
+         print(time.format(time.add(time.make(2026, 1, 31), months = 1), \"%Y-%m-%d\"), time.format(time.parse(\"2026-11-12 08:00:00\", zone = \"Asia/Tokyo\")))\n\
+         print(time.date(t, \"Europe/London\")[\"offset\"], time.date(0.0)[\"zone\"])",
+    );
+    assert_eq!(
+        out,
+        "2026-07-04 16:00:00 12:00 EDT -0400 21:45\n08 09:00 EDT 23.0\n2026-02-28 2026-11-11 23:00:00\n3600 UTC\n"
+    );
+}
+
+#[test]
+fn replacing_matches_with_a_function() {
+    let out = main(
+        "use vyrn.re",
+        "print(re.replace(\"[0-9]+\", \"a1 b22 ünï 3\", m => int(m[\"text\"]) * 2), len(re.matches(\"o\", \"foo boo\")))",
+    );
+    assert_eq!(out, "a2 b44 ünï 6 4\n");
+}
+
+#[test]
 fn modules() {
     let out = main(
         "use vyrn.path\nuse vyrn.time\nuse vyrn.random\nuse vyrn.math\nuse vyrn.json\nuse vyrn.re\nuse vyrn.csv\nuse vyrn.os",

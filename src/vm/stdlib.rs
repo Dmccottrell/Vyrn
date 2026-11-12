@@ -1513,6 +1513,98 @@ fn parts(ts: f64) -> Parts {
     }
 }
 
+/// A time zone's offset from UTC at time `ts`, in seconds, and its short
+/// name. `zone` is "UTC", "local" (this computer's), an IANA name such as
+/// "America/New_York", or a fixed offset such as "+05:30".
+fn zone_offset(zone: &str, ts: f64) -> VmResult<(i64, String)> {
+    if zone.is_empty() || zone.eq_ignore_ascii_case("utc") || zone == "Z" {
+        return Ok((0, "UTC".into()));
+    }
+    if let Some(fixed) = fixed_offset(zone) {
+        return Ok((fixed, zone.to_string()));
+    }
+    named_zone_offset(zone, ts)
+}
+
+/// "+05:30", "-0800", "+3": seconds east of UTC.
+fn fixed_offset(zone: &str) -> Option<i64> {
+    let sign = match zone.as_bytes().first()? {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let digits: String = zone[1..].chars().filter(|c| *c != ':').collect();
+    if digits.is_empty() || digits.len() > 4 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let (h, m) = if digits.len() <= 2 {
+        (digits.parse::<i64>().ok()?, 0)
+    } else {
+        let split = digits.len() - 2;
+        (
+            digits[..split].parse::<i64>().ok()?,
+            digits[split..].parse::<i64>().ok()?,
+        )
+    };
+    (h <= 18 && m < 60).then_some(sign * (h * 3600 + m * 60))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn time_zone(zone: &str) -> VmResult<jiff::tz::TimeZone> {
+    if zone.eq_ignore_ascii_case("local") {
+        return Ok(jiff::tz::TimeZone::system());
+    }
+    jiff::tz::TimeZone::get(zone).map_err(|_| {
+        err(
+            "ValueError",
+            format!(
+                "{} is not a time zone; use \"UTC\", \"local\", a name such as \"Europe/London\", or an offset such as \"+05:30\"",
+                quote(zone)
+            ),
+        )
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn named_zone_offset(zone: &str, ts: f64) -> VmResult<(i64, String)> {
+    let tz = time_zone(zone)?;
+    let at = jiff::Timestamp::from_second(ts.floor() as i64)
+        .map_err(|_| err("ValueError", "that time is out of range"))?;
+    let info = tz.to_offset_info(at);
+    Ok((
+        i64::from(info.offset().seconds()),
+        info.abbreviation().to_string(),
+    ))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn named_zone_offset(zone: &str, _: f64) -> VmResult<(i64, String)> {
+    Err(err(
+        "Unavailable",
+        format!(
+            "named time zones such as {} are not available here; use an offset such as \"+05:30\"",
+            quote(zone)
+        ),
+    ))
+}
+
+/// The zone argument at `i`, "UTC" when left out.
+fn zone_arg(args: &[Value], i: usize) -> VmResult<&str> {
+    match opt(args, i) {
+        Some(_) => text_arg(args, i, "the time zone"),
+        None => Ok("UTC"),
+    }
+}
+
+/// The UTC time of a wall-clock time in `zone` (given as seconds as if it
+/// were UTC). Checks the offset twice, so times near a daylight-saving
+/// change come out right.
+fn from_wall_clock(wall: f64, zone: &str) -> VmResult<f64> {
+    let (first, _) = zone_offset(zone, wall)?;
+    let (second, _) = zone_offset(zone, wall - first as f64)?;
+    Ok(wall - second as f64)
+}
+
 const MONTHS: [&str; 12] = [
     "January",
     "February",
@@ -1537,8 +1629,8 @@ const DAYS: [&str; 7] = [
     "Sunday",
 ];
 
-/// `time.format(ts, pattern = "%Y-%m-%d %H:%M:%S")`, in UTC. Supports
-/// `%Y %m %d %H %M %S %f %j %A %a %B %b %y %p %I %%`.
+/// `time.format(ts, pattern = "%Y-%m-%d %H:%M:%S", zone = "UTC")`. Supports
+/// `%Y %m %d %H %M %S %f %j %A %a %B %b %y %p %I %z %Z %%`.
 pub fn time_format(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let ts = match opt(args, 0) {
         Some(v) => number(v, "the time")?,
@@ -1548,7 +1640,9 @@ pub fn time_format(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         Some(_) => text_arg(args, 1, "the pattern")?,
         None => "%Y-%m-%d %H:%M:%S",
     };
-    let p = parts(ts);
+    let zone = zone_arg(args, 2)?;
+    let (offset, abbreviation) = zone_offset(zone, ts)?;
+    let p = parts(ts + offset as f64);
     let mut out = String::new();
     let mut chars = pattern.chars();
     while let Some(c) = chars.next() {
@@ -1577,6 +1671,14 @@ pub fn time_format(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
             Some('B') => write!(out, "{}", MONTHS[p.month as usize - 1]),
             Some('b') => write!(out, "{}", &MONTHS[p.month as usize - 1][..3]),
             Some('%') => write!(out, "%"),
+            Some('z') => write!(
+                out,
+                "{}{:02}{:02}",
+                if offset < 0 { '-' } else { '+' },
+                offset.abs() / 3600,
+                offset.abs() % 3600 / 60
+            ),
+            Some('Z') => write!(out, "{abbreviation}"),
             Some(other) => {
                 return Err(err(
                     "ValueError",
@@ -1595,7 +1697,9 @@ pub fn time_date(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         Some(v) => number(v, "the time")?,
         None => unix_now(),
     };
-    let p = parts(ts);
+    let zone = zone_arg(args, 1)?;
+    let (offset, abbreviation) = zone_offset(zone, ts)?;
+    let p = parts(ts + offset as f64);
     Ok(map_value(vec![
         ("year", Value::Int(p.year)),
         ("month", Value::Int(p.month)),
@@ -1604,7 +1708,81 @@ pub fn time_date(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         ("minute", Value::Int(p.minute)),
         ("second", Value::Int(p.second)),
         ("weekday", Value::str(DAYS[p.weekday as usize])),
+        ("zone", Value::str(abbreviation)),
+        ("offset", Value::Int(offset)),
     ]))
+}
+
+/// `time.make(year, month, day, hour, minute, second, zone = "UTC")`: the
+/// time of a calendar date and clock time in a zone.
+pub fn time_make(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let part = |i: usize, default: i64, what: &str| -> VmResult<i64> {
+        match opt(args, i) {
+            Some(Value::Int(n)) => Ok(*n),
+            Some(v) => Ok(number(v, what)? as i64),
+            None => Ok(default),
+        }
+    };
+    let (y, mo, d) = (
+        part(0, 1970, "the year")?,
+        part(1, 1, "the month")?,
+        part(2, 1, "the day")?,
+    );
+    let (h, mi) = (part(3, 0, "the hour")?, part(4, 0, "the minute")?);
+    let sec = match opt(args, 5) {
+        Some(v) => number(v, "the second")?,
+        None => 0.0,
+    };
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
+        return Err(err(
+            "ValueError",
+            format!("{y}-{mo:02}-{d:02} is not a date"),
+        ));
+    }
+    let wall = (days_from_civil(y, mo, d) * 86_400 + h * 3600 + mi * 60) as f64 + sec;
+    Ok(Value::Float(from_wall_clock(wall, zone_arg(args, 6)?)?))
+}
+
+/// `time.add(t, years, months, days, hours, minutes, seconds, zone = "UTC")`:
+/// calendar arithmetic. Adding a month to 31 January gives the last day of
+/// February; adding days keeps the clock time across daylight-saving changes.
+pub fn time_add(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let ts = number(args.first().unwrap_or(&Value::None), "the time")?;
+    let amount = |i: usize| -> VmResult<f64> {
+        match opt(args, i) {
+            Some(v) => number(v, "the amount"),
+            None => Ok(0.0),
+        }
+    };
+    let zone = zone_arg(args, 7)?;
+    let (offset, _) = zone_offset(zone, ts)?;
+    let wall = ts + offset as f64;
+    let p = parts(wall);
+    let months = p.month - 1 + amount(2)? as i64 + 12 * amount(1)? as i64;
+    let year = p.year + months.div_euclid(12);
+    let month = months.rem_euclid(12) + 1;
+    let last_day = days_from_civil(year + i64::from(month == 12), month % 12 + 1, 1)
+        - days_from_civil(year, month, 1);
+    let day = p.day.min(last_day);
+    let clock = wall - wall.div_euclid(86_400.0) * 86_400.0;
+    let moved = (days_from_civil(year, month, day) as f64 + amount(3)?.trunc()) * 86_400.0
+        + clock
+        + amount(3)?.fract() * 86_400.0;
+    let shifted = from_wall_clock(moved, zone)?;
+    Ok(Value::Float(
+        shifted + amount(4)? * 3600.0 + amount(5)? * 60.0 + amount(6)?,
+    ))
+}
+
+/// `time.zone()`: this computer's time zone, such as "Europe/London".
+pub fn time_zone_name(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let tz = jiff::tz::TimeZone::system();
+        Ok(Value::str(tz.iana_name().unwrap_or("UTC")))
+    }
+    #[cfg(target_arch = "wasm32")]
+    Ok(Value::str("UTC"))
 }
 
 /// `time.parse("2026-11-11", pattern = "%Y-%m-%d")`: the time a text
@@ -1663,9 +1841,8 @@ pub fn time_parse(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     if i != t.len() || !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
         return Err(bad());
     }
-    Ok(Value::Float(
-        (days_from_civil(y, mo, d) * 86_400 + h * 3600 + mi * 60 + s) as f64,
-    ))
+    let wall = (days_from_civil(y, mo, d) * 86_400 + h * 3600 + mi * 60 + s) as f64;
+    Ok(Value::Float(from_wall_clock(wall, zone_arg(args, 2)?)?))
 }
 
 // ==== vyrn.random ============================================================
@@ -2080,6 +2257,17 @@ pub fn re_replace(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let text = text_arg(args, 1, "the text")?;
     let replacement = text_arg(args, 2, "the replacement")?;
     Ok(Value::str(re.replace_all(text, replacement).into_owned()))
+}
+
+/// `re.matches(pattern, text)`: every match, as `re.find` gives one.
+pub fn re_matches(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let re = regex(text_arg(args, 0, "the pattern")?)?;
+    let text = text_arg(args, 1, "the text")?;
+    Ok(Value::list(
+        re.captures_iter(text)
+            .map(|c| match_value(&re, &c, text))
+            .collect(),
+    ))
 }
 
 pub fn re_split(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
