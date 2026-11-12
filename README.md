@@ -22,6 +22,7 @@ run on the interpreter (`docs/deploy.md` section 3).
 - [`docs/ffi.md`](docs/ffi.md): the Python and C bridges, zero-copy tensors, and the decentralized module resolver
 - [`docs/nn.md`](docs/nn.md): `kernel` function on tensors, its lowering to WGSL, and tensor memory layout
 - [`docs/deploy.md`](docs/deploy.md): `vyrn build --target=...` for static Linux binaries and edge WebAssembly, and the LLVM backend design
+- [`docs/publishing.md`](docs/publishing.md): releases, and publishing to npm, the VS Code Marketplace and Open VSX
 - [`docs/debugging.md`](docs/debugging.md): breakpoints, stepping and variables, in VS Code (F5) or the terminal (`vyrn debug`)
 - [`unreal/README.md`](unreal/README.md): gameplay scripting in Unreal Engine 5 with the VyrnScripting plugin, and `vyrn.dll` for embedding Vyrn in any C or C++ program
 
@@ -52,6 +53,15 @@ Windows (PowerShell):
 irm https://raw.githubusercontent.com/dmccottrell/vyrn/main/install.ps1 | iex
 ```
 
+With Node.js, from npm (any system):
+
+```bash
+npm install -g vyrn-lang
+```
+
+The editor extension: search for **Vyrn** in VS Code's Extensions view
+(or VSCodium's and Cursor's, from Open VSX).
+
 Or from source, with Rust installed:
 
 ```bash
@@ -62,7 +72,9 @@ On Linux, building from source needs the sound library's development
 files first (`sudo apt-get install libasound2-dev libudev-dev` on Debian and Ubuntu: sound and gamepads).
 
 The installers download a release built by `.github/workflows/release.yml`;
-releases appear once a version tag such as `v0.4.0` is pushed.
+releases appear once a version tag such as `v0.4.0` is pushed, and npm and
+the extension marketplaces once their tokens are set up
+(`docs/publishing.md`).
 
 ## Getting started
 

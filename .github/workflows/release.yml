@@ -1,6 +1,9 @@
 # Pushing a tag such as `v0.4.0` builds `vyrn` for every platform and
-# publishes a GitHub release with the archives, which `install.sh` and
-# `install.ps1` download.
+# publishes a GitHub release with the archives (which `install.sh` and
+# `install.ps1` download), the bare programs (which the npm package
+# downloads), the Unreal plugin and the VS Code extension. With the
+# secrets NPM_TOKEN, VSCE_PAT and OVSX_PAT set, it also publishes to npm,
+# the VS Code Marketplace and Open VSX (see docs/publishing.md).
 name: Release
 
 on:
@@ -41,6 +44,9 @@ jobs:
           cp target/${{ matrix.target }}/release/vyrn "$name/"
           cp README.md "$name/"
           tar czf "$name.tar.gz" "$name"
+          # The bare program, for the npm package, named like the archive.
+          rm -rf "$name"
+          cp target/${{ matrix.target }}/release/vyrn "$name"
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -50,10 +56,12 @@ jobs:
           Copy-Item target/${{ matrix.target }}/release/vyrn.exe $name/
           Copy-Item README.md $name/
           Compress-Archive -Path $name -DestinationPath "$name.zip"
+          # The bare program, for the npm package.
+          Copy-Item target/${{ matrix.target }}/release/vyrn.exe "$name.exe"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: vyrn-*.*
+          path: vyrn-*
 
   unreal:
     name: Unreal plugin (${{ matrix.platform }})
@@ -95,8 +103,37 @@ jobs:
           name: unreal-${{ matrix.platform }}
           path: VyrnScripting-*.zip
 
+  vscode:
+    name: VS Code extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Package the extension
+        working-directory: editors/vscode
+        run: |
+          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+          npm install --omit=dev --no-audit --no-fund
+          npx --yes @vscode/vsce package -o "../../vyrn-vscode-${GITHUB_REF_NAME}.vsix"
+      - name: Publish to the VS Code Marketplace
+        if: env.VSCE_PAT != ''
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx --yes @vscode/vsce publish --packagePath "vyrn-vscode-${GITHUB_REF_NAME}.vsix" -p "$VSCE_PAT"
+      - name: Publish to Open VSX (VSCodium, Cursor and others)
+        if: env.OVSX_PAT != ''
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx --yes ovsx publish "vyrn-vscode-${GITHUB_REF_NAME}.vsix" -p "$OVSX_PAT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vscode
+          path: vyrn-vscode-*.vsix
+
   publish:
-    needs: [build, unreal]
+    needs: [build, unreal, vscode]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -110,3 +147,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "${{ github.ref_name }}" dist/* --title "Vyrn ${{ github.ref_name }}" --generate-notes
+
+  npm:
+    name: npm package
+    # After the release exists, so the package can download its programs.
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Publish vyrn-lang
+        if: env.NODE_AUTH_TOKEN != ''
+        working-directory: npm/vyrn
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+          npm publish --access public --ignore-scripts

@@ -5,6 +5,23 @@
   "version": "0.4.0",
   "publisher": "vyrn",
   "license": "MIT",
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#1d2b6e",
+    "theme": "dark"
+  },
+  "homepage": "https://github.com/dmccottrell/vyrn",
+  "bugs": {
+    "url": "https://github.com/dmccottrell/vyrn/issues"
+  },
+  "keywords": [
+    "vyrn",
+    "language",
+    "debugger",
+    "games",
+    "beginner"
+  ],
+  "pricing": "Free",
   "engines": {
     "vscode": "^1.85.0"
   },

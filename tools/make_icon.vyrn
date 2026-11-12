@@ -1,0 +1,24 @@
+# make_icon.vyrn: draws the Vyrn icon (editors/vscode/icon.png) with
+# vyrn.draw, so the picture is made from code like everything else here.
+#
+#   vyrn run tools/make_icon.vyrn
+
+use vyrn.draw
+
+const SIZE = 256
+
+main:
+    let c = draw.canvas(SIZE, SIZE)
+    # A deep blue tile, lighter towards the top.
+    each y in 0 until SIZE:
+        let t = y / SIZE
+        c.line(0, y, SIZE - 1, y, draw.rgb(40 - 20 * t, 60 - 30 * t, 140 - 60 * t))
+    end
+    # A "V" made of two strokes, cyan on the left and violet on the right.
+    c.polygon([[52, 56], [92, 56], [128, 168], [112, 204]], "#4dd0e1")
+    c.polygon([[164, 56], [204, 56], [144, 204], [128, 168]], "#9575cd")
+    # A spark at the top right: the "run" in "run anywhere".
+    c.circle(206, 52, 14, "#ffd54f")
+    c.save("editors/vscode/icon.png")
+    print("wrote editors/vscode/icon.png")
+end

@@ -66,6 +66,15 @@ jobs:
       - run: cargo build --locked
       - name: VS Code extension and language server
         run: node editors/vscode/test.js
+      - name: The npm package installs and runs vyrn
+        env:
+          VYRN_BINARY_PATH: target/debug/vyrn
+        run: node npm/vyrn/test.js
+      - name: The VS Code extension packages for the Marketplace
+        working-directory: editors/vscode
+        run: |
+          npm install --omit=dev --no-audit --no-fund
+          npx --yes @vscode/vsce package -o /tmp/vyrn.vsix
 
   wasm:
     runs-on: ubuntu-latest
