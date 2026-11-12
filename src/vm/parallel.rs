@@ -227,9 +227,13 @@ pub struct PendingJob {
     answer: std::sync::mpsc::Receiver<Result<Portable, String>>,
 }
 
-impl PendingJob {
+impl super::task::Pending for PendingJob {
+    fn handle(&self) -> &std::rc::Rc<super::task::TaskHandle> {
+        &self.handle
+    }
+
     /// The job's result, once it has one.
-    pub fn poll(&self, program: &Program) -> Option<Result<Value, Value>> {
+    fn poll(&mut self, program: &Program) -> Option<Result<Value, Value>> {
         use std::sync::mpsc::TryRecvError;
         match self.answer.try_recv() {
             Ok(Ok(v)) => Some(Ok(from_portable(program, &v))),
@@ -351,10 +355,10 @@ impl Pool {
         })
         .map_err(|_| err("PoolError", "the pool's threads have stopped"))?;
         let handle = std::rc::Rc::new(super::task::TaskHandle::new(ctx.new_task_id(), name));
-        ctx.jobs.push(PendingJob {
+        ctx.jobs.push(Box::new(PendingJob {
             handle: handle.clone(),
             answer,
-        });
+        }));
         Ok(Value::Task(handle))
     }
 }

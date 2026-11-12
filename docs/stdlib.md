@@ -156,18 +156,54 @@ A failure is a JSON error whose status follows its kind: `NotFound` is 404,
 `BadRequest` 400, `Unauthorized` 401, `Forbidden` 403, otherwise 500.
 `vyrn.web` is the same module under its earlier name.
 
-### 3.1 Design: the rest of the module
+### 3.1 Requests, responses, middleware, live connections
+
+**Runs today.** Three parameter names are special: a route that takes
+`request` gets the whole request, one that takes `stream` sends
+server-sent events, and one that takes `socket` is a WebSocket.
 
 | API | Purpose |
 |---|---|
-| `http.Request` | A parameter of this type receives the whole request: `method`, `path`, `headers`, `query`, `body`, `client` |
-| `http.Response(status, body, headers)` | Full control when a return value is not enough |
-| `http.Router(prefix)` | A router value for composing apps from modules: `api.mount("/v1", users.router)` |
-| `@http.middleware` | A function `(req: http.Request, next) -> http.Response` wrapping every route under it |
-| `@require(...)`, `@rate_limit(...)` | Decorators are middleware with arguments, as in the `routes "/admin":` group of `examples/api.vyrn` |
-| `route SSE` / `route WS` | Server-sent events and WebSockets. The handler takes a `stream` parameter and `await stream.send(x)` |
-| `http.client` | `await http.get(url)`, `await http.post(url, json = x)`, for calling other services |
-| `http.serve(app, port, workers)` | `workers > 1` runs one scheduler per OS thread, each with its own listener (SO_REUSEPORT) |
+| `request` parameter | `request.method`, `path`, `headers` (names in lower case), `query`, `body` (text), `json` (the body parsed, or none), `client`, and `request.header("X-Key")` in any case |
+| `http.Response(status, body, headers)` | Full control: `return http.Response(201, item, {"Location": "/items/7"})`. A `Content-Type` header replaces the usual one |
+| `http.use(f)` | Middleware around every route: `f(request, next)` gives the response, usually `next(request)`'s, or answers by itself (a 401, a cached page). The first added runs outermost |
+| `stream` parameter | Server-sent events: `stream.send(data, event = "name")` pushes one to the page (text as it is, anything else as JSON); the stream ends with the handler. Pages listen with `new EventSource("/path")` |
+| `socket` parameter | A WebSocket: `socket.send(x)`, `msg = await socket.receive()` (JSON arrives as maps and lists, other text as text; none once the other side closes), `socket.close()`, `socket.closed` |
+| `http.get`, `http.post`, ... | Calling other services (see 5a) |
+
+```vyrn check
+use vyrn.http
+
+create needs_key(request, next):
+    if request.header("X-Key") != "secret": return http.Response(401, {"error": "no key"})
+    return next(request)
+end
+
+route GET "/clock" (stream):
+    each i in 1 to 10:
+        stream.send({"tick": i})
+        await sleep(1)
+    end
+end
+
+route GET "/chat" (socket):
+    socket.send("welcome")
+    loop:
+        let msg = await socket.receive()
+        if msg == none: stop
+        socket.send("you said: {msg}")
+    end
+end
+
+main:
+    http.use(needs_key)
+    http.serve(port = 8080)
+end
+```
+
+Still design: `http.Router(prefix)` values for mounting modules (the
+`routes "/prefix":` group covers most of it today), and
+`http.serve(workers = n)` with a listener per OS thread.
 
 What stays out: templates, ORMs, sessions. Those are packages.
 
@@ -627,7 +663,7 @@ end
 | `vyrn.os`, `vyrn.path`, `vyrn.time`, `vyrn.random`, `vyrn.math`, `vyrn.json`, `vyrn.re`, `vyrn.csv`, HTTP client | `src/vm/stdlib.rs` | runs |
 | `vyrn.db`, `vyrn.draw`, `vyrn.html`, `vyrn.template`, `vyrn.table`, `vyrn.chart`, `vyrn.mail` | `src/vm/lib_*.rs` | runs |
 | `use vyrn.<module>` with module and name imports | `src/vm/compiler.rs` (`use_decl`, `module_member`) | runs |
-| `vyrn.http` routing, providers, server | `src/vm/machine.rs` (`resolve_route`, `service_servers`), `src/vm/web.rs` | runs; `Request`, `Response`, `Router`, middleware, SSE/WS are design |
+| `vyrn.http` routing, providers, server, requests, responses, middleware, SSE, WebSockets | `src/vm/machine.rs` (`resolve_route`, `service_servers`), `src/vm/web.rs`, `src/vm/web_live.rs` | runs; `Router` values and multi-threaded serving are design |
 | Green threads, channels, timers | `src/vm/machine.rs`, `src/vm/task.rs` | runs |
 | `vyrn.task` groups, timeouts, select, cancel, pools, bounded channels, `yield_now` | `src/vm/stdlib.rs`, `src/vm/parallel.rs`, `src/vm/machine.rs` (`await_race`, `apply_cancels`) | runs |
 | `vyrn.fs` files and directories | `src/vm/stdlib.rs` | runs |

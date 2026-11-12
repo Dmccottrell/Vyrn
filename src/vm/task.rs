@@ -96,6 +96,15 @@ impl fmt::Debug for TaskHandle {
     }
 }
 
+/// Something a task waits for outside the VM: work on another thread, a
+/// message on a socket. The scheduler polls it and finishes the task's
+/// handle with the result.
+pub trait Pending {
+    fn handle(&self) -> &std::rc::Rc<TaskHandle>;
+    /// The result, once there is one.
+    fn poll(&mut self, program: &super::program::Program) -> Option<Result<Value, Value>>;
+}
+
 /// A queue between tasks: unbounded, or holding at most `capacity` values.
 #[derive(Debug, Default)]
 pub struct Channel {

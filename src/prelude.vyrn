@@ -43,6 +43,13 @@ create __re_replace_with(pattern, text, f):
     return out + text[last:]
 end
 
+## Runs a request through the middleware `chain` from `i` on, then the
+## route: each middleware is `f(request, next)`.
+create __http_run(chain, i, request, handler, args):
+    if i == len(chain): return await handler(args...)
+    return await chain[i](request, r => __http_run(chain, i + 1, r, handler, args))
+end
+
 ## ---- lists ---------------------------------------------------------------
 
 ## `xs.sort(key = none, reverse = false)`: sorts in place.

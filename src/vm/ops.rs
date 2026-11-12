@@ -60,14 +60,17 @@ pub struct Ctx {
     pub timers: Vec<(std::time::Instant, Rc<super::task::TaskHandle>)>,
     /// Tasks made ready by builtins, such as a channel receiving a value.
     pub wakeups: Vec<super::task::TaskId>,
-    /// Work running on `task.Pool` threads: each result finishes its task.
-    pub jobs: Vec<super::parallel::PendingJob>,
+    /// Work done outside the VM (`task.Pool` threads, WebSocket messages):
+    /// each result finishes its task.
+    pub jobs: Vec<Box<dyn super::task::Pending>>,
     /// The next task id to hand out.
     pub next_task: super::task::TaskId,
     /// Servers started by `web.serve`.
     pub servers: Vec<super::web::Server>,
     /// Values route handlers receive by parameter name (`web.provide`).
     pub providers: std::collections::HashMap<String, Value>,
+    /// Functions wrapped around every route, outermost first (`http.use`).
+    pub middleware: Vec<Value>,
     /// Set by a builtin that blocks, such as `web.serve`: the calling task
     /// waits for this task before continuing.
     pub block_on: Option<Rc<super::task::TaskHandle>>,

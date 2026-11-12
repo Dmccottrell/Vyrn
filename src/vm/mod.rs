@@ -58,6 +58,7 @@ pub mod tensor;
 pub mod tokenizer;
 pub mod value;
 pub mod web;
+pub mod web_live;
 pub mod weights;
 
 use std::cell::RefCell;

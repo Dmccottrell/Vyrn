@@ -329,6 +329,13 @@ pub static NATIVES: &[Native] = &[
         super::lib_sound::set_listener,
     ),
     fixed("physics.world", &["gravity"], 0, super::lib_physics::world),
+    fixed(
+        "web.Response",
+        &["status", "body", "headers"],
+        0,
+        super::web_live::response,
+    ),
+    fixed("web.use", &["middleware"], 1, web_use),
     fixed("sound.stop_all", &[], 0, super::lib_sound::stop_all),
     fixed(
         "task.parallel",
@@ -760,6 +767,18 @@ fn join(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 fn sleep(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let seconds = number(&args[0], "the number of seconds")?;
     sleep_task(ctx, seconds)
+}
+
+/// `http.use(f)`: wraps every route in `f(request, next)`, which gives the
+/// response, usually from `next(request)`. The first added is outermost.
+fn web_use(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    match args.first() {
+        Some(f @ (Value::Function(_) | Value::Native(_))) => {
+            ctx.middleware.push(f.clone());
+            Ok(Value::None)
+        }
+        _ => Err(type_error("`http.use` takes a function `(request, next)`")),
+    }
 }
 
 /// `task.yield_now()`: lets every other ready task run, then carries on.

@@ -301,6 +301,7 @@ impl Vm {
             next_task: super::task::ROOT_TASK,
             servers: Vec::new(),
             providers: HashMap::new(),
+            middleware: Vec::new(),
             block_on: None,
             hosted: false,
             cancels: Vec::new(),
@@ -1427,10 +1428,24 @@ impl Vm {
             let mut i = 0;
             while i < server.pending.len() {
                 if server.pending[i].0.is_done() {
-                    let (handle, mut stream) = server.pending.swap_remove(i);
+                    let (handle, stream) = server.pending.swap_remove(i);
                     let result = handle.result.borrow().clone();
-                    if let Some(result) = result {
-                        self.response_for(result).write_to(&mut stream);
+                    match (result, stream) {
+                        (Some(result), Some(mut stream)) => {
+                            self.response_for(result).write_to(&mut stream)
+                        }
+                        // An event stream or WebSocket ends with its handler.
+                        (Some(Err(failure)), None) => {
+                            let e = self.runtime_error(failure);
+                            if e.kind != "ConnectionClosed" {
+                                let _ = writeln!(
+                                    self.ctx.out,
+                                    "warning: a live route failed: {}: {}",
+                                    e.kind, e.message
+                                );
+                            }
+                        }
+                        _ => {}
                     }
                 } else {
                     i += 1;
@@ -1444,7 +1459,7 @@ impl Vm {
                     *n -= 1;
                 }
                 match self.start_request(&mut stream) {
-                    Ok(handle) => server.pending.push((handle, stream)),
+                    Ok((handle, live)) => server.pending.push((handle, (!live).then_some(stream))),
                     Err(response) => response.write_to(&mut stream),
                 }
             }
@@ -1463,12 +1478,23 @@ impl Vm {
         self.ctx.servers = servers;
     }
 
-    /// Reads a request and starts its handler as a task, or returns the
-    /// response to send at once.
+    /// The parameter names of the route a request would reach.
+    fn route_params(&self, method: HttpMethod, path: &str) -> Vec<String> {
+        self.program
+            .routes
+            .iter()
+            .find(|r| r.method == method && match_path(&r.segments, path).is_some())
+            .map(|r| r.params.iter().map(|p| p.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Reads a request and starts its handler as a task (and whether the
+    /// handler talks on the connection itself: an event stream or a
+    /// WebSocket), or returns the response to send at once.
     fn start_request(
         &mut self,
         stream: &mut std::net::TcpStream,
-    ) -> Result<Rc<TaskHandle>, web::Response> {
+    ) -> Result<(Rc<TaskHandle>, bool), web::Response> {
         let request =
             web::read_request(stream).map_err(|e| web::Response::error(400, "BadRequest", &e))?;
         let Some(method) = HttpMethod::from_ident(&request.method) else {
@@ -1482,12 +1508,66 @@ impl Vm {
             &request.body,
             request.headers.get("content-type").map(String::as_str),
         )?;
+        // `request`, `stream` and `socket` parameters, beside the providers.
+        let wants = self.route_params(method, &request.path);
+        let request_value = super::web_live::HttpRequest {
+            method: request.method.clone(),
+            path: request.path.clone(),
+            headers: request.headers.clone(),
+            query: request.query.clone(),
+            body: request.body.clone(),
+            client: stream
+                .peer_addr()
+                .map(|a| a.to_string())
+                .unwrap_or_default(),
+        }
+        .value();
+        let mut providers = self.ctx.providers.clone();
+        providers.insert("request".into(), request_value.clone());
+        let mut live = false;
+        if wants.iter().any(|p| p == "socket") {
+            let key = request
+                .headers
+                .get("sec-websocket-key")
+                .cloned()
+                .ok_or_else(|| {
+                    web::Response::error(
+                        426,
+                        "UpgradeRequired",
+                        "this route is a WebSocket; connect with one",
+                    )
+                })?;
+            let tcp = stream
+                .try_clone()
+                .map_err(|e| web::Response::error(500, "ServerError", &e.to_string()))?;
+            super::web_live::upgrade(stream, &key)
+                .map_err(|e| web::Response::error(500, "ServerError", &e.to_string()))?;
+            providers.insert(
+                "socket".into(),
+                Value::Foreign(Rc::new(Box::new(super::web_live::WebSocket::new(tcp)))),
+            );
+            live = true;
+        } else if wants.iter().any(|p| p == "stream") {
+            let tcp = stream
+                .try_clone()
+                .map_err(|e| web::Response::error(500, "ServerError", &e.to_string()))?;
+            super::web_live::start_events(stream)
+                .map_err(|e| web::Response::error(500, "ServerError", &e.to_string()))?;
+            providers.insert(
+                "stream".into(),
+                Value::Foreign(Rc::new(Box::new(super::web_live::EventStream {
+                    tcp: RefCell::new(tcp),
+                    closed: std::cell::Cell::new(false),
+                }))),
+            );
+            live = true;
+        }
         let resolved = self
             .resolve_route(
                 method,
                 &request.path,
                 &request.query,
-                &self.ctx.providers,
+                &providers,
                 body.as_ref(),
             )
             .map_err(|e| web::Response::error(web::status_for(&e.kind), &e.kind, &e.message))?;
@@ -1497,6 +1577,21 @@ impl Vm {
                 "NotFound",
                 &format!("no route for {} {}", request.method, request.path),
             ));
+        };
+        // Middleware wraps the route: the Prelude's `__http_run` calls each
+        // `f(request, next)` in turn, and the route last.
+        let (handler, args) = match self.program.global("__http_run").map(|g| &self.globals[g]) {
+            Some(Value::Function(run)) if !self.ctx.middleware.is_empty() && !live => (
+                run.clone(),
+                vec![
+                    Value::list(self.ctx.middleware.clone()),
+                    Value::Int(0),
+                    request_value,
+                    Value::Function(handler),
+                    Value::list(args),
+                ],
+            ),
+            _ => (handler, args),
         };
         let id = self.ctx.new_task_id();
         let handle = Rc::new(TaskHandle::new(id, handler.proto.name.clone()));
@@ -1523,7 +1618,7 @@ impl Vm {
             Ok(()) => {
                 self.suspended.insert(id, state);
                 self.ready.push_back(id);
-                Ok(handle)
+                Ok((handle, live))
             }
             Err(e) => {
                 let e = self.runtime_error(e);
@@ -1534,6 +1629,11 @@ impl Vm {
 
     /// The response for what a route handler returned or raised.
     fn response_for(&self, result: Result<Value, Value>) -> web::Response {
+        if let Ok(v) = &result {
+            if let Some(r) = super::web_live::response_of(v, &self.program) {
+                return r;
+            }
+        }
         match result {
             Ok(value) => {
                 let (status, body) = match &value {
@@ -1579,7 +1679,7 @@ impl Vm {
                 match self.ctx.jobs[i].poll(&program) {
                     Some(result) => {
                         let job = self.ctx.jobs.swap_remove(i);
-                        let waiters = job.handle.finish(result);
+                        let waiters = job.handle().finish(result);
                         self.ready.extend(waiters);
                     }
                     None => i += 1,

@@ -27,8 +27,10 @@ pub struct Server {
     pub handle: Rc<TaskHandle>,
     /// Requests still to accept, when `serve` was given `requests = n`.
     pub remaining: Option<u64>,
-    /// Requests whose handler is still running.
-    pub pending: Vec<(Rc<TaskHandle>, TcpStream)>,
+    /// Requests whose handler is still running, with the connection to
+    /// answer on (none for event streams and WebSockets, which the handler
+    /// talks on itself).
+    pub pending: Vec<(Rc<TaskHandle>, Option<TcpStream>)>,
 }
 
 impl Server {
@@ -161,16 +163,19 @@ pub fn percent_decode(text: &str) -> String {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Response {
     pub status: u16,
-    pub content_type: &'static str,
+    pub content_type: String,
     pub body: String,
+    /// More headers, from `http.Response(..., headers = {...})`.
+    pub headers: Vec<(String, String)>,
 }
 
 impl Response {
     pub fn json(status: u16, body: String) -> Response {
         Response {
             status,
-            content_type: "application/json",
+            content_type: "application/json".into(),
             body,
+            headers: Vec::new(),
         }
     }
 
@@ -184,8 +189,10 @@ impl Response {
                 "text/html; charset=utf-8"
             } else {
                 "text/plain; charset=utf-8"
-            },
+            }
+            .into(),
             body,
+            headers: Vec::new(),
         }
     }
 
@@ -202,8 +209,14 @@ impl Response {
     }
 
     pub fn write_to(&self, stream: &mut TcpStream) {
+        let extra: String = self
+            .headers
+            .iter()
+            .filter(|(k, v)| !k.contains(['\r', '\n']) && !v.contains(['\r', '\n']))
+            .map(|(k, v)| format!("{k}: {v}\r\n"))
+            .collect();
         let head = format!(
-            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n",
             self.status,
             reason(self.status),
             self.content_type,

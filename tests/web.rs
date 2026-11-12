@@ -265,3 +265,187 @@ fn hosted_programs_answer_requests_without_a_socket() {
     let r = vm.handle_request("GET", "/nowhere", "", b"", None);
     assert_eq!(r.status, 404);
 }
+
+/// Starts a program serving `count` connections, and the VM's thread.
+fn serve_program(source: &str, count: usize) -> (u16, std::thread::JoinHandle<()>) {
+    let port = free_port();
+    let src = source
+        .replace("PORT", &port.to_string())
+        .replace("COUNT", &count.to_string());
+    let handle = std::thread::spawn(move || {
+        let program = compile_source(&src).unwrap_or_else(|e| panic!("{e:?}"));
+        let mut machine = Vm::with_output(program, Box::new(Captured::default()));
+        machine.run_main(&[]).expect("runs");
+    });
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    (port, handle)
+}
+
+/// A request with headers, giving the whole raw response.
+fn raw(port: u16, request: &str) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connects");
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut out = String::new();
+    let _ = stream.read_to_string(&mut out);
+    out
+}
+
+#[test]
+fn requests_responses_and_middleware() {
+    let (port, server) = serve_program(
+        "use vyrn.http\n\
+         create timing(request, next):\n\
+         \x20   if request.header(\"X-Key\") != \"secret\": return http.Response(401, {\"error\": \"who are you?\"})\n\
+         \x20   let answer = next(request)\n\
+         \x20   return answer\n\
+         end\n\
+         route GET \"/echo\" (request):\n\
+         \x20   return {\"method\": request.method, \"path\": request.path, \"agent\": request.headers[\"user-agent\"], \"q\": request.query}\n\
+         end\n\
+         route POST \"/raw\" (request):\n\
+         \x20   return http.Response(201, request.json, {\"X-Made-By\": \"vyrn\"})\n\
+         end\n\
+         route GET \"/page\" ():\n\
+         \x20   return http.Response(200, \"<h1>hi</h1>\", {\"Content-Type\": \"text/html\", \"Cache-Control\": \"no-store\"})\n\
+         end\n\
+         main:\n\
+         \x20   http.use(timing)\n\
+         \x20   http.serve(port = PORT, requests = COUNT)\n\
+         end\n",
+        4,
+    );
+    let echo = raw(
+        port,
+        "GET /echo?a=1 HTTP/1.1\r\nHost: x\r\nUser-Agent: test\r\nX-Key: secret\r\n\r\n",
+    );
+    assert!(echo.starts_with("HTTP/1.1 200"), "{echo}");
+    assert!(
+        echo.ends_with(
+            "{\"method\":\"GET\",\"path\":\"/echo\",\"agent\":\"test\",\"q\":{\"a\":\"1\"}}"
+        ),
+        "{echo}"
+    );
+    let body = "{\"n\": 5}";
+    let made = raw(
+        port,
+        &format!("POST /raw HTTP/1.1\r\nX-Key: secret\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()),
+    );
+    assert!(
+        made.starts_with("HTTP/1.1 201")
+            && made.contains("X-Made-By: vyrn")
+            && made.ends_with("{\"n\":5}"),
+        "{made}"
+    );
+    let page = raw(port, "GET /page HTTP/1.1\r\nX-Key: secret\r\n\r\n");
+    assert!(
+        page.contains("Content-Type: text/html\r\n")
+            && page.contains("Cache-Control: no-store")
+            && page.ends_with("<h1>hi</h1>"),
+        "{page}"
+    );
+    let denied = raw(port, "GET /echo HTTP/1.1\r\n\r\n");
+    assert!(
+        denied.starts_with("HTTP/1.1 401") && denied.contains("who are you?"),
+        "{denied}"
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn server_sent_events_stream_to_the_page() {
+    let (port, server) = serve_program(
+        "use vyrn.http\n\
+         route GET \"/ticks\" (stream):\n\
+         \x20   each i in 1 to 3:\n\
+         \x20       stream.send({\"tick\": i})\n\
+         \x20       await sleep(0.01)\n\
+         \x20   end\n\
+         \x20   stream.send(\"bye\", event = \"done\")\n\
+         end\n\
+         main: http.serve(port = PORT, requests = COUNT)\n",
+        1,
+    );
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .write_all(b"GET /ticks HTTP/1.1\r\nAccept: text/event-stream\r\n\r\n")
+        .unwrap();
+    let mut out = String::new();
+    let _ = stream.read_to_string(&mut out);
+    server.join().unwrap();
+    assert!(
+        out.starts_with("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream"),
+        "{out}"
+    );
+    assert!(
+        out.ends_with("data: {\"tick\":1}\n\ndata: {\"tick\":2}\n\ndata: {\"tick\":3}\n\nevent: done\ndata: bye\n\n"),
+        "{out}"
+    );
+}
+
+/// A WebSocket frame from a client: always masked.
+fn client_frame(text: &str) -> Vec<u8> {
+    let mask = [7u8, 1, 9, 3];
+    let mut out = vec![0x81, 0x80 | text.len() as u8];
+    out.extend_from_slice(&mask);
+    out.extend(text.bytes().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+    out
+}
+
+#[test]
+fn websockets_talk_both_ways() {
+    let (port, server) = serve_program(
+        "use vyrn.http\n\
+         route GET \"/chat\" (socket):\n\
+         \x20   socket.send(\"welcome\")\n\
+         \x20   loop:\n\
+         \x20       let msg = await socket.receive()\n\
+         \x20       if msg == none: stop\n\
+         \x20       if msg is map:\n\
+         \x20           socket.send({\"got\": msg[\"n\"] * 2})\n\
+         \x20       else:\n\
+         \x20           socket.send(\"echo: {msg}\")\n\
+         \x20       end\n\
+         \x20   end\n\
+         end\n\
+         main: http.serve(port = PORT, requests = COUNT)\n",
+        1,
+    );
+    let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    s.write_all(
+        b"GET /chat HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+    )
+    .unwrap();
+    let mut buf = vec![0u8; 4096];
+    let mut got = Vec::new();
+    let read_until = |s: &mut TcpStream, got: &mut Vec<u8>, buf: &mut Vec<u8>, needle: &[u8]| {
+        while !got.windows(needle.len()).any(|w| w == needle) {
+            let n = s
+                .read(buf)
+                .unwrap_or_else(|e| panic!("{e}; so far: {:?}", String::from_utf8_lossy(got)));
+            assert!(n > 0, "closed early: {:?}", String::from_utf8_lossy(got));
+            got.extend_from_slice(&buf[..n]);
+        }
+    };
+    read_until(&mut s, &mut got, &mut buf, b"welcome");
+    let text = String::from_utf8_lossy(&got).into_owned();
+    assert!(
+        text.starts_with("HTTP/1.1 101")
+            && text.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+        "{text}"
+    );
+    s.write_all(&client_frame("hello")).unwrap();
+    read_until(&mut s, &mut got, &mut buf, b"echo: hello");
+    s.write_all(&client_frame("{\"n\": 21}")).unwrap();
+    read_until(&mut s, &mut got, &mut buf, b"{\"got\":42}");
+    // Close: the handler's receive gives none and the route ends.
+    s.write_all(&[0x88, 0x80, 0, 0, 0, 0]).unwrap();
+    server.join().unwrap();
+}
