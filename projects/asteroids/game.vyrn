@@ -1,0 +1,107 @@
+# game.vyrn: the rules of Asteroids, and drawing a frame.
+#
+# `Game.update` takes the player's controls as plain data
+# ({"left": true, "fire": false, ...}) instead of reading the keyboard, so
+# the same rules can be driven by a window, by tests, or one day by a
+# network player.
+
+use physics (Vec2, WIDTH, HEIGHT)
+use entities (Ship, Bullet, Rock, edge_rock)
+
+const LIVES = 3
+
+## Everything in play, and the score.
+object Game:
+    ship: Ship = Ship(Vec2(WIDTH / 2, HEIGHT / 2), Vec2(0.0, 0.0), 14.0)
+    bullets: list = []
+    rocks: list = []
+    score: int = 0
+    lives: int = LIVES
+    level: int = 0
+    over: bool = false
+
+    ## Starts the next level with more rocks than the last.
+    create next_level(self):
+        self.level += 1
+        self.rocks = [edge_rock(self.level) each _ in 1 to 3 + self.level]
+    end
+
+    ## Moves everything on by `dt` seconds. Gives what happened, as words
+    ## the caller can turn into sounds: "shot", "boom", "crash", "level".
+    create update(self, dt: float, controls: map) -> list:
+        var events = []
+        if self.over: return events
+        if len(self.rocks) == 0:
+            self.next_level()
+            events.append("level")
+        end
+
+        # 1. The player's controls.
+        if controls.get("left", false): self.ship.turn(-1, dt)
+        if controls.get("right", false): self.ship.turn(1, dt)
+        if controls.get("thrust", false): self.ship.thrust(dt)
+        if controls.get("fire", false):
+            # `fire` gives none while the gun is reloading.
+            let bullet = self.ship.fire()
+            if bullet != none:
+                self.bullets.append(bullet)
+                events.append("shot")
+            end
+        end
+
+        # 2. Everything moves. One loop serves ship, bullets and rocks,
+        #    because each knows how to update itself.
+        self.ship.update(dt)
+        each b in self.bullets: b.update(dt)
+        each r in self.rocks: r.update(dt)
+        self.bullets = self.bullets.filter(b => b.alive())
+
+        # 3. Bullets against rocks. Hit rocks are replaced by their pieces.
+        var survivors = []
+        each rock in self.rocks:
+            let hit = self.bullets.find(b => b.hits(rock))
+            if hit == none:
+                survivors.append(rock)
+            else:
+                self.bullets.remove(hit)
+                self.score += rock.points()
+                survivors.extend(rock.split())
+                events.append("boom")
+            end
+        end
+        self.rocks = survivors
+
+        # 4. Rocks against the ship, unless it has just (re)spawned.
+        if self.ship.invulnerable == 0 and self.rocks.any(r => r.hits(self.ship)):
+            self.lives -= 1
+            events.append("crash")
+            if self.lives == 0:
+                self.over = true
+            else:
+                self.ship = Ship(Vec2(WIDTH / 2, HEIGHT / 2), Vec2(0.0, 0.0), 14.0)
+            end
+        end
+        return events
+    end
+end
+
+## Draws the game on any surface: a window, or a canvas in tests.
+create render(s: any, game: Game):
+    s.clear("#05060f")
+    each r in game.rocks:
+        s.polygon(r.outline(), "#c9c9d6", fill = false)
+    end
+    each b in game.bullets:
+        s.circle(b.pos.x, b.pos.y, 2, "#ffe066")
+    end
+    # The ship blinks while it can't be hit.
+    let blink = game.ship.invulnerable > 0 and (game.ship.invulnerable * 8).floor() % 2 == 0
+    if not game.over and not blink:
+        s.polygon(game.ship.outline(), "#7ee0ff", fill = false)
+    end
+    s.text("SCORE {game.score}", 12, 12, "white")
+    s.text("LEVEL {game.level}   LIVES {"^" * game.lives}", 12, 28, "white")
+    if game.over:
+        s.text("GAME OVER - press enter", WIDTH / 2 - 92, HEIGHT / 2, "white")
+    end
+end

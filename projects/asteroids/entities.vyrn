@@ -1,0 +1,131 @@
+# entities.vyrn: the things in the game. Each builds on Body (physics.vyrn)
+# and adds what makes it different.
+
+use vyrn.random
+use physics (Vec2, Body, heading)
+
+const SHIP_TURN = 220.0      # degrees per second
+const SHIP_THRUST = 260.0    # pixels per second, per second
+const SHIP_DRAG = 0.6        # fraction of speed kept after one second
+const BULLET_SPEED = 520.0
+const BULLET_LIFE = 0.9      # seconds
+const RELOAD = 0.18          # seconds between shots
+
+## The player's ship.
+object Ship(Body):
+    angle: float = 0.0       # degrees clockwise from straight up
+    cooldown: float = 0.0    # seconds until the gun can fire again
+    invulnerable: float = 2.0  # seconds of safety after (re)spawning
+
+    ## Turns: -1 for left, +1 for right.
+    create turn(self, direction: float, dt: float):
+        self.angle = (self.angle + direction * SHIP_TURN * dt) % 360
+    end
+
+    ## Speeds up in the direction the ship points.
+    create thrust(self, dt: float):
+        self.vel = self.vel + heading(self.angle) * (SHIP_THRUST * dt)
+    end
+
+    create update(self, dt: float):
+        # Space has no friction, but the game feels better with a little.
+        self.vel = self.vel * SHIP_DRAG ** dt
+        self.cooldown = max(0.0, self.cooldown - dt)
+        self.invulnerable = max(0.0, self.invulnerable - dt)
+        # Then move like any other body.
+        super.update(dt)
+    end
+
+    ## A bullet from the nose of the ship, or none while reloading.
+    create fire(self) -> Bullet?:
+        if self.cooldown > 0: return none
+        self.cooldown = RELOAD
+        let direction = heading(self.angle)
+        return Bullet(self.pos + direction * self.radius, self.vel + direction * BULLET_SPEED, 2.0)
+    end
+
+    ## The ship's outline as three screen points: a triangle pointing
+    ## along `angle`.
+    create outline(self) -> list:
+        var points = []
+        each offset, size in [(0.0, 1.4), (140.0, 1.0), (220.0, 1.0)]:
+            let p = self.pos + heading(self.angle + offset) * (self.radius * size)
+            points.append([p.x, p.y])
+        end
+        return points
+    end
+end
+
+## A shot. It disappears after a short time.
+object Bullet(Body):
+    life: float = BULLET_LIFE
+
+    create update(self, dt: float):
+        self.life -= dt
+        super.update(dt)
+    end
+
+    create alive(self) -> bool: return self.life > 0
+end
+
+## A space rock: big (size 3), medium (2) or small (1).
+object Rock(Body):
+    size: int = 3
+    spin: float = 0.0
+    angle: float = 0.0
+    # Bumps on the outline, chosen once so each rock keeps its shape.
+    shape: list = []
+
+    # Runs as soon as a Rock is made: its size sets its radius, and it
+    # gets a random lumpy outline and spin.
+    create init(self):
+        self.radius = [0, 14, 28, 46][self.size]
+        self.shape = [random.float(0.75, 1.15) each _ in 0 until 10]
+        self.spin = random.float(-60, 60)
+    end
+
+    create update(self, dt: float):
+        self.angle += self.spin * dt
+        super.update(dt)
+    end
+
+    ## Points for shooting it: smaller rocks are harder to hit.
+    create points(self) -> int: return [0, 100, 50, 20][self.size]
+
+    ## What it breaks into when shot: two smaller, faster rocks, or
+    ## nothing if it was already the smallest.
+    create split(self) -> list:
+        if self.size == 1: return []
+        var pieces = []
+        each _ in 1 to 2:
+            let direction = heading(random.float(0, 360))
+            let speed = self.vel.length() * 1.3 + 40
+            pieces.append(Rock(self.pos, direction * speed, 0.0, self.size - 1))
+        end
+        return pieces
+    end
+
+    ## The lumpy outline as screen points.
+    create outline(self) -> list:
+        var points = []
+        each i, bump in enumerate(self.shape):
+            let p = self.pos + heading(self.angle + i * 36) * (self.radius * bump)
+            points.append([p.x, p.y])
+        end
+        return points
+    end
+end
+
+## A new rock somewhere along the edge of the screen, drifting inwards.
+create edge_rock(level: int) -> Rock:
+    let speed = 40 + level * 12 + random.float(0, 30)
+    let along = random.float(0, 1)
+    # Pick one of the four edges.
+    let pos = [
+        Vec2(along * 800, 0.0),
+        Vec2(along * 800, 600.0),
+        Vec2(0.0, along * 600),
+        Vec2(800.0, along * 600),
+    ][random.int(0, 3)]
+    return Rock(pos, heading(random.float(0, 360)) * speed, 0.0, 3)
+end
