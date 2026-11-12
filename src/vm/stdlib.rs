@@ -1126,6 +1126,48 @@ pub fn os_set_env(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     Ok(Value::None)
 }
 
+/// `os.load_env(path = ".env")`: reads `NAME=value` lines (blank lines and
+/// `#` comments skipped, quotes around a value removed) into the
+/// environment, without replacing variables that are already set. Gives the
+/// names it read; a missing file gives an empty list.
+pub fn os_load_env(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let path = match args.first() {
+        Some(Value::Str(s)) => s.to_string(),
+        _ => ".env".to_string(),
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(io_error(&format!("cannot read {path}"), e)),
+    };
+    let mut names = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((name, value)) = line.split_once('=') else {
+            return Err(err(
+                "ValueError",
+                format!("{path} line {}: expected NAME=value", n + 1),
+            ));
+        };
+        let name = name.trim();
+        let mut value = value.trim();
+        for q in ['"', '\''] {
+            if value.len() >= 2 && value.starts_with(q) && value.ends_with(q) {
+                value = &value[1..value.len() - 1];
+            }
+        }
+        if std::env::var_os(name).is_none() {
+            std::env::set_var(name, value);
+        }
+        names.push(Value::str(name.to_string()));
+    }
+    Ok(Value::list(names))
+}
+
 pub fn os_environ(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
     let mut vars: Vec<(String, String)> = std::env::vars().collect();
     vars.sort();

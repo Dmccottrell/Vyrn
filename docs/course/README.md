@@ -92,9 +92,9 @@ plan below.
 | 32 ✅ | Email and dates (`vyrn.mail`, `vyrn.time`) | Birthday wisher |
 | 33 ✅ | HTTP APIs and JSON | Is it daytime somewhere? |
 | 34 ✅ | APIs with a GUI | Trivia quiz |
-| 35 | API keys, environment variables, secrets | Weather alert |
-| 36 | Combining APIs | News digest |
-| 37 | POST, headers, authentication | Habit tracker |
+| 35 ✅ | API keys, environment variables, secrets | Weather alert |
+| 36 ✅ | Combining APIs | News digest |
+| 37 ✅ | POST, headers, authentication | Habit tracker |
 | 38 | Databases: SQL, SQLite, records without SQL | Workout log |
 | 39–40 | Capstone | Deal finder |
 

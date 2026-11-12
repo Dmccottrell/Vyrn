@@ -1306,6 +1306,19 @@ fn types_define_their_own_operators_and_text() {
 }
 
 #[test]
+fn functions_kept_in_fields_are_called_like_methods() {
+    assert_eq!(
+        run("object Client:\n    send: any\n    token: str = \"t\"\n\
+             \x20   create post(self, body) -> any:\n        return self.send(body, token = self.token)\n    end\nend\n\
+             struct Pair:\n    f: any\nend\n\
+             main:\n    let c = Client((body, token = \"\") => \"{token}:{body}\")\n    print(c.post(1), c.send(2))\n\
+             \x20   let p = Pair(x => x * 10)\n    print(p.f(4), p)\n\
+             \x20   let f = Client(fake(returns = 5))\n    print(f.send(1, token = \"k\"), f.send.calls)\n    print(c)\nend\n"),
+        "t:1 :2\n40 Pair(f=<fn <lambda>>)\n5 [[1, {\"token\": \"k\"}]]\nClient(send=<fn <lambda>>, token=\"t\")\n"
+    );
+}
+
+#[test]
 fn bounded_channels_pools_and_yielding() {
     assert_eq!(
         run("use vyrn.task\n\

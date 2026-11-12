@@ -154,6 +154,7 @@ pub static NATIVES: &[Native] = &[
     fixed("os.env", &["name", "default"], 1, S::os_env),
     fixed("os.set_env", &["name", "value"], 2, S::os_set_env),
     fixed("os.environ", &[], 0, S::os_environ),
+    fixed("os.load_env", &["path"], 0, S::os_load_env),
     fixed("os.cwd", &[], 0, S::os_cwd),
     fixed("os.chdir", &["path"], 1, S::os_chdir),
     fixed("os.exit", &["code"], 0, S::os_exit),

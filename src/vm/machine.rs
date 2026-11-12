@@ -2560,9 +2560,10 @@ impl Vm {
                 };
             }
             // A call of the value in stack[at] with `argc` arguments after it.
-            macro_rules! call_at {
-                ($at:expr, $argc:expr) => {{
+            macro_rules! call_with {
+                ($at:expr, $args_at:expr, $argc:expr) => {{
                     let at: usize = $at;
+                    let args_at: usize = $args_at;
                     let argc: usize = $argc;
                         match &self.stack[at] {
                             Value::Function(c)
@@ -2571,7 +2572,7 @@ impl Vm {
                                     && c.proto.native.get().is_some() =>
                             {
                                 let native = c.proto.native.get().cloned().expect("checked");
-                                match self.call_native(&native, at + 1, argc) {
+                                match self.call_native(&native, args_at, argc) {
                                     Some(result) => {
                                         let v = check!(result);
                                         self.stack[at] = v;
@@ -2583,7 +2584,7 @@ impl Vm {
                                             unreachable!()
                                         };
                                         save_ip!();
-                                        check!(self.enter(callee, at, at + 1, argc));
+                                        check!(self.enter(callee, at, args_at, argc));
                                         continue 'frames;
                                     }
                                 }
@@ -2597,7 +2598,7 @@ impl Vm {
                                     unreachable!()
                                 };
                                 save_ip!();
-                                check!(self.enter(callee, at, at + 1, argc));
+                                check!(self.enter(callee, at, args_at, argc));
                                 continue 'frames;
                             }
                             Value::Native(id) => {
@@ -2607,18 +2608,18 @@ impl Vm {
                                     "print" | "str" | "repr" | "typeof"
                                 ) {
                                     save_ip!();
-                                    check!(self.drain_generator_args(at + 1, argc));
+                                    check!(self.drain_generator_args(args_at, argc));
                                 }
                                 if matches!(builtins::NATIVES[id as usize].name, "print" | "str") {
                                     save_ip!();
-                                    check!(self.apply_to_text(at + 1, argc));
+                                    check!(self.apply_to_text(args_at, argc));
                                 }
-                                if let Some(f) = self.prelude_handoff(id, at + 1, argc) {
+                                if let Some(f) = self.prelude_handoff(id, args_at, argc) {
                                     save_ip!();
-                                    check!(self.enter(f, at, at + 1, argc));
+                                    check!(self.enter(f, at, args_at, argc));
                                     continue 'frames;
                                 }
-                                if let Some(r) = self.ordered_by_operator(id, at + 1, argc) {
+                                if let Some(r) = self.ordered_by_operator(id, args_at, argc) {
                                     save_ip!();
                                     let v = check!(r);
                                     self.stack[at] = v;
@@ -2627,7 +2628,7 @@ impl Vm {
                                 let result = check!(builtins::call(
                                     id,
                                     &mut self.ctx,
-                                    &self.stack[at + 1..at + 1 + argc]
+                                    &self.stack[args_at..args_at + argc]
                                 ));
                                 self.stack[at] = result;
                                 block_on!();
@@ -2635,7 +2636,7 @@ impl Vm {
                             Value::Foreign(f) => {
                                 let f = f.clone();
                                 let args: Vec<Value> =
-                                    self.stack[at + 1..at + 1 + argc].to_vec();
+                                    self.stack[args_at..args_at + argc].to_vec();
                                 let result = check!(f.call(&mut self.ctx, &args, &[]));
                                 self.stack[at] = result;
                             }
@@ -2650,6 +2651,12 @@ impl Vm {
                             }
                         }
                                     }};
+            }
+            macro_rules! call_at {
+                ($at:expr, $argc:expr) => {{
+                    let at: usize = $at;
+                    call_with!(at, at + 1, $argc)
+                }};
             }
             macro_rules! jump {
                 ($offset:expr) => {
@@ -3321,6 +3328,54 @@ impl Vm {
                         let method = ty
                             .and_then(|ty| self.methods.get(&(ty, symbol)).cloned())
                             .or_else(|| self.builtin_method(&self.stack[receiver], symbol));
+                        // `self.send(x, headers = h)` where `send` is a field
+                        // holding a function: call the field's value.
+                        let field = match (&method, &self.stack[receiver]) {
+                            (None, Value::Struct(inst)) => self
+                                .field_slot(inst.ty, symbol)
+                                .map(|i| inst.fields[i].clone()),
+                            (None, Value::Object(o)) => {
+                                let o = o.borrow();
+                                self.field_slot(o.ty, symbol).map(|i| o.fields[i].clone())
+                            }
+                            _ => None,
+                        };
+                        if let Some(callee) = field {
+                            let argc = argc as usize;
+                            let (args, kwargs) =
+                                check!(split_keywords(&self.stack[receiver + 1..], argc));
+                            match callee {
+                                Value::Foreign(f) => {
+                                    let value = check!(f.call(&mut self.ctx, &args, &kwargs));
+                                    self.stack[result_at] = value;
+                                    continue;
+                                }
+                                Value::Function(c) => {
+                                    let params: Vec<String> = c
+                                        .proto
+                                        .params
+                                        .iter()
+                                        .map(|p| self.program.symbols.name(*p).to_string())
+                                        .collect();
+                                    let required = c.proto.required;
+                                    let name = c.proto.name.clone();
+                                    let count = check!(self.match_keywords(
+                                        receiver + 1,
+                                        argc,
+                                        &params,
+                                        required,
+                                        &name
+                                    ));
+                                    save_ip!();
+                                    check!(self.enter(c, result_at, receiver + 1, count));
+                                    continue 'frames;
+                                }
+                                other => throw!(type_error(format!(
+                                    "{} takes no keyword arguments here",
+                                    other.type_name()
+                                ))),
+                            }
+                        }
                         let Some(method) = method else {
                             throw!(type_error(format!(
                                 "`.{}()` takes no keyword arguments here; pass them by position",
@@ -3394,14 +3449,32 @@ impl Vm {
                                     ));
                                     continue 'frames;
                                 }
-                                None => throw!(err(
-                                    "FieldError",
-                                    format!(
-                                        "`{}` has no method `{}`",
-                                        self.type_name(ty),
-                                        self.program.symbols.name(symbol)
-                                    )
-                                )),
+                                None => {
+                                    // `self.send(x)` where `send` is a field
+                                    // holding a function: call the field's value.
+                                    let field = match &self.stack[receiver] {
+                                        Value::Struct(inst) => self
+                                            .field_slot(ty, symbol)
+                                            .map(|i| inst.fields[i].clone()),
+                                        Value::Object(o) => self
+                                            .field_slot(ty, symbol)
+                                            .map(|i| o.borrow().fields[i].clone()),
+                                        _ => None,
+                                    };
+                                    let Some(callee) = field else {
+                                        throw!(err(
+                                            "FieldError",
+                                            format!(
+                                                "`{}` has no method `{}`",
+                                                self.type_name(ty),
+                                                self.program.symbols.name(symbol)
+                                            )
+                                        ))
+                                    };
+                                    self.stack[result_at] = callee;
+                                    call_with!(result_at, receiver + 1, argc as usize);
+                                    continue;
+                                }
                             }
                         }
                         if let Value::Foreign(f) = &self.stack[receiver] {
