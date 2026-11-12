@@ -210,3 +210,204 @@ pub fn parallel(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     }
     Ok(Value::list(results))
 }
+
+// ==== task.Pool ===============================================================
+
+/// One call for a pool thread: a top-level function and its arguments.
+struct Job {
+    name: String,
+    args: Vec<Portable>,
+    reply: std::sync::mpsc::Sender<Result<Portable, String>>,
+}
+
+/// A call running on a pool thread; the scheduler polls it and finishes
+/// its task when the answer arrives.
+pub struct PendingJob {
+    pub handle: std::rc::Rc<super::task::TaskHandle>,
+    answer: std::sync::mpsc::Receiver<Result<Portable, String>>,
+}
+
+impl PendingJob {
+    /// The job's result, once it has one.
+    pub fn poll(&self, program: &Program) -> Option<Result<Value, Value>> {
+        use std::sync::mpsc::TryRecvError;
+        match self.answer.try_recv() {
+            Ok(Ok(v)) => Some(Ok(from_portable(program, &v))),
+            Ok(Err(message)) => Some(Err(err("PoolError", message))),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(err(
+                "PoolError",
+                "the pool thread stopped before answering",
+            ))),
+        }
+    }
+}
+
+/// `task.Pool(workers = cores)`: threads that stay ready for CPU-heavy
+/// calls. `await pool.run(f, args...)` runs `f(args...)` on one of them
+/// while other tasks keep running; `await pool.map(f, items)` runs
+/// `f(item)` for each item, spread over the threads. As with
+/// `task.parallel`, `f` is a top-level function and arguments and results
+/// are plain data, copied between threads, so nothing is shared.
+pub struct Pool {
+    jobs: std::cell::RefCell<Option<std::sync::mpsc::Sender<Job>>>,
+    workers: usize,
+}
+
+pub fn pool(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let workers = match args.first() {
+        Some(Value::Int(n)) if *n > 0 => *n as usize,
+        Some(Value::None) | Some(Value::Missing) | None => cores,
+        Some(_) => return Err(type_error("`workers` is a positive whole number")),
+    };
+    let Some(rebuild) = ctx.rebuild.clone() else {
+        return Err(err(
+            "Unavailable",
+            "`task.Pool` needs the program's source to start its threads",
+        ));
+    };
+    let (send, receive) = std::sync::mpsc::channel::<Job>();
+    let receive = Arc::new(std::sync::Mutex::new(receive));
+    for _ in 0..workers {
+        let receive = receive.clone();
+        let rebuild = rebuild.clone();
+        std::thread::spawn(move || {
+            // Each thread builds its own copy of the program on first use.
+            let mut vm: Option<Vm> = None;
+            loop {
+                let job = {
+                    let Ok(queue) = receive.lock() else { return };
+                    match queue.recv() {
+                        Ok(job) => job,
+                        // The pool was dropped: stop.
+                        Err(_) => return,
+                    }
+                };
+                if vm.is_none() {
+                    match rebuild() {
+                        Ok(program) => {
+                            vm = Some(Vm::with_output(program, Box::new(std::io::stdout())))
+                        }
+                        Err(e) => {
+                            let _ = job.reply.send(Err(e));
+                            continue;
+                        }
+                    }
+                }
+                let machine = vm.as_mut().expect("built above");
+                let args = job
+                    .args
+                    .iter()
+                    .map(|a| from_portable(machine.program(), a))
+                    .collect();
+                let result = machine
+                    .call_named(&job.name, args)
+                    .map_err(|e| format!("{}: {}", e.kind, e.message))
+                    .and_then(|v| to_portable(machine.program(), &v));
+                let _ = job.reply.send(result);
+            }
+        });
+    }
+    Ok(Value::Foreign(std::rc::Rc::new(Box::new(Pool {
+        jobs: std::cell::RefCell::new(Some(send)),
+        workers,
+    }))))
+}
+
+/// The name of a top-level function, which every pool thread has.
+fn top_level_name(ctx: &Ctx, f: Option<&Value>, what: &str) -> VmResult<String> {
+    match f {
+        Some(Value::Function(c)) if c.captures.is_empty() && c.bound.is_none() => {
+            let name = c.proto.name.clone();
+            if ctx.program.global(&name).is_some() {
+                return Ok(name);
+            }
+            Err(type_error(format!("`{what}` needs a top-level function; `{name}` is not one")))
+        }
+        _ => Err(type_error(format!(
+            "`{what}` takes a top-level function (`create work(x):`), which each thread runs its own copy of"
+        ))),
+    }
+}
+
+impl Pool {
+    /// Queues one call and gives the task that will hold its result.
+    fn submit(&self, ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value> {
+        let args = args
+            .iter()
+            .map(|a| to_portable(&ctx.program, a))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(type_error)?;
+        let (reply, answer) = std::sync::mpsc::channel();
+        let jobs = self.jobs.borrow();
+        let Some(jobs) = jobs.as_ref() else {
+            return Err(err("PoolError", "the pool is closed"));
+        };
+        jobs.send(Job {
+            name: name.to_string(),
+            args,
+            reply,
+        })
+        .map_err(|_| err("PoolError", "the pool's threads have stopped"))?;
+        let handle = std::rc::Rc::new(super::task::TaskHandle::new(ctx.new_task_id(), name));
+        ctx.jobs.push(PendingJob {
+            handle: handle.clone(),
+            answer,
+        });
+        Ok(Value::Task(handle))
+    }
+}
+
+impl super::foreign::Foreign for Pool {
+    fn type_name(&self) -> &'static str {
+        "Pool"
+    }
+
+    fn display(&self) -> String {
+        format!("<pool of {} threads>", self.workers)
+    }
+
+    fn get_attr(&self, name: &str) -> VmResult<Value> {
+        match name {
+            "workers" => Ok(Value::Int(self.workers as i64)),
+            _ => Err(err("FieldError", format!("a Pool has no `{name}`"))),
+        }
+    }
+
+    fn call_method(
+        &self,
+        ctx: &mut Ctx,
+        name: &str,
+        args: &[Value],
+        _: &[(String, Value)],
+    ) -> VmResult<Value> {
+        match name {
+            // `await pool.run(f, args...)`
+            "run" => {
+                let f = top_level_name(ctx, args.first(), "pool.run")?;
+                self.submit(ctx, &f, &args[1..])
+            }
+            // `await pool.map(f, items)`: the results, in order.
+            "map" => {
+                let f = top_level_name(ctx, args.first(), "pool.map")?;
+                let items = ops::collect(args.get(1).unwrap_or(&Value::None))?;
+                let tasks = items
+                    .iter()
+                    .map(|item| self.submit(ctx, &f, std::slice::from_ref(item)))
+                    .collect::<VmResult<Vec<_>>>()?;
+                Ok(Value::list(tasks))
+            }
+            // Lets the threads finish their work and stop.
+            "close" => {
+                self.jobs.borrow_mut().take();
+                Ok(Value::None)
+            }
+            _ => Err(err("FieldError", format!("a Pool has no method `{name}`"))),
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}

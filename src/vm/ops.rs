@@ -60,6 +60,8 @@ pub struct Ctx {
     pub timers: Vec<(std::time::Instant, Rc<super::task::TaskHandle>)>,
     /// Tasks made ready by builtins, such as a channel receiving a value.
     pub wakeups: Vec<super::task::TaskId>,
+    /// Work running on `task.Pool` threads: each result finishes its task.
+    pub jobs: Vec<super::parallel::PendingJob>,
     /// The next task id to hand out.
     pub next_task: super::task::TaskId,
     /// Servers started by `web.serve`.

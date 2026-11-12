@@ -253,8 +253,7 @@ async create crawl(urls: [str]) -> [str]:
 end
 ```
 
-**Runs today:** `task.group`, `task.timeout`, `task.select`, `task.cancel`,
-`task.done`, `task.sleep`. Awaiting a cancelled task fails with
+**Runs today:** everything below. Awaiting a cancelled task fails with
 `Cancelled`.
 
 | API | Purpose |
@@ -265,9 +264,8 @@ end
 | `task.select(a, b, ...)` | Waits for the first of several tasks or channels; `await` gives `(index, value)` |
 | `task.cancel(t)`, `task.done(t)` | Stop a task; whether it has finished |
 | `task.yield_now()` | Lets other tasks run inside a long computation |
-| `task.current()` | The running task's handle, for names and cancellation checks |
-| `channel(capacity = n)` | A bounded channel: `send` waits when it is full, which gives back-pressure |
-| `task.Pool(workers = n)` | OS threads for CPU-bound work: `await pool.run(f, own data)`. Arguments must be passed with `own`, so no value is shared between threads unsynchronized |
+| `channel(capacity = n)` | A bounded channel: `ch.send(x)` waits while it is full, which slows a fast producer to its consumer's pace; `ch.capacity()`, `ch.full()`, `ch.len()` |
+| `task.Pool(workers = n)` | Threads that stay ready for CPU-heavy calls: `await pool.run(f, args...)` runs `f` on one of them while other tasks keep running, `await pool.map(f, items)` spreads the items over them, `pool.close()` stops them. As with `task.parallel`, `f` is a top-level function and values are copied between threads, so nothing is shared; a failure there comes back as `PoolError` |
 
 The split follows the cost model. Green threads are cheap and share one OS
 thread, so the Prelude has them. A `Pool` adds threads, and with them the
@@ -607,12 +605,11 @@ end
 | `use vyrn.<module>` with module and name imports | `src/vm/compiler.rs` (`use_decl`, `module_member`) | runs |
 | `vyrn.http` routing, providers, server | `src/vm/machine.rs` (`resolve_route`, `service_servers`), `src/vm/web.rs` | runs; `Request`, `Response`, `Router`, middleware, SSE/WS are design |
 | Green threads, channels, timers | `src/vm/machine.rs`, `src/vm/task.rs` | runs |
-| `vyrn.task` groups, timeouts, select, cancel | `src/vm/stdlib.rs`, `src/vm/machine.rs` (`await_race`, `apply_cancels`) | runs; pools, bounded channels, `yield_now` are design |
+| `vyrn.task` groups, timeouts, select, cancel, pools, bounded channels, `yield_now` | `src/vm/stdlib.rs`, `src/vm/parallel.rs`, `src/vm/machine.rs` (`await_race`, `apply_cancels`) | runs |
 | `vyrn.fs` files and directories | `src/vm/stdlib.rs` | runs |
 | `vyrn.fs` mapping and views | | design; views depend on borrow checking of slices (`src/check.rs`) |
 | Tensor math on CPU and GPU | `src/vm/tensor.rs`, `src/vm/gpu.rs` | runs |
 | `vyrn.nn` | `src/vm/weights.rs`, `src/vm/tokenizer.rs` hold its first pieces | design |
 
 Build order from here: `vyrn.fs.map` with views (the large-model path), then
-`vyrn.nn.load` and `generate` on top of it, then the rest of `vyrn.http`, then
-`task.Pool`.
+`vyrn.nn.load` and `generate` on top of it, then the rest of `vyrn.http`.

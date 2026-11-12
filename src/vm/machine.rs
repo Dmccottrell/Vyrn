@@ -293,6 +293,7 @@ impl Vm {
             host: None,
             timers: Vec::new(),
             wakeups: Vec::new(),
+            jobs: Vec::new(),
             next_task: super::task::ROOT_TASK,
             servers: Vec::new(),
             providers: HashMap::new(),
@@ -466,6 +467,11 @@ impl Vm {
                     if self.current != root {
                         self.execute(root)?;
                     }
+                    continue;
+                }
+                if !self.ctx.jobs.is_empty() {
+                    // Work on pool threads: check back shortly.
+                    std::thread::sleep(std::time::Duration::from_millis(1));
                     continue;
                 }
                 let Some(when) = self.ctx.timers.iter().map(|(t, _)| *t).min() else {
@@ -1199,7 +1205,7 @@ impl Vm {
                 }
             }
             let next_timer = self.ctx.timers.iter().map(|(t, _)| *t).min();
-            if self.ctx.servers.iter().any(|s| s.accepting()) {
+            if self.ctx.servers.iter().any(|s| s.accepting()) || !self.ctx.jobs.is_empty() {
                 // Wait for a connection, or for the next timer if sooner.
                 let mut wait = std::time::Duration::from_millis(2);
                 if let Some(when) = next_timer {
@@ -1387,6 +1393,20 @@ impl Vm {
     }
 
     fn fire_timers(&mut self) {
+        if !self.ctx.jobs.is_empty() {
+            let program = self.ctx.program.clone();
+            let mut i = 0;
+            while i < self.ctx.jobs.len() {
+                match self.ctx.jobs[i].poll(&program) {
+                    Some(result) => {
+                        let job = self.ctx.jobs.swap_remove(i);
+                        let waiters = job.handle.finish(result);
+                        self.ready.extend(waiters);
+                    }
+                    None => i += 1,
+                }
+            }
+        }
         // Only read the clock when there is a timer: some hosts (WebAssembly
         // without imports) have none.
         if self.ctx.timers.is_empty() {
@@ -1425,7 +1445,14 @@ impl Vm {
             Value::Channel(ch) => {
                 let mut ch = ch.borrow_mut();
                 match ch.queue.pop_front() {
-                    Some(v) => Awaited::Ready(v),
+                    Some(v) => {
+                        // Room now: the longest-waiting sender's value goes in.
+                        if let Some((value, sender)) = ch.senders.pop_front() {
+                            ch.queue.push_back(value);
+                            self.ready.extend(sender.finish(Ok(Value::None)));
+                        }
+                        Awaited::Ready(v)
+                    }
                     None if ch.closed => Awaited::Ready(Value::None),
                     None => {
                         ch.waiters.push(self.current);

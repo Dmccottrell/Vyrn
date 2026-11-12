@@ -96,11 +96,15 @@ impl fmt::Debug for TaskHandle {
     }
 }
 
-/// An unbounded queue between tasks.
+/// A queue between tasks: unbounded, or holding at most `capacity` values.
 #[derive(Debug, Default)]
 pub struct Channel {
     pub queue: VecDeque<Value>,
     pub closed: bool,
     /// Tasks waiting for a value.
     pub waiters: Vec<TaskId>,
+    /// At most this many values wait in the queue; `send` waits when full.
+    pub capacity: Option<usize>,
+    /// Values whose senders are waiting for room, oldest first.
+    pub senders: VecDeque<(Value, std::rc::Rc<TaskHandle>)>,
 }

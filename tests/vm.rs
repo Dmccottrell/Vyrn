@@ -1306,6 +1306,22 @@ fn types_define_their_own_operators_and_text() {
 }
 
 #[test]
+fn bounded_channels_pools_and_yielding() {
+    assert_eq!(
+        run("use vyrn.task\n\
+             create square(n: int) -> int: return n * n\n\
+             async create producer(ch):\n    each i in 1 to 4:\n        ch.send(i)\n        print(\"sent {i} {ch.len()}\")\n    end\n    ch.close()\nend\n\
+             async create ticker(label: str):\n    each i in 1 to 2:\n        print(\"{label}{i}\")\n        task.yield_now()\n    end\nend\n\
+             main:\n    let ch = channel(capacity = 2)\n    let p = producer(ch)\n    await sleep(0.01)\n\
+             \x20   print(await ch, await ch, await ch, await ch, await ch)\n    await p\n\
+             \x20   await join(ticker(\"a\"), ticker(\"b\"))\n\
+             \x20   let pool = task.Pool(workers = 2)\n    print(await pool.run(square, 7), await pool.map(square, [1, 2, 3]))\n\
+             \x20   attempt:\n        await pool.run(square, \"x\")\n    catch PoolError:\n        print(\"failed\")\n    end\nend\n"),
+        "sent 1 1\nsent 2 2\nsent 3 0\nsent 4 1\n1 2 3 4 none\na1\nb1\na2\nb2\n49 [1, 4, 9]\nfailed\n"
+    );
+}
+
+#[test]
 fn a_type_can_have_both_minus_operators() {
     assert_eq!(
         run("struct V:\n    x: int\n\

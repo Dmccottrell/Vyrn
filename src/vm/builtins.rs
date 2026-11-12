@@ -97,7 +97,7 @@ pub static NATIVES: &[Native] = &[
     variadic("vec4", vec4),
     variadic("join", join),
     fixed("sleep", &["seconds"], 1, sleep),
-    fixed("channel", &[], 0, channel),
+    fixed("channel", &["capacity"], 0, channel),
     fixed("now", &[], 0, now),
     fixed("assert", &["condition", "message"], 1, assert),
     fixed("python.import", &["module", "name"], 1, python_import),
@@ -404,6 +404,8 @@ pub static NATIVES: &[Native] = &[
     fixed("task.done", &["task"], 1, S::task_done),
     fixed("task.cancel", &["task"], 1, S::task_cancel),
     fixed("task.sleep", &["seconds"], 1, sleep),
+    fixed("task.yield_now", &[], 0, yield_now),
+    fixed("task.Pool", &["workers"], 0, super::parallel::pool),
     // ---- vyrn.http client ----
     fixed("web.get", &["url", "headers"], 1, S::http_get),
     fixed("web.post", &["url", "body", "headers"], 1, S::http_post),
@@ -748,6 +750,11 @@ fn sleep(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     sleep_task(ctx, seconds)
 }
 
+/// `task.yield_now()`: lets every other ready task run, then carries on.
+fn yield_now(ctx: &mut Ctx, _: &[Value]) -> VmResult<Value> {
+    sleep_task(ctx, 0.0)
+}
+
 /// A task that finishes after `seconds`.
 pub(crate) fn sleep_task(ctx: &mut Ctx, seconds: f64) -> VmResult<Value> {
     if cfg!(target_arch = "wasm32") {
@@ -924,9 +931,24 @@ fn no_clock() -> Value {
 }
 
 /// `channel()`: a queue for passing values between tasks.
-fn channel(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
+/// `channel(capacity = n)` holds at most `n`; `send` then waits for room,
+/// which slows a fast producer down to its consumer's pace.
+fn channel(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let capacity = match opt(args, 0) {
+        Some(v) => {
+            let n = integer(v, "the capacity")?;
+            if n < 1 {
+                return Err(err("ValueError", "a channel's capacity must be at least 1"));
+            }
+            Some(n as usize)
+        }
+        None => None,
+    };
     Ok(Value::Channel(Rc::new(RefCell::new(
-        super::task::Channel::default(),
+        super::task::Channel {
+            capacity,
+            ..Default::default()
+        },
     ))))
 }
 
@@ -1830,9 +1852,16 @@ pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value>
                 if ch.closed {
                     return Err(err("ChannelClosed", "cannot send on a closed channel"));
                 }
-                ch.queue.push_back(rest[0].clone());
                 let waiters = std::mem::take(&mut ch.waiters);
                 ctx.wakeups.extend(waiters);
+                if ch.capacity.is_some_and(|c| ch.queue.len() >= c) {
+                    // Full: the sender waits (a task to await) until a
+                    // receiver makes room.
+                    let handle = Rc::new(super::task::TaskHandle::new(ctx.new_task_id(), "send"));
+                    ch.senders.push_back((rest[0].clone(), handle.clone()));
+                    return Ok(Value::Task(handle));
+                }
+                ch.queue.push_back(rest[0].clone());
                 Ok(Value::None)
             }
             "close" => {
@@ -1841,9 +1870,26 @@ pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value>
                 ch.closed = true;
                 let waiters = std::mem::take(&mut ch.waiters);
                 ctx.wakeups.extend(waiters);
+                for (_, sender) in std::mem::take(&mut ch.senders) {
+                    let failed = err(
+                        "ChannelClosed",
+                        "the channel was closed before the value could be sent",
+                    );
+                    ctx.wakeups.extend(sender.finish(Err(failed)));
+                }
                 Ok(Value::None)
             }
             "len" => Ok(Value::Int(ch.borrow().queue.len() as i64)),
+            "capacity" => Ok(ch
+                .borrow()
+                .capacity
+                .map_or(Value::None, |c| Value::Int(c as i64))),
+            "full" => {
+                let ch = ch.borrow();
+                Ok(Value::Bool(
+                    ch.capacity.is_some_and(|c| ch.queue.len() >= c),
+                ))
+            }
             _ => Err(no_method(receiver, name)),
         },
         Value::Tokenizer(tokenizer) => match name {

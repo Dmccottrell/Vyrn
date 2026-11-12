@@ -583,6 +583,8 @@ impl Compiler {
         };
         match &callee.kind {
             ExprKind::Name(n) => matches!(self.resolve(&n.name), Some(Resolved::Native(_))),
+            // `ch.send(x)` on a full bounded channel waits for room.
+            ExprKind::Field { name, .. } if name.name == "send" => true,
             ExprKind::Field { .. } => matches!(self.module_member(callee), Some(Ok(_))),
             _ => false,
         }
