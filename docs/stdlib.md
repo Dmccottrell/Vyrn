@@ -361,6 +361,7 @@ from the SQL, so input cannot change a statement. Errors are
 | `win.box(cam, [x, y, z, w, h, d], colour)` | A box from the same lists `vyrn.game` collides with |
 | `cam.direction`, `cam.position`, `cam.strafe(d)`, `cam.fly(d)` | First-person aiming and movement |
 | `win.mouse_dx`, `win.mouse_dy`, `win.hide_cursor()`, `win.show_cursor()` | Mouse look |
+| `pad = draw.gamepad(n = 0)` (once a frame; none without one), `draw.gamepads()` | Game controllers: `pad.down("a")`, `pad.pressed("a")` (since the last frame), `pad.stick("left")` ([x, y], -1 to 1), `pad.trigger("right")` (0 to 1), `pad.name`. Buttons, Xbox layout: `a b x y lb rb lt rt back start home l3 r3 up down left right` |
 | `draw.load_obj(path)` | A model exported from Blender and other 3D tools, with its texture coordinates, normals (smooth shading) and the PNG texture its `.mtl` file names |
 | `texture = img` on `box`, `cube`, `sphere`, `plane`, `mesh` | Paints the shape with an image from `draw.image(path)` or `canvas.to_image()`; on a `box` it repeats once per unit |
 | `draw.mesh(points, triangles, uvs, smooth, texture)` | Your own shapes, with texture coordinates and smooth shading |
@@ -400,6 +401,8 @@ Data travels as JSON. Nothing waits, so sockets fit in a game loop;
 | `snd.play(volume = 1.0, loop = false, speed = 1.0)` | Plays it, mixed with anything else playing; gives a handle |
 | `playing.stop()`, `pause()`, `resume()`, `set_volume(v)`, `set_speed(s)`, `playing.playing` | Controlling it |
 | `snd.duration`, `snd.save("beep.wav")`, `sound.available()`, `sound.stop_all()` | Length; writing a WAV; whether there is a sound device; silence |
+| `snd.play(at = [x, y, z], range = 30)`, `playing.move_to(x, y, z)`, `playing.balance` | A sound in the 3D world: louder in the nearer ear, quieter with distance, silent past `range`; it can move while it plays |
+| `sound.listener(camera)` or `sound.listener(x, y, z, yaw)` | Where the player hears from; call it each frame as the camera moves |
 
 Without a sound device, playing is silent rather than an error, so games
 still run.

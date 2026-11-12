@@ -23,7 +23,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Linux build dependencies (sound)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
       - uses: Swatinem/rust-cache@v2
       - name: Test
         run: cargo test --locked
@@ -37,7 +37,7 @@ jobs:
           components: clippy, rustfmt
       - name: Linux build dependencies (sound)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with:
@@ -58,7 +58,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Linux build dependencies (sound)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
@@ -76,7 +76,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - name: Linux build dependencies (sound)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: runtime/wasm
@@ -104,7 +104,7 @@ jobs:
           components: clippy, rustfmt
       - name: Linux build dependencies (sound)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: runtime/embed

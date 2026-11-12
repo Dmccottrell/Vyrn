@@ -59,7 +59,7 @@ cargo install --path .
 ```
 
 On Linux, building from source needs the sound library's development
-files first (`sudo apt-get install libasound2-dev` on Debian and Ubuntu).
+files first (`sudo apt-get install libasound2-dev libudev-dev` on Debian and Ubuntu: sound and gamepads).
 
 The installers download a release built by `.github/workflows/release.yml`;
 releases appear once a version tag such as `v0.4.0` is pushed.

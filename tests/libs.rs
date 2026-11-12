@@ -535,6 +535,29 @@ fn textures_lights_and_fog_look_the_same_on_the_gpu() {
     assert_eq!(out, "true true #ea7b78 #202020\ntrue\n#8090a0 #000000\n");
 }
 
+#[cfg(feature = "sound")]
+#[test]
+fn sounds_in_the_world_pan_and_fade_from_the_listener() {
+    let out = run("use vyrn.sound\nuse vyrn.draw\n\
+         main:\n\
+         \x20   let beep = sound.tone(440, 0.05, volume = 0.0)\n\
+         \x20   sound.listener(0, 0, 0)\n\
+         \x20   let right = beep.play(at = [3, 0, 0])\n\
+         \x20   print(right.balance, beep.play(at = [0, 0, 1]).balance, beep.play(at = [0, 0, 40], range = 30).balance)\n\
+         \x20   sound.listener(0, 0, 0, yaw = 90)\n\
+         \x20   print(right.balance)\n\
+         \x20   right.move_to(0, 0, -3)\n\
+         \x20   print(right.balance)\n\
+         \x20   let cam = draw.camera(0, 0, 0)\n\
+         \x20   sound.listener(cam)\n\
+         \x20   print(right.balance, beep.play().balance)\n\
+         end\n");
+    assert_eq!(
+        out,
+        "[0.0, 0.795] [0.967, 0.967] [0.0, 0.0]\n[0.563, 0.563]\n[0.0, 0.795]\n[0.563, 0.563] none\n"
+    );
+}
+
 #[cfg(feature = "physics")]
 #[test]
 fn physics_bodies_fall_collide_and_characters_walk() {

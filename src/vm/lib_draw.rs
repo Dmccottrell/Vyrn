@@ -3083,6 +3083,23 @@ mod tests {
     }
 
     #[test]
+    fn gamepad_sticks_and_buttons() {
+        assert_eq!(dead_zone(0.05), 0.0);
+        assert_eq!(dead_zone(-1.0), -1.0);
+        assert!((dead_zone(0.56) - 0.5).abs() < 1e-6);
+        let pad = Gamepad {
+            name: "Test pad".into(),
+            down: vec!["a", "rt"],
+            pressed: vec!["a"],
+            sticks: [[0.5, -1.0], [0.0, 0.0]],
+            triggers: [0.0, 0.75],
+        };
+        assert_eq!(pad.button(Some(&Value::str("A"))).unwrap(), "a");
+        assert!(pad.button(Some(&Value::str("jump"))).is_err());
+        assert!(pad.down.contains(&"rt") && !pad.pressed.contains(&"rt"));
+    }
+
+    #[test]
     fn layout_places_widgets_in_columns_and_rows() {
         let mut ui = Ui::default();
         ui.next_frame((0.0, 0.0), false, String::new());
@@ -3128,5 +3145,260 @@ mod tests {
             ui.slider(&mut px, "v", 10.0, 10.0, 200.0, 0.0, 100.0, 100.0),
             100.0
         );
+    }
+}
+
+// ==== gamepads ================================================================
+
+/// `draw.gamepad(n = 0)`: the n-th connected gamepad, read now, or none.
+/// Call it once a frame: `pressed` means pressed since the last call.
+#[cfg(feature = "gamepad")]
+pub fn gamepad(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let n = match args.first() {
+        Some(Value::Int(i)) if *i >= 0 => *i as usize,
+        None | Some(Value::None) | Some(Value::Missing) => 0,
+        Some(_) => return Err(type_error("`draw.gamepad` takes which pad: 0, 1, 2...")),
+    };
+    Ok(pads::read(n).map_or(Value::None, wrap))
+}
+
+#[cfg(not(feature = "gamepad"))]
+pub fn gamepad(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
+    Ok(Value::None)
+}
+
+/// `draw.gamepads()`: the names of the connected gamepads.
+pub fn gamepads(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
+    #[cfg(feature = "gamepad")]
+    {
+        Ok(Value::list(
+            pads::names().into_iter().map(Value::str).collect(),
+        ))
+    }
+    #[cfg(not(feature = "gamepad"))]
+    Ok(Value::list(Vec::new()))
+}
+
+/// A gamepad as it was when read: buttons held and pressed, sticks and
+/// triggers.
+pub struct Gamepad {
+    name: String,
+    /// Buttons held now, and pressed since the previous read.
+    down: Vec<&'static str>,
+    pressed: Vec<&'static str>,
+    sticks: [[f64; 2]; 2],
+    triggers: [f64; 2],
+}
+
+/// Button names, Xbox layout: the bottom face button is "a".
+const PAD_BUTTONS: &[&str] = &[
+    "a", "b", "x", "y", "lb", "rb", "lt", "rt", "back", "start", "home", "l3", "r3", "up", "down",
+    "left", "right",
+];
+
+impl Gamepad {
+    fn button(&self, v: Option<&Value>) -> VmResult<&'static str> {
+        let name = match v {
+            Some(Value::Str(s)) => s.to_lowercase(),
+            _ => return Err(type_error("give a button name, such as \"a\"")),
+        };
+        PAD_BUTTONS
+            .iter()
+            .copied()
+            .find(|b| *b == name)
+            .ok_or_else(|| {
+                err(
+                    "ValueError",
+                    format!(
+                        "there is no gamepad button {name:?}; the buttons are {}",
+                        PAD_BUTTONS.join(", ")
+                    ),
+                )
+            })
+    }
+}
+
+impl Foreign for Gamepad {
+    fn type_name(&self) -> &'static str {
+        "Gamepad"
+    }
+
+    fn display(&self) -> String {
+        format!("Gamepad({:?})", self.name)
+    }
+
+    fn get_attr(&self, name: &str) -> VmResult<Value> {
+        match name {
+            "name" => Ok(Value::str(self.name.clone())),
+            "buttons" => Ok(Value::list(
+                self.down.iter().map(|b| Value::str(*b)).collect(),
+            )),
+            _ => Err(err(
+                "FieldError",
+                format!("a Gamepad has no field `{name}`"),
+            )),
+        }
+    }
+
+    fn call_method(
+        &self,
+        _: &mut Ctx,
+        name: &str,
+        args: &[Value],
+        _: &[(String, Value)],
+    ) -> VmResult<Value> {
+        let side = |v: Option<&Value>| -> VmResult<usize> {
+            match v {
+                None => Ok(0),
+                Some(Value::Str(s)) if &**s == "left" => Ok(0),
+                Some(Value::Str(s)) if &**s == "right" => Ok(1),
+                _ => Err(type_error("say \"left\" or \"right\"")),
+            }
+        };
+        match name {
+            // `pad.down("a")`: held now.
+            "down" => {
+                let b = self.button(args.first())?;
+                Ok(Value::Bool(self.down.contains(&b)))
+            }
+            // `pad.pressed("a")`: pressed since the last `draw.gamepad()`.
+            "pressed" => {
+                let b = self.button(args.first())?;
+                Ok(Value::Bool(self.pressed.contains(&b)))
+            }
+            // `pad.stick("left")`: [x, y] from -1 to 1, right and up
+            // positive, with a small dead zone.
+            "stick" => {
+                let s = self.sticks[side(args.first())?];
+                Ok(Value::list(vec![Value::Float(s[0]), Value::Float(s[1])]))
+            }
+            // `pad.trigger("right")`: 0 (released) to 1 (pulled all the way).
+            "trigger" => Ok(Value::Float(self.triggers[side(args.first())?])),
+            _ => Err(err(
+                "FieldError",
+                format!("a Gamepad has no method `{name}`"),
+            )),
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Small stick movements near the middle count as none.
+#[cfg(any(feature = "gamepad", test))]
+fn dead_zone(x: f32) -> f64 {
+    let x = f64::from(x);
+    if x.abs() < 0.12 {
+        0.0
+    } else {
+        ((x.abs() - 0.12) / 0.88).min(1.0).copysign(x)
+    }
+}
+
+#[cfg(feature = "gamepad")]
+mod pads {
+    use super::{dead_zone, Gamepad};
+    use gilrs::{Axis, Button, EventType, Gilrs};
+    use std::cell::RefCell;
+    use std::collections::{HashMap, HashSet};
+
+    thread_local! {
+        /// The gamepad system, started on first use (`None` inside when
+        /// it could not start).
+        static GILRS: RefCell<Option<Option<Gilrs>>> = const { RefCell::new(None) };
+        /// Buttons pressed since the last read, per gamepad.
+        static PRESSED: RefCell<HashMap<gilrs::GamepadId, HashSet<&'static str>>> = RefCell::new(HashMap::new());
+    }
+
+    const MAP: &[(Button, &str)] = &[
+        (Button::South, "a"),
+        (Button::East, "b"),
+        (Button::West, "x"),
+        (Button::North, "y"),
+        (Button::LeftTrigger, "lb"),
+        (Button::RightTrigger, "rb"),
+        (Button::LeftTrigger2, "lt"),
+        (Button::RightTrigger2, "rt"),
+        (Button::Select, "back"),
+        (Button::Start, "start"),
+        (Button::Mode, "home"),
+        (Button::LeftThumb, "l3"),
+        (Button::RightThumb, "r3"),
+        (Button::DPadUp, "up"),
+        (Button::DPadDown, "down"),
+        (Button::DPadLeft, "left"),
+        (Button::DPadRight, "right"),
+    ];
+
+    fn with<T>(f: impl FnOnce(&mut Gilrs) -> T) -> Option<T> {
+        GILRS.with(|g| {
+            let mut g = g.borrow_mut();
+            if g.is_none() {
+                *g = Some(Gilrs::new().ok());
+            }
+            g.as_mut().and_then(|g| g.as_mut()).map(f)
+        })
+    }
+
+    /// Takes the waiting events, noting presses.
+    fn pump(g: &mut Gilrs) {
+        while let Some(event) = g.next_event() {
+            if let EventType::ButtonPressed(button, _) = event.event {
+                if let Some((_, name)) = MAP.iter().find(|(b, _)| *b == button) {
+                    PRESSED.with(|p| p.borrow_mut().entry(event.id).or_default().insert(*name));
+                }
+            }
+        }
+    }
+
+    pub fn names() -> Vec<String> {
+        with(|g| {
+            pump(g);
+            g.gamepads().map(|(_, p)| p.name().to_string()).collect()
+        })
+        .unwrap_or_default()
+    }
+
+    pub fn read(n: usize) -> Option<Gamepad> {
+        with(|g| {
+            pump(g);
+            let (id, pad) = g.gamepads().nth(n)?;
+            let down = MAP
+                .iter()
+                .filter(|(b, _)| pad.is_pressed(*b))
+                .map(|(_, name)| *name)
+                .collect();
+            let pressed = PRESSED
+                .with(|p| p.borrow_mut().remove(&id))
+                .map(|s| s.into_iter().collect())
+                .unwrap_or_default();
+            let trigger = |b: Button, axis: Axis| {
+                let v = pad.button_data(b).map_or(0.0, |d| d.value());
+                let a = pad.value(axis);
+                f64::from(v.max(a)).clamp(0.0, 1.0)
+            };
+            Some(Gamepad {
+                name: pad.name().to_string(),
+                down,
+                pressed,
+                sticks: [
+                    [
+                        dead_zone(pad.value(Axis::LeftStickX)),
+                        dead_zone(pad.value(Axis::LeftStickY)),
+                    ],
+                    [
+                        dead_zone(pad.value(Axis::RightStickX)),
+                        dead_zone(pad.value(Axis::RightStickY)),
+                    ],
+                ],
+                triggers: [
+                    trigger(Button::LeftTrigger2, Axis::LeftZ),
+                    trigger(Button::RightTrigger2, Axis::RightZ),
+                ],
+            })
+        })
+        .flatten()
     }
 }

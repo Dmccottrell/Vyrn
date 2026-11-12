@@ -294,6 +294,8 @@ pub static NATIVES: &[Native] = &[
     variadic("draw.overlaps", super::lib_draw::overlaps),
     fixed("draw.load_obj", &["path"], 1, super::lib_draw::load_obj),
     fixed("draw.use_gpu", &["on"], 1, super::lib_draw::use_gpu),
+    fixed("draw.gamepad", &["n"], 0, super::lib_draw::gamepad),
+    fixed("draw.gamepads", &[], 0, super::lib_draw::gamepads),
     fixed("draw.renderer", &[], 0, super::lib_draw::renderer),
     fixed(
         "game.raycast",
@@ -319,6 +321,12 @@ pub static NATIVES: &[Native] = &[
         super::lib_sound::tone,
     ),
     fixed("sound.available", &[], 0, super::lib_sound::available),
+    fixed(
+        "sound.listener",
+        &["x", "y", "z", "yaw"],
+        1,
+        super::lib_sound::set_listener,
+    ),
     fixed("physics.world", &["gravity"], 0, super::lib_physics::world),
     fixed("sound.stop_all", &[], 0, super::lib_sound::stop_all),
     fixed(

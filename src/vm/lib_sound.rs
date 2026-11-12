@@ -22,6 +22,92 @@
 use super::ops::{err, type_error, Ctx, VmResult};
 use super::value::Value;
 
+/// Where the listener is: position, and which way they face (degrees of
+/// yaw, as a `vyrn.draw` camera turns).
+#[derive(Clone, Copy)]
+pub struct Listener {
+    pub at: [f64; 3],
+    pub yaw: f64,
+}
+
+thread_local! {
+    static LISTENER: std::cell::Cell<Listener> = const {
+        std::cell::Cell::new(Listener { at: [0.0; 3], yaw: 0.0 })
+    };
+}
+
+/// Left and right volume for a sound at `at`, heard by `ear`: quieter with
+/// distance (silent at `range`), and louder in the ear it is nearer.
+pub fn spatial_gains(ear: Listener, at: [f64; 3], range: f64) -> [f64; 2] {
+    let to = [at[0] - ear.at[0], at[1] - ear.at[1], at[2] - ear.at[2]];
+    let dist = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+    let fade = (1.0 - dist / range.max(0.001)).clamp(0.0, 1.0);
+    // Full volume within a metre, then falling off, then fading to silence.
+    let level = fade / (1.0 + 0.3 * (dist - 1.0).max(0.0));
+    if dist < 1e-6 {
+        return [level, level];
+    }
+    // Facing +z at yaw 0, with +x to the right, as the camera.
+    let (s, c) = ear.yaw.to_radians().sin_cos();
+    let right = [c, 0.0, -s];
+    let pan = ((to[0] * right[0] + to[2] * right[2]) / dist).clamp(-1.0, 1.0);
+    // Equal power: centred is full volume in both ears.
+    let angle = (pan + 1.0) * std::f64::consts::FRAC_PI_4;
+    let k = std::f64::consts::SQRT_2;
+    [
+        (level * angle.cos() * k).min(1.0),
+        (level * angle.sin() * k).min(1.0),
+    ]
+}
+
+pub fn listener() -> Listener {
+    LISTENER.with(std::cell::Cell::get)
+}
+
+/// `sound.listener(x, y, z, yaw = 0)` or `sound.listener(camera)`: where
+/// the player hears from. Sounds played `at` a place pan and fade from here.
+pub fn set_listener(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let number = |v: &Value, what: &str| -> VmResult<f64> {
+        match v {
+            Value::Int(i) => Ok(*i as f64),
+            Value::Float(f) => Ok(*f),
+            other => Err(type_error(format!(
+                "{what} must be a number, not {}",
+                other.type_name()
+            ))),
+        }
+    };
+    let ear = match args.first() {
+        Some(Value::Foreign(f)) => {
+            let pos = super::ops::collect(&f.get_attr("position")?)?;
+            let [x, y, z] = pos.as_slice() else {
+                return Err(type_error("`sound.listener` takes a camera, or x, y, z"));
+            };
+            Listener {
+                at: [number(x, "x")?, number(y, "y")?, number(z, "z")?],
+                yaw: number(&f.get_attr("yaw")?, "yaw")?,
+            }
+        }
+        _ => {
+            let get = |i: usize, what: &str| -> VmResult<f64> {
+                match args.get(i) {
+                    Some(Value::None) | Some(Value::Missing) | None => Ok(0.0),
+                    Some(v) => number(v, what),
+                }
+            };
+            Listener {
+                at: [get(0, "x")?, get(1, "y")?, get(2, "z")?],
+                yaw: get(3, "yaw")?,
+            }
+        }
+    };
+    let _ = ctx;
+    LISTENER.with(|l| l.set(ear));
+    #[cfg(feature = "sound")]
+    imp::update_spatial();
+    Ok(Value::None)
+}
+
 #[cfg(feature = "sound")]
 mod imp {
     use super::*;
@@ -39,6 +125,8 @@ mod imp {
         /// Sounds still playing, kept so they play to the end even when
         /// nobody holds their handle.
         static PLAYING: RefCell<Vec<Rc<rodio::Player>>> = const { RefCell::new(Vec::new()) };
+        /// Sounds playing at a place, to pan again when the listener moves.
+        static SPATIAL: RefCell<Vec<std::rc::Weak<Spatial>>> = const { RefCell::new(Vec::new()) };
     }
 
     /// ALSA prints its own complaints (such as "cannot find card '0'" on a
@@ -182,13 +270,48 @@ mod imp {
                         Some(v) => num(v, "the speed")?,
                         None => 1.0,
                     };
+                    // `at = [x, y, z]`: a sound in the world, heard from
+                    // `sound.listener`; `range`: how far it carries.
+                    let spatial = match kw(kwargs, "at").or(args.get(3)) {
+                        None | Some(Value::None) => None,
+                        Some(v) => {
+                            let p = crate::vm::ops::collect(v)?;
+                            let [x, y, z] = p.as_slice() else {
+                                return Err(type_error("`at` is [x, y, z]"));
+                            };
+                            let range = match kw(kwargs, "range").or(args.get(4)) {
+                                Some(v) => num(v, "the range")?,
+                                None => 30.0,
+                            };
+                            let state = Rc::new(Spatial {
+                                at: std::cell::Cell::new([
+                                    num(x, "x")?,
+                                    num(y, "y")?,
+                                    num(z, "z")?,
+                                ]),
+                                range,
+                                gains: Default::default(),
+                            });
+                            state.update();
+                            SPATIAL.with(|l| l.borrow_mut().push(Rc::downgrade(&state)));
+                            Some(state)
+                        }
+                    };
                     let player = with_device(|device| {
                         let device = device?;
                         let player = rodio::Player::connect_new(device.mixer());
-                        if looping {
-                            player.append(self.buffer().repeat_infinite());
-                        } else {
-                            player.append(self.buffer());
+                        match &spatial {
+                            Some(state) if looping => {
+                                player.append(panned(
+                                    self.buffer().repeat_infinite(),
+                                    state.gains.clone(),
+                                ));
+                            }
+                            Some(state) => {
+                                player.append(panned(self.buffer(), state.gains.clone()))
+                            }
+                            None if looping => player.append(self.buffer().repeat_infinite()),
+                            None => player.append(self.buffer()),
                         }
                         player.set_volume(volume as f32);
                         player.set_speed(speed as f32);
@@ -201,7 +324,10 @@ mod imp {
                             list.push(p.clone());
                         });
                     }
-                    Ok(Value::Foreign(Rc::new(Box::new(Playing { player }))))
+                    Ok(Value::Foreign(Rc::new(Box::new(Playing {
+                        player,
+                        spatial,
+                    }))))
                 }
                 // `snd.save("beep.wav")`
                 "save" => {
@@ -222,10 +348,62 @@ mod imp {
         }
     }
 
+    /// Where a playing sound is, and the ear volumes the audio thread reads.
+    pub struct Spatial {
+        at: std::cell::Cell<[f64; 3]>,
+        range: f64,
+        gains: std::sync::Arc<std::sync::Mutex<[f32; 2]>>,
+    }
+
+    impl Spatial {
+        fn update(&self) {
+            let g = super::spatial_gains(super::listener(), self.at.get(), self.range);
+            if let Ok(mut gains) = self.gains.lock() {
+                *gains = [g[0] as f32, g[1] as f32];
+            }
+        }
+
+        fn balance(&self) -> [f32; 2] {
+            self.gains.lock().map_or([0.0; 2], |g| *g)
+        }
+    }
+
+    /// Two channels whose volumes follow `gains`, checked every 10 ms.
+    fn panned<S>(
+        source: S,
+        gains: std::sync::Arc<std::sync::Mutex<[f32; 2]>>,
+    ) -> impl Source + Send + 'static
+    where
+        S: Source + Send + 'static,
+    {
+        let g = gains.lock().map_or([0.0; 2], |g| *g);
+        rodio::source::ChannelVolume::new(source, vec![g[0], g[1]]).periodic_access(
+            std::time::Duration::from_millis(10),
+            move |cv| {
+                if let Ok(g) = gains.lock() {
+                    cv.set_volume(0, g[0]);
+                    cv.set_volume(1, g[1]);
+                }
+            },
+        )
+    }
+
+    /// Pans every placed sound for the listener's new place.
+    pub fn update_spatial() {
+        SPATIAL.with(|list| {
+            let mut list = list.borrow_mut();
+            list.retain(|s| s.strong_count() > 0);
+            for s in list.iter().filter_map(std::rc::Weak::upgrade) {
+                s.update();
+            }
+        });
+    }
+
     /// A sound that is playing (or, without a sound device, silently
     /// pretending to).
     pub struct Playing {
         player: Option<Rc<rodio::Player>>,
+        spatial: Option<Rc<Spatial>>,
     }
 
     impl Foreign for Playing {
@@ -243,6 +421,15 @@ mod imp {
         fn get_attr(&self, name: &str) -> VmResult<Value> {
             match name {
                 "playing" => Ok(Value::Bool(self.is_playing())),
+                // [left, right] volumes of a sound placed in the world.
+                "balance" => Ok(match &self.spatial {
+                    Some(s) => {
+                        let g = s.balance();
+                        let r = |x: f32| Value::Float((f64::from(x) * 1000.0).round() / 1000.0);
+                        Value::list(vec![r(g[0]), r(g[1])])
+                    }
+                    None => Value::None,
+                }),
                 "volume" => Ok(Value::Float(
                     self.player.as_ref().map_or(0.0, |p| f64::from(p.volume())),
                 )),
@@ -260,6 +447,22 @@ mod imp {
             args: &[Value],
             _: &[(String, Value)],
         ) -> VmResult<Value> {
+            // `playing.move_to(x, y, z)`: the sound moves (a passing car).
+            if name == "move_to" {
+                let Some(s) = &self.spatial else {
+                    return Err(type_error("`move_to` is for sounds played `at` a place"));
+                };
+                let p = match args {
+                    [single] => crate::vm::ops::collect(single)?,
+                    many => many.to_vec(),
+                };
+                let [x, y, z] = p.as_slice() else {
+                    return Err(type_error("`move_to` takes x, y, z"));
+                };
+                s.at.set([num(x, "x")?, num(y, "y")?, num(z, "z")?]);
+                s.update();
+                return Ok(Value::None);
+            }
             let Some(p) = &self.player else {
                 return Ok(Value::None);
             };

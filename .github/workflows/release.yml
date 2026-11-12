@@ -30,7 +30,7 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Linux build dependencies (sound)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
       - name: Build
         run: cargo build --locked --release --target ${{ matrix.target }}
       - name: Package (Unix)
@@ -70,7 +70,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Linux build dependencies (sound)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
       - name: Build the Vyrn runtime library
         working-directory: runtime/embed
         run: cargo build --locked --release

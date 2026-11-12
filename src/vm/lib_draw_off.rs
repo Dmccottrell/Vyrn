@@ -31,5 +31,7 @@ stubs!(
     sphere_mesh_fn,
     load_obj,
     use_gpu,
-    renderer
+    renderer,
+    gamepad,
+    gamepads
 );
