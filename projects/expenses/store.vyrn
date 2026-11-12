@@ -1,0 +1,62 @@
+# store.vyrn: where expenses are kept, in a SQLite database file.
+#
+# Everything about the database lives in this one file. The rest of the
+# program asks a Store for what it needs ("add this", "list that") and
+# never writes SQL itself. Swapping SQLite for something else later would
+# only change this file, and tests can hand the program a fake Store.
+
+use vyrn.db
+
+## One expense, as the rest of the program sees it.
+struct Expense:
+    id: int
+    day: str        # the date, written "2026-11-12"
+    category: str   # "food", "rent", "travel", ...
+    cents: int      # the amount, in cents (see money.vyrn)
+    note: str
+end
+
+## The expense database. An object, because there is one database the
+## whole program shares and changes.
+object Store:
+    path: str
+    private conn: any = none
+
+    # `init` runs as soon as a Store is made: it opens (or creates) the
+    # database file and makes sure the table exists.
+    create init(self):
+        self.conn = db.open(self.path)
+        self.conn.execute("create table if not exists expenses (id integer primary key autoincrement, day text, category text, cents integer, note text)")
+    end
+
+    ## Saves a new expense and gives back its id.
+    create add(self, day: str, category: str, cents: int, note: str) -> int:
+        # The `?` marks are filled in by SQLite from the list, never pasted
+        # into the SQL text, so a note like "Bob's; drop table" is harmless.
+        self.conn.execute("insert into expenses (day, category, cents, note) values (?, ?, ?, ?)", [day, category, cents, note])
+        return self.conn.last_id()
+    end
+
+    ## Expenses, newest first; only one category's if one is given.
+    create list(self, category: str? = none) -> list:
+        var rows = []
+        if category == none:
+            rows = self.conn.query("select * from expenses order by day desc, id desc")
+        else:
+            rows = self.conn.query("select * from expenses where category = ? order by day desc, id desc", [category])
+        end
+        # Each row comes back as a map; turn them into Expense values.
+        return [Expense(r["id"], r["day"], r["category"], r["cents"], r["note"]) each r in rows]
+    end
+
+    ## Total spent per category, biggest first, as (category, cents) pairs.
+    create totals(self) -> list:
+        let rows = self.conn.query("select category, sum(cents) as total from expenses group by category order by total desc")
+        return [(r["category"], r["total"]) each r in rows]
+    end
+
+    ## Removes one expense. Gives whether there was one with that id.
+    create delete(self, id: int) -> bool:
+        return self.conn.execute("delete from expenses where id = ?", [id]) > 0
+    end
+end

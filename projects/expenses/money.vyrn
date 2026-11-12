@@ -1,0 +1,37 @@
+# money.vyrn: turning text into amounts of money and back.
+#
+# Money is stored as whole cents (an int), never as a float: 0.1 + 0.2 is
+# not exactly 0.3 in floating point, but 10 + 20 cents is exactly 30. This
+# is how banks and shops store money, and a habit worth keeping.
+
+## Reads an amount typed by a person ("12.5", "12.50", "$12", "1,200.99")
+## and gives it in cents. Fails with a ValueError for anything else.
+create parse_cents(text: str) -> int:
+    # Remove the decorations people type: spaces, a currency sign, commas.
+    var clean = text.strip().replace("$", "").replace(",", "")
+    if clean == "": fail ValueError("the amount is empty")
+
+    # Split into the part before and after the decimal point, if any.
+    let parts = clean.split(".")
+    if len(parts) > 2: fail ValueError("{text} has more than one decimal point")
+    let whole = parts[0]
+    var fraction = parts[1] if len(parts) == 2 else "0"
+
+    # Only digits are allowed in each part.
+    if not whole.isdigit() or not fraction.isdigit():
+        fail ValueError("{text} is not an amount of money")
+    end
+    if len(fraction) > 2: fail ValueError("{text} has more than two decimals")
+
+    # "5" after the point means 50 cents, so pad to two digits.
+    fraction = fraction.ljust(2, "0")
+    return int(whole) * 100 + int(fraction)
+end
+
+## Shows cents as money: 123456 becomes "$1,234.56".
+create format_cents(cents: int) -> str:
+    # Dividing by 100 gives dollars; the `,.2f` format adds the thousands
+    # separators and keeps exactly two decimals.
+    let sign = "-" if cents < 0 else ""
+    return "{sign}${abs(cents) / 100:,.2f}"
+end

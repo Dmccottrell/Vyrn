@@ -1,0 +1,4 @@
+[package]
+name = "expenses"
+edition = "2026"
+main = "main.vyrn"

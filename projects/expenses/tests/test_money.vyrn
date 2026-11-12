@@ -1,0 +1,33 @@
+# Run with `vyrn test` inside projects/expenses.
+#
+# Each `create test_...()` is one test: it passes when every `assert` holds
+# and nothing fails.
+
+use money (parse_cents, format_cents)
+
+create test_amounts_people_type():
+    assert(parse_cents("12.50") == 1250)
+    assert(parse_cents("12.5") == 1250)
+    assert(parse_cents("$1,200") == 120000)
+    assert(parse_cents(" 7 ") == 700)
+end
+
+create test_bad_amounts_fail():
+    # `attempt` catches the ValueError; reaching the line after the call
+    # would mean the bad amount was accepted.
+    each bad in ["", "abc", "1.2.3", "12.345", "-5"]:
+        var failed = false
+        attempt:
+            parse_cents(bad)
+        catch ValueError:
+            failed = true
+        end
+        assert(failed, "\"{bad}\" should be refused")
+    end
+end
+
+create test_formatting():
+    assert(format_cents(123456) == "$1,234.56")
+    assert(format_cents(5) == "$0.05")
+    assert(format_cents(-250) == "-$2.50")
+end
