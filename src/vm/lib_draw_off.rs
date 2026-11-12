@@ -33,5 +33,6 @@ stubs!(
     use_gpu,
     renderer,
     gamepad,
-    gamepads
+    gamepads,
+    load_model
 );

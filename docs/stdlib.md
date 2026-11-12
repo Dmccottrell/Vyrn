@@ -364,7 +364,8 @@ from the SQL, so input cannot change a statement. Errors are
 | `pad = draw.gamepad(n = 0)` (once a frame; none without one), `draw.gamepads()` | Game controllers: `pad.down("a")`, `pad.pressed("a")` (since the last frame), `pad.stick("left")` ([x, y], -1 to 1), `pad.trigger("right")` (0 to 1), `pad.name`. Buttons, Xbox layout: `a b x y lb rb lt rt back start home l3 r3 up down left right` |
 | `draw.load_obj(path)` | A model exported from Blender and other 3D tools, with its texture coordinates, normals (smooth shading) and the PNG texture its `.mtl` file names |
 | `texture = img` on `box`, `cube`, `sphere`, `plane`, `mesh` | Paints the shape with an image from `draw.image(path)` or `canvas.to_image()`; on a `box` it repeats once per unit |
-| `draw.mesh(points, triangles, uvs, smooth, texture)` | Your own shapes, with texture coordinates and smooth shading |
+| `draw.mesh(points, triangles, uvs, smooth, texture)` | Your own shapes, with texture coordinates and smooth shading; `mesh.vertices` gives the points |
+| `draw.load_model(path)` | An animated glTF model (`.gltf` or `.glb`, from Blender, Mixamo and others): `model.animations`, `model.duration(name)`, `model.mesh(animation, time)` (posed, as a mesh), and `win.model(cam, model, x, y, z, size, color, rotation, animation, time)` to draw it |
 | `win.light(direction, color, strength)`, `win.ambient(level, color)`, `win.point_light(x, y, z, color, strength, range)`, `win.fog(color, start, end)` | Lighting: the sun, light that reaches everywhere, lamps (placed each frame, after `clear`), and fog that fades distant things |
 | `draw.renderer()`, `draw.use_gpu(on)` | What fills 3D shapes: a real GPU when there is one (Vulkan, Metal or DirectX 12), otherwise Vyrn's software renderer; `VYRN_GPU=on/off` also chooses |
 

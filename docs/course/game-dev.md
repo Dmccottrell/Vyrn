@@ -360,7 +360,149 @@ vyrn run examples/multiplayer.vyrn server
 vyrn run examples/multiplayer.vyrn play 127.0.0.1 Ada
 ```
 
-## 11. From here to a modern shooter
+## 11. A real engine: physics, textures, lights, animation, sound in 3D
+
+Everything so far you built by hand: collision with `game.slide`, flat
+colours, a camera. Bigger games lean on an engine for those, and Vyrn has
+the pieces.
+
+**Physics.** `vyrn.physics` simulates bodies: crates fall, stack and
+tumble, balls bounce. A *character* is a capsule that walks: it slides
+along walls, climbs steps, and knows when it is on the ground. A shot is a
+ray, and whatever it hits can be shoved. This runs without a window:
+
+```vyrn
+use vyrn.physics
+
+main:
+    let world = physics.world()
+    world.box(0, -0.5, 0, 40, 1, 40, fixed = true, name = "floor")
+    let crate = world.box(0, 4, 3, 1, 1, 1, mass = 5, name = "crate")
+    let player = world.character(0, 1, 0)
+    var fall = 0.0
+    let dt = 1.0 / 60
+    # Two seconds of game: the crate drops, the player walks forward.
+    each frame in 0 until 120:
+        if player.grounded and fall < 0: fall = 0.0
+        fall -= 9.81 * dt
+        player.move(0, fall * dt, 1.0 * dt)
+        world.step(dt)
+    end
+    print("crate landed at y = {crate.y.round(1)}")
+    print("player walked to z = {player.z.round(1)}, on the ground: {player.grounded}")
+    # A shot straight ahead from eye height hits the crate...
+    let hit = world.raycast([0, 0.5, player.z], [0, 0, 1], ignore = player)
+    print("the shot hit the {hit["body"].name} {hit["distance"].round(1)} metres away")
+    # ...and shoves it.
+    hit["body"].push(0, 0, 20)
+    world.step(dt)
+    print("the crate is moving: {crate.velocity[2] > 1}")
+end
+```
+
+```text
+crate landed at y = 0.5
+player walked to z = 2.0, on the ground: true
+the shot hit the crate 0.5 metres away
+the crate is moving: true
+```
+
+The player stopped in front of the crate: walking into it is like walking
+into a wall.
+
+**Textures and lights.** Any shape takes `texture = img`, a PNG from
+`draw.image(path)` or a picture you draw yourself and turn into an image
+with `canvas.to_image()`. Boxes repeat the texture once per metre. Lights
+are set each frame:
+
+```vyrn check
+use vyrn.draw
+
+main:
+    # A 2-by-2 checker, drawn in code.
+    let t = draw.canvas(2, 2)
+    t.clear("#7d8f6a")
+    t.pixel(1, 0, "#6a7a59")
+    t.pixel(0, 1, "#6a7a59")
+    let floor = t.to_image()
+    let win = draw.window(800, 500, "Lights")
+    let cam = draw.camera(0, 1.6, -6)
+    loop win.open():
+        win.clear("#9fc3e6")
+        win.light([0.3, 1, -0.2], "white", 0.7)        # the sun
+        win.ambient(0.3)
+        win.point_light(2, 2.5, 4, "orange", 1.5, 8)   # a lamp, this frame
+        win.fog("#9fc3e6", start = 15, end = 40)       # distance fades away
+        win.box(cam, [0, -0.05, 0, 40, 0.1, 40], "white", texture = floor)
+        win.sphere(cam, 2, 1, 4, 1.5, "tomato")
+        win.show()
+    end
+end
+```
+
+**Animated characters.** `draw.load_model("soldier.glb")` reads glTF, the
+format Blender and Mixamo export, with its skeleton, animations and
+texture. Draw it posed at any moment of an animation:
+
+```vyrn check
+use vyrn.draw
+
+main:
+    let soldier = draw.load_model("soldier.glb")
+    print(soldier.animations)                  # such as ["idle", "run"]
+    let win = draw.window(800, 500, "Soldier")
+    let cam = draw.camera(0, 1.5, -4)
+    var t = 0.0
+    var dt = 1.0 / 60
+    loop win.open():
+        t += dt
+        let moving = win.key_down("w")
+        win.clear("#202830")
+        win.model(cam, soldier, 0, 0, 0, animation = "run" if moving else "idle", time = t)
+        dt = win.show()
+    end
+end
+```
+
+**Sound in 3D and gamepads.** Play a sound at a place and say where the
+player hears from: it pans between the ears and fades with distance.
+`draw.gamepad()` gives the first controller, or none:
+
+```vyrn check
+use vyrn.draw
+use vyrn.sound
+
+main:
+    let win = draw.window(800, 500, "Listen")
+    let cam = draw.camera(0, 1.6, 0)
+    let beep = sound.tone(660, 0.1, wave = "square", volume = 0.3)
+    var timer = 0.0
+    var dt = 1.0 / 60
+    loop win.open():
+        let pad = draw.gamepad()
+        if pad != none:
+            let look = pad.stick("right")              # [x, y], -1 to 1
+            cam.turn(look[0] * 120 * dt, look[1] * 90 * dt)
+            if pad.pressed("a"): beep.play(at = [0, 1, 5])
+        end
+        sound.listener(cam)                            # each frame
+        timer += dt
+        if timer > 1:
+            timer = 0.0
+            beep.play(at = [5, 1, 0], range = 30)      # off to the right
+        end
+        win.clear("black")
+        win.cube(cam, 5, 1, 0, 0.5, "yellow")
+        win.cube(cam, 0, 1, 5, 0.5, "cyan")
+        dt = win.show()
+    end
+end
+```
+
+`examples/physics.vyrn` puts physics, a texture, a lamp and fog together
+in a room of crates you can knock over.
+
+## 12. From here to a modern shooter
 
 Games like Call of Duty or XDefiant are made by hundreds of people over
 years, with engines that took decades. The way there is the way they
@@ -374,9 +516,11 @@ roadmap, roughly in order:
 | 3 | Enemies that chase and shoot back (state machines, line of sight with `game.raycast`) | ✅ objects, `when` |
 | 4 | Weapons as data: damage, fire rate, recoil, spread | ✅ structs and maps |
 | 5 | Menus, settings, saved progress | ✅ widgets, files, `vyrn.db` |
-| 6 | Models from Blender | ✅ `draw.load_obj` |
-| 7 | A GPU renderer for big scenes | ✅ automatic with a GPU; textures and per-pixel lighting planned |
-| 8 | Sound effects and music | ✅ `vyrn.sound` |
+| 6 | Models from Blender, animated characters | ✅ `draw.load_obj`, `draw.load_model` (glTF with skeletons) |
+| 7 | A GPU renderer for big scenes, textures, lights, fog | ✅ automatic with a GPU; `texture =`, `win.light`, `win.point_light`, `win.fog` |
+| 8 | Sound effects, music, sound in 3D | ✅ `vyrn.sound`, `play(at = ...)`, `sound.listener` |
+| 8½ | Physics: falling, stacking, a character that walks and climbs | ✅ `vyrn.physics` |
+| 8¾ | Gamepads | ✅ `draw.gamepad()` |
 | 9 | Online multiplayer (a server, client prediction, lag compensation) | ✅ `vyrn.net` (UDP and TCP); prediction and lag compensation are yours to build on it |
 
 Start with step 1 (done!), then make the targets fight back.

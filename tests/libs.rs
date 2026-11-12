@@ -535,6 +535,111 @@ fn textures_lights_and_fog_look_the_same_on_the_gpu() {
     assert_eq!(out, "true true #ea7b78 #202020\ntrue\n#8090a0 #000000\n");
 }
 
+/// A tiny skinned model: an "arm" of two joints (a root, and an elbow one
+/// unit up) with one triangle whose top corner hangs on the elbow, and an
+/// animation "bend" turning the elbow a quarter turn about z in a second.
+fn arm_gltf() -> String {
+    let mut b: Vec<u8> = Vec::new();
+    let f = |b: &mut Vec<u8>, xs: &[f32]| {
+        xs.iter()
+            .for_each(|x| b.extend_from_slice(&x.to_le_bytes()))
+    };
+    // Positions (offset 0, 36 bytes).
+    f(&mut b, &[0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 2.0, 0.0]);
+    // Joints, four u16 per point (36, 24 bytes).
+    for j in [0u16, 0, 1] {
+        for k in [j, 0, 0, 0] {
+            b.extend_from_slice(&k.to_le_bytes());
+        }
+    }
+    // Weights (60, 48 bytes).
+    f(
+        &mut b,
+        &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+    );
+    // Inverse bind matrices (108, 128 bytes): identity, then down by one.
+    f(
+        &mut b,
+        &[
+            1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
+        ],
+    );
+    f(
+        &mut b,
+        &[
+            1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., -1., 0., 1.,
+        ],
+    );
+    // Key times (236, 8 bytes) and rotations (244, 32 bytes).
+    f(&mut b, &[0.0, 1.0]);
+    let s = std::f32::consts::FRAC_1_SQRT_2;
+    f(&mut b, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, s, s]);
+    // Indices (276, 6 bytes, padded to 8).
+    for i in [0u16, 1, 2, 0] {
+        b.extend_from_slice(&i.to_le_bytes());
+    }
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut b64 = String::new();
+    for chunk in b.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        for k in 0..4 {
+            if k <= chunk.len() {
+                b64.push(TABLE[(n >> (18 - 6 * k) & 63) as usize] as char);
+            } else {
+                b64.push('=');
+            }
+        }
+    }
+    format!(
+        r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0,2]}}],
+"nodes":[{{"name":"root","children":[1]}},{{"name":"elbow","translation":[0,1,0]}},{{"mesh":0,"skin":0}}],
+"skins":[{{"joints":[0,1],"inverseBindMatrices":3}}],
+"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2}},"indices":6}}]}}],
+"animations":[{{"name":"bend","channels":[{{"sampler":0,"target":{{"node":1,"path":"rotation"}}}}],"samplers":[{{"input":4,"output":5}}]}}],
+"buffers":[{{"byteLength":{len},"uri":"data:application/octet-stream;base64,{b64}"}}],
+"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":36}},{{"buffer":0,"byteOffset":36,"byteLength":24}},{{"buffer":0,"byteOffset":60,"byteLength":48}},{{"buffer":0,"byteOffset":108,"byteLength":128}},{{"buffer":0,"byteOffset":236,"byteLength":8}},{{"buffer":0,"byteOffset":244,"byteLength":32}},{{"buffer":0,"byteOffset":276,"byteLength":6}}],
+"accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[0.2,2,0]}},{{"bufferView":1,"componentType":5123,"count":3,"type":"VEC4"}},{{"bufferView":2,"componentType":5126,"count":3,"type":"VEC4"}},{{"bufferView":3,"componentType":5126,"count":2,"type":"MAT4"}},{{"bufferView":4,"componentType":5126,"count":2,"type":"SCALAR","min":[0],"max":[1]}},{{"bufferView":5,"componentType":5126,"count":2,"type":"VEC4"}},{{"bufferView":6,"componentType":5123,"count":3,"type":"SCALAR"}}]}}"#,
+        len = b.len()
+    )
+}
+
+#[test]
+fn animated_models_bend_their_skin_with_the_skeleton() {
+    let dir = std::env::temp_dir().join(format!("vyrn-gltf-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("arm.gltf");
+    std::fs::write(&path, arm_gltf()).unwrap();
+    let p = path.display().to_string().replace('\\', "/");
+    let out = run(&format!(
+        "use vyrn.draw\n\
+         main:\n\
+         \x20   let arm = draw.load_model(\"{p}\")\n\
+         \x20   print(arm, arm.animations, arm.duration(\"bend\"), arm.joints)\n\
+         \x20   print(arm.mesh().vertices[2], arm.mesh(\"bend\", 0.5).vertices[2], arm.mesh(\"bend\", 1, loop = false).vertices[2])\n\
+         \x20   # Looping: 1.5 seconds is half way through again.\n\
+         \x20   print(arm.mesh(\"bend\", 1.5).vertices[2], arm.mesh(\"bend\", 0.5).vertices[0])\n\
+         \x20   let c = draw.canvas(60, 60)\n\
+         \x20   c.clear(\"black\")\n\
+         \x20   c.model(draw.camera(0, 1, -4), arm, 0, 0, 0, animation = \"bend\", time = 0.25)\n\
+         \x20   attempt:\n\
+         \x20       arm.mesh(\"wave\")\n\
+         \x20   catch ValueError as e:\n\
+         \x20       print(e)\n\
+         \x20   end\n\
+         end\n"
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        out,
+        "Model(3 points, 1 animations) [\"bend\"] 1.0 2\n\
+         [0.0, 2.0, 0.0] [-0.70711, 1.70711, 0.0] [-1.0, 1.0, 0.0]\n\
+         [-0.70711, 1.70711, 0.0] [0.0, 0.0, 0.0]\n\
+         ValueError: this model has no animation \"wave\"; it has bend\n"
+    );
+}
+
 #[cfg(feature = "sound")]
 #[test]
 fn sounds_in_the_world_pan_and_fade_from_the_listener() {

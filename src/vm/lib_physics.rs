@@ -45,6 +45,10 @@ struct Inner {
     /// Bodies were added, removed or moved by hand since collision
     /// detection last ran, so queries must refresh it first.
     dirty: bool,
+    /// Bodies added or moved by hand since the last step. Refreshing
+    /// collision detection early takes Rapier's note of their changes, so
+    /// they are noted again for the step (or new bodies would never wake).
+    touched: Vec<RigidBodyHandle>,
     _forces: std::sync::mpsc::Receiver<ContactForceEvent>,
     _tears: std::sync::mpsc::Receiver<SoftBodyTearEvent>,
 }
@@ -56,6 +60,17 @@ impl Inner {
         if self.dirty {
             self.world.detect_collisions(&(), &());
             self.dirty = false;
+            for h in &self.touched {
+                // `get_mut` notes the body as changed again.
+                let _ = self.world.bodies.get_mut(*h);
+            }
+        }
+    }
+
+    fn touch(&mut self, h: RigidBodyHandle) {
+        self.dirty = true;
+        if !self.touched.contains(&h) {
+            self.touched.push(h);
         }
     }
 }
@@ -152,6 +167,7 @@ pub fn world(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         collector: ChannelEventCollector::new(send, force_send, tear_send),
         started: Vec::new(),
         dirty: true,
+        touched: Vec::new(),
         _forces: forces,
         _tears: tears,
     };
@@ -224,7 +240,7 @@ impl World {
         }));
         let mut inner = self.inner.borrow_mut();
         inner.bodies.insert(handle, value.clone());
-        inner.dirty = true;
+        inner.touch(handle);
         Ok(Value::Foreign(value))
     }
 
@@ -380,7 +396,7 @@ impl Foreign for World {
                 }));
                 let mut inner = self.inner.borrow_mut();
                 inner.bodies.insert(handle, value.clone());
-                inner.dirty = true;
+                inner.touch(handle);
                 Ok(Value::Foreign(value))
             }
             // `world.step(dt)`: moves time on by `dt` seconds (in small
@@ -393,6 +409,7 @@ impl Foreign for World {
                 let each = (dt / steps as f64) as f32;
                 inner.world.integration_parameters.dt = each;
                 inner.dirty = false;
+                inner.touched.clear();
                 for _ in 0..steps {
                     let Inner {
                         world, collector, ..
@@ -723,7 +740,7 @@ impl Foreign for Body {
                     p.translation = v;
                     c.set_position(p);
                 }
-                inner.dirty = true;
+                inner.touch(self.handle);
                 Ok(Value::None)
             }
             // `body.turn_to(x, y, z)`: sets its rotation, in degrees.
@@ -736,7 +753,7 @@ impl Foreign for Body {
                     v.x.to_radians(),
                 );
                 self.with_mut(|b| b.set_rotation(q, true))?;
-                self.world()?.borrow_mut().dirty = true;
+                self.world()?.borrow_mut().touch(self.handle);
                 Ok(Value::None)
             }
             // `character.move(x, y, z, dt = 1/60)`: walk by that much.

@@ -42,7 +42,7 @@ mail = ["dep:lettre"]
 html = ["dep:scraper", "dep:ego-tree"]
 # `use vyrn.draw`: 2D and 3D drawing, images, and windows with keyboard and
 # mouse input (not on WebAssembly).
-draw = ["dep:minifb", "dep:png", "dep:font8x8"]
+draw = ["dep:minifb", "dep:png", "dep:font8x8", "dep:gltf"]
 # `use vyrn.sound`: sound effects and music (not on WebAssembly). On Linux,
 # building needs the ALSA development files (`libasound2-dev`).
 sound = ["dep:rodio"]
@@ -64,6 +64,8 @@ ffi = ["dep:libloading", "dep:libffi"]
 rustyline = { version = "15", default-features = false, features = ["with-file-history"] }
 # `vyrn.time` with time zones: the system's zone database (bundled on Windows).
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo", "tzdb-bundle-platform"] }
+# `draw.load_model`: glTF models with skeletons and animations.
+gltf = { version = "1", optional = true, default-features = false, features = ["import", "utils", "names"] }
 # Gamepads for `vyrn.draw` windows (XInput on Windows, evdev on Linux).
 gilrs = { version = "0.11", optional = true }
 # `use vyrn.physics`: rigid bodies, collisions and character movement.

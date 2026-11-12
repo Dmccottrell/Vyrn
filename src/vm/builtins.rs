@@ -293,6 +293,7 @@ pub static NATIVES: &[Native] = &[
     ),
     variadic("draw.overlaps", super::lib_draw::overlaps),
     fixed("draw.load_obj", &["path"], 1, super::lib_draw::load_obj),
+    fixed("draw.load_model", &["path"], 1, super::lib_draw::load_model),
     fixed("draw.use_gpu", &["on"], 1, super::lib_draw::use_gpu),
     fixed("draw.gamepad", &["n"], 0, super::lib_draw::gamepad),
     fixed("draw.gamepads", &[], 0, super::lib_draw::gamepads),

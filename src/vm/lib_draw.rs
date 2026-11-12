@@ -1068,6 +1068,16 @@ impl Foreign for Mesh {
             "triangles" => Ok(Value::Int(self.faces.len() as i64)),
             "texture" => Ok(self.texture.clone().unwrap_or(Value::None)),
             "smooth" => Ok(Value::Bool(!self.normals.is_empty())),
+            // Every point as [x, y, z].
+            "vertices" => Ok(Value::list(
+                self.verts
+                    .iter()
+                    .map(|v| {
+                        let r = |x: f64| Value::Float((x * 1e5).round() / 1e5);
+                        Value::list(vec![r(v[0]), r(v[1]), r(v[2])])
+                    })
+                    .collect(),
+            )),
             _ => Err(err("FieldError", format!("a Mesh has no field `{name}`"))),
         }
     }
@@ -1637,6 +1647,51 @@ fn surface_method(
                 // SAFETY: held by the argument for the call.
                 let tex = tex.map(|t| unsafe { &*t });
                 draw_mesh(&mut p, cam, mesh_ref, position, rot, size, c, tex)
+            }
+            // `win.model(cam, model, x, y, z, size = 1, color = "white",
+            // rotation = [x, y, z], animation = "run", time = t)`
+            "model" => {
+                let cam = match a.get(0, "camera") {
+                    Some(Value::Foreign(f)) => f
+                        .as_any()
+                        .downcast_ref::<Camera>()
+                        .map(|c| c as *const Camera),
+                    _ => None,
+                }
+                .ok_or_else(|| type_error("`model` takes a camera first, from `draw.camera()`"))?;
+                let model = match a.get(1, "model") {
+                    Some(Value::Foreign(f)) => f
+                        .as_any()
+                        .downcast_ref::<model::Model>()
+                        .map(|m| m as *const model::Model),
+                    _ => None,
+                }
+                .ok_or_else(|| type_error("`model` takes a model from `draw.load_model(path)`"))?;
+                // SAFETY: both are held by the arguments for the call.
+                let (cam, model) = unsafe { (&*cam, &*model) };
+                let position = [a.num(2, "x")?, a.num(3, "y")?, a.num(4, "z")?];
+                let size = a.num_or(5, "size", 1.0)?;
+                let c = a.color_or(6, "color", 0xffffff)?;
+                let rot = match a.get(7, "rotation") {
+                    Some(v) => {
+                        let r = ops::collect(v)?;
+                        let [x, y, z] = r.as_slice() else {
+                            return Err(type_error("`rotation` is [x, y, z] in degrees"));
+                        };
+                        [
+                            number(x, "rotation")?,
+                            number(y, "rotation")?,
+                            number(z, "rotation")?,
+                        ]
+                    }
+                    None => [0.0; 3],
+                };
+                let time = a.num_or(9, "time", 0.0)?;
+                let mesh = model.mesh_at(a.get(8, "animation"), time, true)?;
+                let tex = image_arg(a.get(10, "texture"))?;
+                // SAFETY: held by the argument for the call.
+                let tex = tex.map(|t| unsafe { &*t });
+                draw_mesh(&mut p, cam, &mesh, position, rot, [size; 3], c, tex)
             }
             "line3d" => {
                 let cam = match a.get(0, "camera") {
@@ -3147,6 +3202,12 @@ mod tests {
         );
     }
 }
+
+// ==== animated models =========================================================
+
+#[path = "draw_model.rs"]
+mod model;
+pub use model::load_model;
 
 // ==== gamepads ================================================================
 
