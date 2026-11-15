@@ -75,6 +75,7 @@ The formal definition is [`grammar.ebnf`](grammar.ebnf).
 | `try:` / `finally:` | `attempt:` / `always:` | `always` runs whether or not something failed |
 | `class Point:` | `object Point:` | Says what it makes |
 | `[x * 2 for x in xs]` | `[x * 2 each x in xs]` | Comprehensions read like loops |
+| `sum(x * x for x in xs)` | `sum(x * x each x in xs)` | A generator: items worked out one at a time, as they are asked for; `(x each x in xs)` on its own |
 | `lambda x: x * 2` | `(x) => x * 2` or `x => x * 2` | No keyword: the arrow says it all |
 | `Callable[[int], str]` | `(int) -> str` | A function type looks like a function |
 | `f"Hi {name}"` | `"Hi {name}"` | Every string interpolates; no prefix to forget |

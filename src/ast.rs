@@ -927,6 +927,11 @@ pub enum ExprKind {
         element: Box<Expr>,
         clauses: Vec<CompClause>,
     },
+    /// `(element each x in xs)`: a generator, worked out lazily.
+    GenComp {
+        element: Box<Expr>,
+        clauses: Vec<CompClause>,
+    },
     /// `{key: value for k, v in pairs}`
     MapComp {
         key: Box<Expr>,

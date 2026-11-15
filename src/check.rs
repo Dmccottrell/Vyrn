@@ -1792,6 +1792,13 @@ impl Checker<'_> {
                 self.pop();
                 Ty::List(Box::new(t))
             }
+            ExprKind::GenComp { element, clauses } => {
+                self.push();
+                self.clauses(clauses);
+                self.expr(element);
+                self.pop();
+                Ty::Any
+            }
             ExprKind::MapComp {
                 key,
                 value,

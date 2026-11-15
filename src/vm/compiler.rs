@@ -206,6 +206,10 @@ struct IterLoop {
 }
 
 enum CompBody<'a> {
+    /// `(element each ...)`: each element is yielded.
+    Yield {
+        element: &'a Expr,
+    },
     List {
         list: u8,
         element: &'a Expr,
@@ -316,7 +320,10 @@ fn required_count(defaults: &[bool]) -> usize {
 /// temporary first when the destination is a named variable.
 fn writes_early(expr: &Expr) -> bool {
     match &expr.kind {
-        ExprKind::Map(_) | ExprKind::ListComp { .. } | ExprKind::MapComp { .. } => true,
+        ExprKind::Map(_)
+        | ExprKind::ListComp { .. }
+        | ExprKind::MapComp { .. }
+        | ExprKind::GenComp { .. } => true,
         ExprKind::Binary { op, .. } => matches!(op, BinaryOp::And | BinaryOp::Or),
         ExprKind::Coalesce { .. } => true,
         ExprKind::Compare { ops, .. } => ops.len() > 1,
@@ -3751,6 +3758,19 @@ impl Compiler {
                 self.expr_to(else_value, dst)?;
                 self.patch_here(done);
             }
+            // A generator function with no parameters, called at once.
+            ExprKind::GenComp { element, clauses } => {
+                let mut cells = HashSet::new();
+                scan_expr(element, false, &mut cells);
+                scan_clauses(clauses, false, &mut cells);
+                self.begin_fn("(... each ...)".into(), &[], cells);
+                self.f().is_generator = true;
+                self.comprehension(clauses, 0, &CompBody::Yield { element })?;
+                let proto = self.end_fn();
+                let index = self.add_proto(proto)?;
+                self.emit(Op::MakeClosure { dst, proto: index });
+                self.emit(Op::Call { func: dst, argc: 0 });
+            }
             ExprKind::Lambda {
                 params,
                 body,
@@ -3853,6 +3873,10 @@ impl Compiler {
         let Some(clause) = clauses.get(i) else {
             let mark = self.mark();
             match body {
+                CompBody::Yield { element } => {
+                    let v = self.expr_any(element)?;
+                    self.emit(Op::Yield { src: v });
+                }
                 CompBody::List { list, element } => {
                     let v = self.expr_any(element)?;
                     self.emit(Op::ListPush {
@@ -4416,6 +4440,11 @@ fn scan_expr(expr: &Expr, inside: bool, names: &mut HashSet<String>) {
         ExprKind::ListComp { element, clauses } => {
             scan_expr(element, inside, names);
             scan_clauses(clauses, inside, names);
+        }
+        // Its own function: names it uses from outside are captured.
+        ExprKind::GenComp { element, clauses } => {
+            scan_expr(element, true, names);
+            scan_clauses(clauses, true, names);
         }
         ExprKind::MapComp {
             key,

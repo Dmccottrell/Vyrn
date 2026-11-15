@@ -1345,6 +1345,16 @@ fn functions_know_their_names() {
 }
 
 #[test]
+fn generator_expressions_are_lazy() {
+    assert_eq!(
+        run("create noisy(n: int) -> int:\n    print(\"made {n}\")\n    return n\nend\n\
+             main:\n    let k = 10\n    let g = (noisy(x) * k each x in 1 to 3 if x != 2)\n    print(\"before\")\n    print(g.next())\n\
+             \x20   print(sum(x * x each x in 1 to 3), list((c.upper() each c in \"ab\")))\nend\n"),
+        "before\nmade 1\n10\n14 [\"A\", \"B\"]\n"
+    );
+}
+
+#[test]
 fn values_are_their_traits() {
     assert_eq!(
         run(

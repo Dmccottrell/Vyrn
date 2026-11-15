@@ -63,6 +63,13 @@ pub fn expr(expr: &Expr) -> String {
                 comp_clauses(clauses)
             )
         }
+        ExprKind::GenComp { element, clauses } => {
+            format!(
+                "(gen-comp {}{})",
+                self::expr(element),
+                comp_clauses(clauses)
+            )
+        }
         ExprKind::MapComp {
             key,
             value,

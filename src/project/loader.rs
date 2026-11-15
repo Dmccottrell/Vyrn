@@ -862,7 +862,7 @@ impl Renamer<'_> {
                     self.expr(v);
                 }
             }
-            ExprKind::ListComp { element, clauses } => {
+            ExprKind::ListComp { element, clauses } | ExprKind::GenComp { element, clauses } => {
                 self.scopes.push(HashSet::new());
                 self.clauses(clauses);
                 self.expr(element);

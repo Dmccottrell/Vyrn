@@ -2610,7 +2610,19 @@ impl Parser {
             });
         }
         let is_mut = self.eat_kw(K::Mut);
-        let value = self.expression()?;
+        let mut value = self.expression()?;
+        // `sum(x * x each x in xs)`: a generator as an argument needs no
+        // parentheses of its own.
+        if !is_mut && self.at_kw(K::Each) {
+            let clauses = self.comp_clauses()?;
+            value = self.mk(
+                ExprKind::GenComp {
+                    element: Box::new(value),
+                    clauses,
+                },
+                start,
+            );
+        }
         let spread = self.eat_p(P::Ellipsis);
         Ok(Arg {
             span: self.span_from(start),
@@ -2757,6 +2769,17 @@ impl Parser {
         let first = self.expression()?;
         if self.eat_p(P::RParen) {
             return Ok(first);
+        }
+        if self.at_kw(K::Each) {
+            let clauses = self.comp_clauses()?;
+            self.expect_p(P::RParen, "`)` to close the generator")?;
+            return Ok(self.mk(
+                ExprKind::GenComp {
+                    element: Box::new(first),
+                    clauses,
+                },
+                start,
+            ));
         }
         let mut items = vec![first];
         while self.eat_p(P::Comma) {
