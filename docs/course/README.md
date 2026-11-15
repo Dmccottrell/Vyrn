@@ -157,7 +157,7 @@ plan below.
 
 | Day | Topic | Project |
 |---|---|---|
-| 77 | Game loops, sprites, physics | A platformer |
+| 77 ✅ | Game loops, sprites, physics | A platformer |
 | 78 | 3D: cameras, lighting, models | A 3D maze |
 | 79 | Menus, sound, high scores, packaging a game | Finishing a game |
 
