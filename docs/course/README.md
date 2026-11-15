@@ -137,7 +137,7 @@ plan below.
 | 64 ✅ | Closures and decorators | Timing and caching |
 | 65 ✅ | Generators (`yield`) and lazy sequences | Endless sequences |
 | 66 ✅ | Resources: `using`, `close` | Safe files and connections |
-| 67 | Values and sharing: copies, references, `mut`, `own` | Bugs to find |
+| 67 ✅ | Values and sharing: copies, references, `mut`, `own` | Bugs to find |
 | 68 | Recursion and algorithms: searching, sorting, complexity | Speed races |
 | 69 | Capstone | An expression evaluator |
 

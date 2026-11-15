@@ -510,3 +510,12 @@ fn own_parameters_need_move_and_moved_values_are_gone() {
     );
     ok(&format!("{take}main:\n    var xs = [1]\n    print(take(xs.copy()), take([2]), take(move xs))\nend\n"));
 }
+
+#[test]
+fn strict_code_cannot_change_read_only_parameters_through_methods() {
+    assert_eq!(
+        one("strict create add(xs: list[int]):\n    xs.append(1)\nend\nmain:\n    add([1])\nend\n"),
+        "cannot call `.append()` on `xs`: strict code takes parameters read-only"
+    );
+    ok("strict create add(mut xs: list[int]):\n    xs.append(1)\nend\ncreate loose(xs: list[int]):\n    xs.append(1)\nend\nmain:\n    var a = [1]\n    add(mut a)\n    loose(a)\nend\n");
+}

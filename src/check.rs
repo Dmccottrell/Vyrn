@@ -2167,6 +2167,39 @@ impl Checker<'_> {
                             ),
                         );
                     }
+                    // A method that changes a list, map or set, on a parameter
+                    // that strict code takes read-only.
+                    const CHANGING: &[&str] = &[
+                        "append",
+                        "insert",
+                        "extend",
+                        "pop",
+                        "remove",
+                        "clear",
+                        "sort",
+                        "reverse",
+                        "update",
+                        "add",
+                        "discard",
+                        "setdefault",
+                    ];
+                    if matches!(t, Ty::List(_) | Ty::Map(..) | Ty::Any)
+                        && CHANGING.contains(&m.name.as_str())
+                    {
+                        if let Some(root) = Self::root_of(base) {
+                            let is_param = self
+                                .lookup(&root.name)
+                                .is_some_and(|v| v.kind == Kind::Param(PassMode::Borrow));
+                            if is_param {
+                                let root = root.clone();
+                                self.check_changeable(
+                                    &root,
+                                    base.span,
+                                    &format!("call `.{}()` on", m.name),
+                                );
+                            }
+                        }
+                    }
                     // Lists and maps whose element types are known.
                     match (&t, m.name.as_str()) {
                         (Ty::List(elem), "append" | "insert" | "extend") => {
