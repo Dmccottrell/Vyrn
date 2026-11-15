@@ -124,7 +124,7 @@ plan below.
 | 55 ✅ | Filtering, grouping, joining tables | Sales by region |
 | 56 ✅ | Charts (`vyrn.chart`) | Weather charts |
 | 57 ✅ | SQL for analysis: joins, aggregates, views | Music shop questions |
-| 58–59 | Capstone | A data dashboard web page |
+| 58–59 ✅ | Capstone | A data dashboard web page |
 
 ### Unit 7: Advanced Vyrn (days 60–69)
 
