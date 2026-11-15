@@ -340,6 +340,7 @@ pub fn prelude_fail(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         "ValueError" => "ValueError",
         "IndexError" => "IndexError",
         "KeyError" => "KeyError",
+        "AssertionError" => "AssertionError",
         _ => "TypeError",
     };
     Err(err(kind, message.to_string()))

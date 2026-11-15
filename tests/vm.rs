@@ -1364,6 +1364,18 @@ fn defer_runs_when_the_block_ends_last_first() {
 }
 
 #[test]
+fn assertions_say_what_went_wrong() {
+    assert_eq!(
+        run("struct TooBig:\n    n: int\nend\n\
+             create check(n: int) -> int:\n    if n > 3: fail TooBig(n)\n    return n\nend\n\
+             main:\n    assert(1 + 1 == 2)\n    print(assert_fails(() => check(9), \"TooBig\"))\n\
+             \x20   attempt:\n        assert(check(2) == 3, \"two\")\n    catch AssertionError as e:\n        print(e.message)\n    end\n\
+             \x20   attempt:\n        assert_fails(() => check(1))\n    catch AssertionError as e:\n        print(e.message)\n    end\nend\n"),
+        "TooBig(n=9)\ntwo (2 == 3 is false)\nexpected a failure, but it succeeded\n"
+    );
+}
+
+#[test]
 fn values_are_their_traits() {
     assert_eq!(
         run(

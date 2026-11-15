@@ -58,6 +58,52 @@ create __re_replace_with(pattern, text, f):
     return out + text[last:]
 end
 
+## `assert(a == b, message)`, made by the parser: says both sides when the
+## comparison is false.
+create __assert_compare(a, b, op, message = none):
+    var ok = false
+    if op == "==":
+        ok = a == b
+    else if op == "!=":
+        ok = a != b
+    else if op == "<":
+        ok = a < b
+    else if op == "<=":
+        ok = a <= b
+    else if op == ">":
+        ok = a > b
+    else if op == ">=":
+        ok = a >= b
+    else if op == "in":
+        ok = a in b
+    else:
+        ok = a not in b
+    end
+    if ok: return none
+    let detail = "{repr(a)} {op} {repr(b)} is false"
+    __fail("AssertionError", detail if message is none else "{message} ({detail})")
+end
+
+## `assert_fails(() => f(x), "ValueError")`: checks that calling the function
+## fails (with that kind of error, when given), and gives the error.
+create assert_fails(f, kind = none):
+    var failed = false
+    var caught = none
+    attempt:
+        f()
+    catch Error as e:
+        failed = true
+        caught = e
+    end
+    if not failed: __fail("AssertionError", "expected a failure, but it succeeded")
+    let got = caught.kind if caught is Error else typeof(caught)
+    if kind != none and got != kind:
+        let said = caught.message if caught is Error else str(caught)
+        __fail("AssertionError", "expected {kind}, but it failed with {got}: {said}")
+    end
+    return caught
+end
+
 ## `sum(xs, start)` for values whose type defines `operator +`.
 create __sum_with(xs, start = none):
     if len(xs) == 0: return start ?? 0

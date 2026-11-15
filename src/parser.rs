@@ -2551,9 +2551,10 @@ impl Parser {
                 Tk::Punct(P::LParen) => {
                     self.bump();
                     let args = self.arguments(P::RParen)?;
+                    let (expr_now, args) = self.assert_comparison(expr, args);
                     expr = self.mk(
                         ExprKind::Call {
-                            callee: Box::new(expr),
+                            callee: Box::new(expr_now),
                             args,
                         },
                         start,
@@ -2578,6 +2579,72 @@ impl Parser {
 
     /// Arguments up to and including `close`; the opening bracket is
     /// consumed.
+    /// `assert(a == b)` becomes `__assert_compare(a, b, "==")`, so a failed
+    /// assertion can say what both sides were.
+    fn assert_comparison(&mut self, callee: Expr, args: Vec<Arg>) -> (Expr, Vec<Arg>) {
+        let is_assert = matches!(&callee.kind, ExprKind::Name(n) if n.name == "assert");
+        let plain = (1..=2).contains(&args.len())
+            && args
+                .iter()
+                .all(|a| a.name.is_none() && !a.spread && !a.is_mut);
+        if !is_assert || !plain {
+            return (callee, args);
+        }
+        let mut args = args;
+        let first = args.remove(0);
+        let ExprKind::Compare { operands, ops } = first.value.kind else {
+            args.insert(0, first);
+            return (callee, args);
+        };
+        if ops.len() != 1 || operands.len() != 2 {
+            let value = Expr::new(
+                first.value.id,
+                ExprKind::Compare { operands, ops },
+                first.value.span,
+            );
+            args.insert(0, Arg { value, ..first });
+            return (callee, args);
+        }
+        let symbol = match ops[0] {
+            CompareOp::Eq => "==",
+            CompareOp::NotEq => "!=",
+            CompareOp::Lt => "<",
+            CompareOp::LtEq => "<=",
+            CompareOp::Gt => ">",
+            CompareOp::GtEq => ">=",
+            CompareOp::In => "in",
+            CompareOp::NotIn => "not in",
+        };
+        let span = first.span;
+        let mut operands = operands.into_iter();
+        let arg = |value: Expr| Arg {
+            span,
+            name: None,
+            is_mut: false,
+            value,
+            spread: false,
+        };
+        let mut new_args = vec![
+            arg(operands.next().expect("two operands")),
+            arg(operands.next().expect("two operands")),
+            arg(Expr::new(
+                self.id(),
+                ExprKind::Str(vec![StrSegment::Text(symbol.to_string())]),
+                span,
+            )),
+        ];
+        new_args.extend(args);
+        let callee = Expr::new(
+            callee.id,
+            ExprKind::Name(Ident {
+                name: "__assert_compare".to_string(),
+                span: callee.span,
+            }),
+            callee.span,
+        );
+        (callee, new_args)
+    }
+
     fn arguments(&mut self, close: P) -> PResult<Vec<Arg>> {
         let mut args = Vec::new();
         loop {

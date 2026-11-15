@@ -333,7 +333,9 @@ All **run today** (`src/vm/stdlib.rs`).
 ### Testing with fakes
 
 `vyrn test` runs every `create test_...()` in `tests/`; `assert(condition,
-message)` checks. To test code without its real dependencies (a database,
+message)` checks, and a failed comparison says both sides
+(`AssertionError: 6 == 5 is false`). `assert_fails(() => f(x), "ValueError")`
+checks that a call fails (with that kind, if given) and gives the error. To test code without its real dependencies (a database,
 the network, the clock), pass it a **fake**:
 
 | API | Does |
