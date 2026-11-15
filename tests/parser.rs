@@ -830,3 +830,15 @@ error: expected `:` to end the `each` line, found the end of the line
 "
     );
 }
+
+#[test]
+fn defaults_come_last() {
+    let found = errors("create f(a: int = 1, b: int) -> int:\n    return a + b\nend\n");
+    assert_eq!(
+        found[0].message,
+        "`b` has no default, so it can't come after `a`, which has one"
+    );
+    assert!(
+        errors("create f(a: int, b: int = 1, rest...) -> int:\n    return a\nend\n").is_empty()
+    );
+}

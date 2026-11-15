@@ -519,12 +519,3 @@ fn strict_code_cannot_change_read_only_parameters_through_methods() {
     );
     ok("strict create add(mut xs: list[int]):\n    xs.append(1)\nend\ncreate loose(xs: list[int]):\n    xs.append(1)\nend\nmain:\n    var a = [1]\n    add(mut a)\n    loose(a)\nend\n");
 }
-
-#[test]
-fn defaults_come_last() {
-    assert_eq!(
-        one("create f(a: int = 1, b: int) -> int:\n    return a + b\nend\nmain:\n    print(f(1, 2))\nend\n"),
-        "`b` has no default, so it can't come after `a`, which has one"
-    );
-    ok("create f(a: int, b: int = 1, rest...) -> int:\n    return a + b\nend\nmain:\n    print(f(1))\nend\n");
-}
