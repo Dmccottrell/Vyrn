@@ -16,7 +16,8 @@
 //! users cannot become part of the page; `{{{name}}}` inserts it as is.
 //! `{{a.b}}` reads a map key or a struct field. Inside `{{#each list}}`,
 //! `{{this}}` is the item, `{{@index}}` its position, and names are looked
-//! up in the item first. `{{! comment }}` is dropped.
+//! up in the item first; `{{else}}` inside it is shown for an empty list.
+//! `{{! comment }}` is dropped.
 
 use super::ops::{self, err, type_error, Ctx, VmResult};
 use super::value::{Key, Value};
@@ -31,6 +32,8 @@ enum Node {
     Each {
         path: String,
         body: Vec<Node>,
+        /// `{{else}}`: shown when the list is empty.
+        empty: Vec<Node>,
     },
     If {
         path: String,
@@ -108,10 +111,13 @@ fn parse_until(
             };
         }
         if tag == "else" {
-            if closing == Some("if") || closing == Some("unless") {
+            if matches!(closing, Some("if" | "unless" | "each")) {
                 return Ok((nodes, Some("else".into())));
             }
-            return Err(err("TemplateError", "`{{else}}` outside an `{{#if}}`"));
+            return Err(err(
+                "TemplateError",
+                "`{{else}}` outside an `{{#if}}` or `{{#each}}`",
+            ));
         }
         if let Some(block) = tag.strip_prefix('#') {
             let mut words = block.split_whitespace();
@@ -119,8 +125,13 @@ fn parse_until(
             let path = words.collect::<Vec<_>>().join(" ");
             match kind.as_str() {
                 "each" => {
-                    let (body, _) = parse_until(src, pos, Some("each"))?;
-                    nodes.push(Node::Each { path, body });
+                    let (body, stop) = parse_until(src, pos, Some("each"))?;
+                    let empty = if stop.as_deref() == Some("else") {
+                        parse_until(src, pos, Some("each"))?.0
+                    } else {
+                        Vec::new()
+                    };
+                    nodes.push(Node::Each { path, body, empty });
                 }
                 "if" | "unless" => {
                     let (then, stop) = parse_until(src, pos, Some(kind.as_str()))?;
@@ -221,8 +232,9 @@ fn render(
                     out.push_str(&super::lib_html::escape_text(&text));
                 }
             }
-            Node::Each { path, body } => {
+            Node::Each { path, body, empty } => {
                 let Some(list) = lookup(ctx, scopes, path) else {
+                    render(ctx, empty, scopes, out)?;
                     continue;
                 };
                 let items = match &list {
@@ -240,6 +252,9 @@ fn render(
                         ))
                     })?,
                 };
+                if items.is_empty() {
+                    render(ctx, empty, scopes, out)?;
+                }
                 for (i, item) in items.into_iter().enumerate() {
                     scopes.push((item, i as i64));
                     let r = render(ctx, body, scopes, out);

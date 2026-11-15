@@ -514,7 +514,7 @@ end
 ```
 
 `{{name}}` (HTML-escaped), `{{{raw}}}`, `{{a.b}}` (map keys and struct
-fields), `{{#each list}}` with `{{this}}` and `{{@index}}`, `{{#if x}}` /
+fields), `{{#each list}}` with `{{this}}` and `{{@index}}` (and `{{else}}` for an empty list), `{{#if x}}` /
 `{{else}}` / `{{/if}}`, `{{#unless x}}`, `{{! comment }}`.
 `template.render_file(path, data)` reads the template from a file. Write
 templates in raw strings `r"..."` or files: in ordinary strings `{...}`

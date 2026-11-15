@@ -1376,6 +1376,14 @@ fn assertions_say_what_went_wrong() {
 }
 
 #[test]
+fn template_each_has_an_else_for_empty_lists() {
+    assert_eq!(
+        run("use vyrn.template\nmain:\n    let t = r\"{{#each xs}}<li>{{this}}</li>{{else}}<p>none</p>{{/each}}\"\n    print(template.render(t, {\"xs\": [1, 2]}), template.render(t, {\"xs\": []}), template.render(t, {}))\nend\n"),
+        "<li>1</li><li>2</li> <p>none</p> <p>none</p>\n"
+    );
+}
+
+#[test]
 fn values_are_their_traits() {
     assert_eq!(
         run(

@@ -111,7 +111,7 @@ plan below.
 | 47 ✅ | Testing: `vyrn test`, `assert`, fixtures, fakes, testing routes | Tested deal finder |
 | 48 ✅ | JSON APIs: routes, status codes, REST design | An API other programs use |
 | 49 ✅ | Cookies, sessions, password hashing, logins | Members area |
-| 50 | A web app with a database | Blog |
+| 50 ✅ | A web app with a database | Blog |
 | 51 | Security: validation, XSS, CSRF, SQL injection, secrets | Securing the blog |
 | 52 | Deployment: `vyrn build`, Docker, GitHub Actions | Blog on the internet |
 | 53 | Capstone | Todo web app |
