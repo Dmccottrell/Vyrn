@@ -115,6 +115,7 @@ pub const DAYS: &[(&str, &str)] = &[
     ("day76", include_str!("../docs/course/day76.md")),
     ("day77", include_str!("../docs/course/day77.md")),
     ("day78", include_str!("../docs/course/day78.md")),
+    ("day79", include_str!("../docs/course/day79.md")),
 ];
 
 /// One fenced block: its tag (`vyrn`, `vyrn starter`, `text expect`, ...),
