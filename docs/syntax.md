@@ -72,6 +72,7 @@ The formal definition is [`grammar.ebnf`](grammar.ebnf).
 | `while c:` | `loop c:` | One word for every loop; `loop:` alone runs forever |
 | `match x:` / `case P:` | `when x:` / `is P:` | Reads as a sentence: `when x:` / `is 0:` |
 | `with open(p) as f:` | `using open(p) as f:` | Says the resource is in use until `end` |
+| `try: ... finally: f()` (or Go's `defer`) | `defer f()` | Runs `f()` when the block ends, however it ends; several run last first |
 | `try:` / `finally:` | `attempt:` / `always:` | `always` runs whether or not something failed |
 | `class Point:` | `object Point:` | Says what it makes |
 | `[x * 2 for x in xs]` | `[x * 2 each x in xs]` | Comprehensions read like loops |

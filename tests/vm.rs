@@ -1355,6 +1355,15 @@ fn generator_expressions_are_lazy() {
 }
 
 #[test]
+fn defer_runs_when_the_block_ends_last_first() {
+    assert_eq!(
+        run("create work(bad: bool) -> int:\n    defer print(\"one\")\n    defer print(\"two\")\n    if bad: fail ValueError(\"x\")\n    return 7\nend\n\
+             main:\n    print(work(false))\n    attempt:\n        work(true)\n    catch ValueError:\n        print(\"caught\")\n    end\nend\n"),
+        "two\none\n7\ntwo\none\ncaught\n"
+    );
+}
+
+#[test]
 fn values_are_their_traits() {
     assert_eq!(
         run(

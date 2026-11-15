@@ -1572,9 +1572,49 @@ impl Parser {
             }
         }
         Block {
-            stmts,
+            stmts: self.with_defers(stmts),
             span: self.span_from(start),
         }
+    }
+
+    /// `defer x` runs `x` when the block ends, however it ends: the rest of
+    /// the block becomes `attempt: rest always: x end`. Several defers run
+    /// last first.
+    fn with_defers(&mut self, mut stmts: Vec<Stmt>) -> Vec<Stmt> {
+        let Some(i) = stmts
+            .iter()
+            .position(|s| matches!(s.kind, StmtKind::Defer(_)))
+        else {
+            return stmts;
+        };
+        let rest = stmts.split_off(i + 1);
+        let defer = stmts.pop().expect("found above");
+        let StmtKind::Defer(expr) = defer.kind else {
+            unreachable!()
+        };
+        let rest = self.with_defers(rest);
+        let span = match (rest.first(), rest.last()) {
+            (Some(a), Some(b)) => a.span.to(b.span),
+            _ => defer.span,
+        };
+        let cleanup = Stmt {
+            id: self.id(),
+            span: defer.span,
+            kind: StmtKind::Expr(expr),
+        };
+        stmts.push(Stmt {
+            id: self.id(),
+            span,
+            kind: StmtKind::Try(TryStmt {
+                body: Block { stmts: rest, span },
+                catches: Vec::new(),
+                finally: Some(Block {
+                    stmts: vec![cleanup],
+                    span: defer.span,
+                }),
+            }),
+        });
+        stmts
     }
 
     fn statement(&mut self) -> PResult<Stmt> {
