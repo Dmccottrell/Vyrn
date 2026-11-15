@@ -339,7 +339,7 @@ make it fail with a clear error instead, and handle a vault file that has
 been damaged.
 
 A real vault would also be **encrypted**, so the file is useless to anyone
-who copies it; Day 58 covers that. Never keep real passwords in a plain
+who copies it; Day 51 covers that. Never keep real passwords in a plain
 JSON file.
 
 ### Exercise

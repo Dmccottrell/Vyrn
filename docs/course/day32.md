@@ -259,7 +259,7 @@ The birthdays live in a CSV file. Every morning the program finds today's
 birthdays and sends each person a letter. Choosing *who* is a function of
 the date, so it can be tested on any date; the sending is passed in, so a
 test can pass a **fake** that only records what would have been sent
-(Day 48 covers fakes fully):
+(Day 47 covers fakes fully):
 
 ```vyrn
 use vyrn.csv

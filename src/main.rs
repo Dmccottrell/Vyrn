@@ -30,7 +30,7 @@ const USAGE: &str = "\
 usage: vyrn <command> [arguments]
 
   (no command)           start the interactive prompt (also: vyrn repl)
-  learn [lesson]         the 100-day course, with exercises it checks
+  learn [lesson]         the 84-day course, with exercises it checks
   file.vyrn [args...]    run a file (same as vyrn run file.vyrn)
   new <name>             create a project
   run [file] [args...]   run a program (the project's main file by default)

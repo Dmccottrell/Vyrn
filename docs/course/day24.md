@@ -149,7 +149,7 @@ The mode says what you'll do: `"r"` read (the default), `"w"` write
 time, without its line break, without loading the whole file into memory.
 
 `using` works for anything that must be closed: files, database
-connections, network sockets. Day 77 shows how to make your own objects
+connections, network sockets. Day 66 shows how to make your own objects
 work with it.
 
 ### Exercise

@@ -289,7 +289,7 @@ false
 The last line checks that the visitor's `<b>` was escaped rather than sent
 as HTML. Serve it with `http.serve(port = 8000)` and sign it yourself.
 
-The messages live in a list, so they vanish when the server stops; Day 56
+The messages live in a list, so they vanish when the server stops; Day 50
 keeps them in a database.
 
 ### Exercise

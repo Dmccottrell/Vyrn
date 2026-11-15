@@ -313,7 +313,7 @@ The checker picks `easy`, then plays the smart way: always guess the middle
 of what's left, so each clue halves the possibilities. With the seed kept,
 it guesses `50`, `75`, `62`, `68`, `71`, `69`, `70`. (Halving finds any
 number from 1 to 100 in at most 7 guesses: that idea is called **binary
-search**, and it comes back on Day 79.)
+search**, and it comes back on Day 68.)
 
 ```vyrn starter
 use vyrn.random

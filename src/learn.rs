@@ -1,6 +1,6 @@
 //! `vyrn learn`: the course, in the terminal.
 //!
-//! The 100-day course in `docs/course/` is built into the toolchain. Each
+//! The 84-day course in `docs/course/` is built into the toolchain. Each
 //! day is a file of short lessons; each lesson explains one idea, shows it
 //! running, and ends with an exercise: a starter file to finish, the output
 //! it should print, hints, and a solution.
@@ -431,7 +431,7 @@ fn with_lesson(
 
 fn overview(days: &[Day], out: &mut String) {
     let finished = done();
-    out.push_str("Learn Vyrn: 100 days of code\n\n");
+    out.push_str("Learn Vyrn: 84 days of code\n\n");
     for day in days {
         let total = day.lessons.len();
         let n = day

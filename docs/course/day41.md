@@ -205,7 +205,7 @@ end
 ```
 
 `http.test` asks your own routes, without a network: perfect for trying
-them out (and for tests, Day 48). To open the pages in a real browser, end
+them out (and for tests, Day 47). To open the pages in a real browser, end
 `main` with `http.serve(port = 8000)` instead and visit
 `http://localhost:8000`:
 
@@ -222,7 +222,7 @@ main:
 end
 ```
 
-`localhost` means "this computer". Nobody else can see it yet; Day 59 puts
+`localhost` means "this computer". Nobody else can see it yet; Day 52 puts
 a site on the internet.
 
 ## 41.5 Project: your home page
