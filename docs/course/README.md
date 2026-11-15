@@ -120,7 +120,7 @@ plan below.
 
 | Day | Topic | Project |
 |---|---|---|
-| 54 | Tables (`vyrn.table`): loading, cleaning, summarising | Cleaning survey data |
+| 54 ✅ | Tables (`vyrn.table`): loading, cleaning, summarising | Cleaning survey data |
 | 55 | Filtering, grouping, joining tables | Sales by region |
 | 56 | Charts (`vyrn.chart`) | Weather charts |
 | 57 | SQL for analysis: joins, aggregates, views | Music shop questions |
