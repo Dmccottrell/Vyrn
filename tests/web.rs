@@ -443,11 +443,13 @@ fn cookies_and_passwords() {
         "use vyrn.crypto\nuse vyrn.http\n\
          route GET \"/login\" (): return http.Response(200, \"hi\", {\"Set-Cookie\": http.cookie(\"session\", \"a b\", max_age = 60)})\n\
          route GET \"/me\" (request): return request.cookies\n\
+         route GET \"/who\" (request): return request.cookies.get(\"session\", \"nobody\")\n\
          main:\n\
          \x20   let h = crypto.hash_password(\"pw\")\n\
          \x20   print(crypto.check_password(\"pw\", h), crypto.check_password(\"px\", h), h != crypto.hash_password(\"pw\"), len(crypto.token()))\n\
          \x20   print(http.test(\"GET\", \"/login\").headers[\"set-cookie\"])\n\
          \x20   print(http.test(\"GET\", \"/me\", headers = {\"Cookie\": \"session=a%20b; x=1\"}).json)\n\
+         \x20   print(http.test(\"GET\", \"/who\", headers = {\"Cookie\": \"session=ada\"}).text, http.test(\"GET\", \"/who\").text)\n\
          end\n",
     )
     .unwrap();
@@ -456,7 +458,7 @@ fn cookies_and_passwords() {
     vm.run_main(&[]).unwrap();
     assert_eq!(
         out.text(),
-        "true false true 64\nsession=a%20b; Path=/; Max-Age=60; HttpOnly; SameSite=Lax\n{\"session\": \"a b\", \"x\": \"1\"}\n"
+        "true false true 64\nsession=a%20b; Path=/; Max-Age=60; HttpOnly; SameSite=Lax\n{\"session\": \"a b\", \"x\": \"1\"}\nada nobody\n"
     );
 }
 

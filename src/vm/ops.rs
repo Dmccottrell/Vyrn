@@ -960,12 +960,19 @@ pub fn set_attr(value: &mut Value, name: &str, new: Value) -> VmResult<()> {
             }
         }
     }
-    // The same for a number or text read from a foreign value
-    // (`body.y.round(2)`): its methods cannot have changed it.
+    // The same for a number, text, list or map read from a foreign value
+    // (`body.y.round(2)`, `request.cookies.get("id")`) and left as it was.
     if let Value::Foreign(f) = &*value {
         if matches!(
             new,
-            Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) | Value::None
+            Value::Int(_)
+                | Value::Float(_)
+                | Value::Bool(_)
+                | Value::Str(_)
+                | Value::None
+                | Value::Map(_)
+                | Value::List(_)
+                | Value::Tuple(_)
         ) {
             if let Ok(current) = f.get_attr(name) {
                 if equals(&current, &new) {
