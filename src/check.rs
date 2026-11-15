@@ -2148,7 +2148,22 @@ impl Checker<'_> {
             }
             _ => {
                 // Calling a value of a function type: `f(x)` with `f: (int) -> str`.
-                if let Ty::Fn(ps, ret) = self.expr(callee) {
+                let callee_ty = self.expr(callee);
+                if callee_ty.is_scalar()
+                    || matches!(
+                        callee_ty,
+                        Ty::List(_) | Ty::Map(..) | Ty::Tuple(_) | Ty::None
+                    )
+                {
+                    self.error(
+                        format!(
+                            "this is {}, not a function, so it cannot be called",
+                            callee_ty.name()
+                        ),
+                        callee.span,
+                    );
+                }
+                if let Ty::Fn(ps, ret) = callee_ty {
                     let given = args.iter().filter(|a| !a.spread).count();
                     if given != ps.len() && !args.iter().any(|a| a.spread || a.name.is_some()) {
                         self.error(

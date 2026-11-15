@@ -453,4 +453,8 @@ fn function_types_check_lambdas_and_calls() {
         one("create run(f: (int) -> int) -> int:\n    return f(1, 2)\nend\nmain:\n    print(run(x => x))\nend\n"),
         "this function takes 1 argument, but 2 are given"
     );
+    assert_eq!(
+        one("main:\n    let f = 3\n    f()\nend\n"),
+        "this is int, not a function, so it cannot be called"
+    );
 }
