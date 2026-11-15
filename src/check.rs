@@ -71,6 +71,8 @@ pub enum Ty {
     Ptr,
     /// A generic function's type parameter, `T` in `fn first[T](xs: [T]) -> T`.
     Var(String),
+    /// A function: `(int, str) -> bool`.
+    Fn(Vec<Ty>, Box<Ty>),
 }
 
 impl Ty {
@@ -94,6 +96,11 @@ impl Ty {
             Ty::Named(n) => n.clone(),
             Ty::Ptr => "ptr".into(),
             Ty::Var(n) => n.clone(),
+            Ty::Fn(params, ret) => format!(
+                "({}) -> {}",
+                params.iter().map(Ty::name).collect::<Vec<_>>().join(", "),
+                ret.name()
+            ),
         }
     }
 
@@ -340,6 +347,14 @@ impl Table {
             }
             TypeExprKind::Tensor(_) => Ty::Tensor,
             TypeExprKind::List(inner) => Ty::List(Box::new(self.ty_g(inner, generics))),
+            TypeExprKind::Fn { params, returns } => Ty::Fn(
+                params.iter().map(|p| self.ty_g(p, generics)).collect(),
+                Box::new(
+                    returns
+                        .as_ref()
+                        .map_or(Ty::None, |r| self.ty_g(r, generics)),
+                ),
+            ),
             TypeExprKind::Array { element, .. } => Ty::List(Box::new(self.ty_g(element, generics))),
             TypeExprKind::Map { key, value } => Ty::Map(
                 Box::new(self.ty_g(key, generics)),
@@ -460,6 +475,12 @@ impl Table {
                 }
                 Ok(())
             }
+            (Ty::Fn(pp, pr), Ty::Fn(ap, ar)) if pp.len() == ap.len() => {
+                for (p, a) in pp.iter().zip(ap) {
+                    self.unify(p, a, at, bindings)?;
+                }
+                self.unify(pr, ar, at, bindings)
+            }
             _ => Ok(()),
         }
     }
@@ -498,6 +519,11 @@ impl Table {
                 e.len() == a.len() && e.iter().zip(a).all(|(e, a)| self.assignable(e, a))
             }
             (Ty::Named(e), Ty::Named(a)) => self.is_subtype(a, e),
+            (Ty::Fn(ep, er), Ty::Fn(ap, ar)) => {
+                ep.len() == ap.len()
+                    && ep.iter().zip(ap).all(|(e, a)| self.assignable(a, e))
+                    && (**er == Ty::None || self.assignable(er, ar))
+            }
             _ => false,
         }
     }
@@ -786,6 +812,28 @@ impl Checker<'_> {
             });
         }
         self.declare(&p.name.name, ty, Kind::Param(p.pass));
+    }
+
+    /// A lambda's type. Given the function type it is passed as, parameters
+    /// written without a type take theirs from it.
+    fn lambda(&mut self, params: &[Param], body: &Expr, expected: Option<&[Ty]>) -> Ty {
+        self.begin_fn("<lambda>", None, false);
+        let mut tys = Vec::with_capacity(params.len());
+        for (i, p) in params.iter().enumerate() {
+            match (p.declared_ty.as_ref(), expected.and_then(|e| e.get(i))) {
+                (None, Some(t)) if p.default.is_none() && !matches!(t, Ty::Var(_)) => {
+                    self.declare(&p.name.name, t.clone(), Kind::Param(p.pass));
+                    tys.push(t.clone());
+                }
+                _ => {
+                    self.param(p);
+                    tys.push(self.table.ty_opt(p.declared_ty.as_ref()));
+                }
+            }
+        }
+        let ret = self.expr(body);
+        self.end_fn();
+        Ty::Fn(tys, Box::new(ret))
     }
 
     fn function(&mut self, f: &FnDecl, owner: Option<&str>) {
@@ -1089,9 +1137,13 @@ impl Checker<'_> {
             }
         }
         let declared = b.declared_ty.as_ref().map(|t| self.table.ty(t));
-        let actual = match &b.value {
-            Some(v) => self.expr(v),
-            None => Ty::Any,
+        let actual = match (&b.value, &declared) {
+            (Some(v), Some(Ty::Fn(expected, _))) => match &v.kind {
+                ExprKind::Lambda { params, body, .. } => self.lambda(params, body, Some(expected)),
+                _ => self.expr(v),
+            },
+            (Some(v), _) => self.expr(v),
+            (None, _) => Ty::Any,
         };
         if let (Some(expected), Some(v)) = (&declared, &b.value) {
             let what = match &b.target {
@@ -1890,15 +1942,7 @@ impl Checker<'_> {
                     Ty::Any
                 }
             }
-            ExprKind::Lambda { params, body, .. } => {
-                self.begin_fn("<lambda>", None, false);
-                for p in params {
-                    self.param(p);
-                }
-                self.expr(body);
-                self.end_fn();
-                Ty::Any
-            }
+            ExprKind::Lambda { params, body, .. } => self.lambda(params, body, None),
         }
     }
 
@@ -2103,7 +2147,39 @@ impl Checker<'_> {
                 }
             }
             _ => {
-                self.expr(callee);
+                // Calling a value of a function type: `f(x)` with `f: (int) -> str`.
+                if let Ty::Fn(ps, ret) = self.expr(callee) {
+                    let given = args.iter().filter(|a| !a.spread).count();
+                    if given != ps.len() && !args.iter().any(|a| a.spread || a.name.is_some()) {
+                        self.error(
+                            format!(
+                                "this function takes {} argument{}, but {given} {} given",
+                                ps.len(),
+                                if ps.len() == 1 { "" } else { "s" },
+                                if given == 1 { "is" } else { "are" }
+                            ),
+                            callee.span,
+                        );
+                    }
+                    name = match &callee.kind {
+                        ExprKind::Name(n) => n.name.clone(),
+                        _ => "this function".into(),
+                    };
+                    sig = Some(FnSig {
+                        elementwise: false,
+                        params: ps
+                            .iter()
+                            .enumerate()
+                            .map(|(i, t)| ParamInfo {
+                                name: format!("{}", i + 1),
+                                ty: t.clone(),
+                                pass: PassMode::Borrow,
+                            })
+                            .collect(),
+                        ret: Some((*ret).clone()),
+                    });
+                    result = *ret;
+                }
             }
         }
 
@@ -2146,13 +2222,21 @@ impl Checker<'_> {
         let elementwise = sig.as_ref().is_some_and(|s| s.elementwise);
         let mut on_tensors = false;
         for arg in args {
-            let t = self.expr(&arg.value);
             let param = match &arg.name {
                 Some(n) => params.iter().find(|p| p.name == n.name),
                 None => {
                     positional += 1;
                     params.get(positional - 1)
                 }
+            };
+            let t = match (&arg.value.kind, param.map(|p| subst(&p.ty, &bindings))) {
+                (
+                    ExprKind::Lambda {
+                        params: lp, body, ..
+                    },
+                    Some(Ty::Fn(expected, _)),
+                ) => self.lambda(lp, body, Some(&expected)),
+                _ => self.expr(&arg.value),
             };
             let root = Self::root_of(&arg.value).cloned();
             if arg.is_mut {
@@ -2395,6 +2479,10 @@ fn subst(t: &Ty, bindings: &HashMap<String, (Ty, Span)>) -> Ty {
         },
         Ty::Map(k, v) => Ty::Map(Box::new(subst(k, bindings)), Box::new(subst(v, bindings))),
         Ty::Tuple(items) => Ty::Tuple(items.iter().map(|i| subst(i, bindings)).collect()),
+        Ty::Fn(params, ret) => Ty::Fn(
+            params.iter().map(|p| subst(p, bindings)).collect(),
+            Box::new(subst(ret, bindings)),
+        ),
         other => other.clone(),
     }
 }

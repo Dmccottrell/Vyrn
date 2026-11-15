@@ -429,3 +429,28 @@ fn list_and_map_types_written_either_way_check_their_items() {
     );
     ok("main:\n    let xs: list[float] = [1.5]\n    xs.append(2)\n    xs.extend([3.5])\n    let last: float = xs.pop()\nend\n");
 }
+
+#[test]
+fn function_types_check_lambdas_and_calls() {
+    ok("create apply(f: (int) -> int, n: int) -> int:\n    return f(n)\nend\n\
+        create map_all[T, U](xs: list[T], f: (T) -> U) -> list[U]:\n    return [f(x) each x in xs]\nend\n\
+        create square(n: int) -> int: return n * n\n\
+        main:\n    print(apply(x => x * 2, 5), apply(square, 3), map_all([\"a\"], w => w.upper()))\n\
+        \x20   let g: (int) -> str = n => \"#{n}\"\n    print(g(4))\nend\n");
+    assert_eq!(
+        one("create apply(f: (int) -> int, n: int) -> int:\n    return f(n)\nend\nmain:\n    print(apply(x => x + \"!\", 1))\nend\n"),
+        "cannot apply `+` to int and str"
+    );
+    assert_eq!(
+        one("create apply(f: (int) -> int, n: int) -> int:\n    return f(n)\nend\nmain:\n    print(apply(x => \"a\", 1))\nend\n"),
+        "argument `f` of `apply` is (int) -> int, but this is (int) -> str"
+    );
+    assert_eq!(
+        one("main:\n    let g: (int) -> str = n => \"{n}\"\n    print(g(\"x\"))\nend\n"),
+        "argument `1` of `g` is int, but this is str"
+    );
+    assert_eq!(
+        one("create run(f: (int) -> int) -> int:\n    return f(1, 2)\nend\nmain:\n    print(run(x => x))\nend\n"),
+        "this function takes 1 argument, but 2 are given"
+    );
+}
