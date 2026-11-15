@@ -962,6 +962,21 @@ impl Parser {
                 break;
             }
         }
+        // A default before a parameter without one could never be used.
+        if let Some(first) = params.iter().position(|p| p.default.is_some()) {
+            if let Some(later) = params[first..]
+                .iter()
+                .find(|p| p.default.is_none() && !p.variadic)
+            {
+                let (name, span) = (later.name.name.clone(), later.span);
+                let defaulted = params[first].name.name.clone();
+                return Err(self.error(
+                    format!("`{name}` has no default, so it can't come after `{defaulted}`, which has one"),
+                    span,
+                    Some("put the parameters with defaults last"),
+                ));
+            }
+        }
         Ok(params)
     }
 

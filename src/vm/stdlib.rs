@@ -1483,7 +1483,19 @@ pub fn path_absolute(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
             .map_err(|e| io_error("cannot read the current directory", e))?
             .join(p)
     };
-    Ok(Value::str(abs.to_string_lossy().into_owned()))
+    // `a/b/../c` is `a/c`, and `.` parts go: the path as it really is,
+    // without asking the file system (it need not exist).
+    let mut clean = std::path::PathBuf::new();
+    for part in abs.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                clean.pop();
+            }
+            other => clean.push(other),
+        }
+    }
+    Ok(Value::str(clean.to_string_lossy().into_owned()))
 }
 
 pub fn path_home(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {

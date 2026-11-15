@@ -1384,6 +1384,14 @@ fn template_each_has_an_else_for_empty_lists() {
 }
 
 #[test]
+fn absolute_paths_resolve_dot_dot() {
+    assert_eq!(
+        run("use vyrn.path\nmain:\n    let a = path.absolute(\"x/y/../../z/./w\")\n    print(a.endswith(\"/z/w\"), \"..\" in a, path.absolute(\"/a/b/../c\"))\nend\n"),
+        "true false /a/c\n"
+    );
+}
+
+#[test]
 fn values_are_their_traits() {
     assert_eq!(
         run(
