@@ -2147,6 +2147,18 @@ impl Checker<'_> {
                             self.error(format!("`{ty}` has no method `{}`", m.name), m.span);
                         }
                     }
+                    if matches!(t, Ty::Int | Ty::Float)
+                        && !crate::vm::builtins::NUMBER_METHODS.contains(&m.name.as_str())
+                    {
+                        self.error_hint(
+                            format!("{} has no method `{}`", t.name(), m.name),
+                            m.span,
+                            format!(
+                                "numbers have {}",
+                                crate::vm::builtins::NUMBER_METHODS.join(", ")
+                            ),
+                        );
+                    }
                     // Lists and maps whose element types are known.
                     match (&t, m.name.as_str()) {
                         (Ty::List(elem), "append" | "insert" | "extend") => {

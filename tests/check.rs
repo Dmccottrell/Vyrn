@@ -483,3 +483,12 @@ fn traits_are_types_and_bounds_are_enforced() {
         "`Shape` has no method `bark`"
     );
 }
+
+#[test]
+fn numbers_have_only_number_methods() {
+    assert_eq!(
+        one("create first[T](xs: list[T]) -> T:\n    return xs[0]\nend\nmain:\n    print(first([10, 20]).upper())\nend\n"),
+        "int has no method `upper`"
+    );
+    ok("main:\n    let x = 2.5\n    print(x.round(), x.floor(), (3).is_odd(), x.clamp(0, 1))\nend\n");
+}

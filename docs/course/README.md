@@ -132,7 +132,7 @@ plan below.
 |---|---|---|
 | 60 ✅ | Types and `vyrn check` | Typing an old program |
 | 61 ✅ | Enums, `when` with patterns, `none` safety (`?.`, `??`) | Traffic lights and parsers |
-| 62 | Generics and traits (interfaces, default methods) | Shapes and containers |
+| 62 ✅ | Generics and traits (interfaces, default methods) | Shapes and containers |
 | 63 | Operator overloading, `to_text`, custom ordering | Money and vectors |
 | 64 | Closures and decorators | Timing and caching |
 | 65 | Generators (`yield`) and lazy sequences | Endless sequences |

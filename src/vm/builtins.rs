@@ -1514,7 +1514,13 @@ fn number_method(n: &Value, name: &str, rest: &[Value]) -> VmResult<Value> {
         "min" => keep_int(x.min(arg(0)?)),
         "max" => keep_int(x.max(arg(0)?)),
         "pow" => keep_int(x.powf(arg(0)?)),
-        "sign" => keep_int(if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }),
+        "sign" => keep_int(if x > 0.0 {
+            1.0
+        } else if x < 0.0 {
+            -1.0
+        } else {
+            0.0
+        }),
         "radians" => Value::Float(x.to_radians()),
         "degrees" => Value::Float(x.to_degrees()),
         "is_even" => Value::Bool(matches!(n, Value::Int(i) if i % 2 == 0)),
@@ -1523,13 +1529,20 @@ fn number_method(n: &Value, name: &str, rest: &[Value]) -> VmResult<Value> {
             return Err(err(
                 "FieldError",
                 format!(
-                    "{} has no method `{name}`; numbers have abs, sqrt, sin, cos, tan, floor, ceil, round, clamp, min, max, pow, sign, radians, degrees, is_even, is_odd",
-                    n.type_name()
+                    "{} has no method `{name}`; numbers have {}",
+                    n.type_name(),
+                    NUMBER_METHODS.join(", ")
                 ),
             ))
         }
     })
 }
+
+/// The methods of `int` and `float` values.
+pub const NUMBER_METHODS: &[&str] = &[
+    "abs", "sqrt", "sin", "cos", "tan", "floor", "ceil", "round", "clamp", "min", "max", "pow",
+    "sign", "radians", "degrees", "is_even", "is_odd",
+];
 
 pub fn call_method(ctx: &mut Ctx, name: &str, args: &[Value]) -> VmResult<Value> {
     let (receiver, rest) = (&args[0], &args[1..]);
