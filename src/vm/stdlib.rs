@@ -2493,6 +2493,13 @@ pub fn csv_write(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 
 /// `http.query({"q": "tea & cake", "page": 2})`: `q=tea%20%26%20cake&page=2`,
 /// the part of a URL after `?`, with every value safely encoded.
+/// `http.join_url(base, link)`: a link on a page as a full address.
+pub fn http_join_url(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let base = text_arg(args, 0, "the page address")?;
+    let link = text_arg(args, 1, "the link")?;
+    Ok(Value::str(super::web::join_url(base, link)))
+}
+
 pub fn http_query(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let Some(Value::Map(m)) = args.first() else {
         return Err(type_error("`http.query` takes a map of names to values"));

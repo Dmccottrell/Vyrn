@@ -467,6 +467,7 @@ pub static NATIVES: &[Native] = &[
     // ---- vyrn.http client ----
     fixed("web.get", &["url", "headers"], 1, S::http_get),
     fixed("web.query", &["params"], 1, S::http_query),
+    fixed("web.join_url", &["base", "link"], 2, S::http_join_url),
     fixed("web.post", &["url", "body", "headers"], 1, S::http_post),
     fixed("web.put", &["url", "body", "headers"], 1, S::http_put),
     fixed("web.delete", &["url", "headers"], 1, S::http_delete),

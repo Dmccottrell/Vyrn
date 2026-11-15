@@ -140,6 +140,77 @@ pub fn parse_query(query: &str) -> HashMap<String, String> {
         .collect()
 }
 
+/// Resolves a link found on the page at `base` to a full address, as a
+/// browser does: `"../b.html"` on `https://x.com/a/c.html` is
+/// `https://x.com/b.html`.
+pub fn join_url(base: &str, link: &str) -> String {
+    let link = link.trim();
+    if link.is_empty() {
+        return base.to_string();
+    }
+    let has_scheme = link.split_once(':').is_some_and(|(s, _)| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+    });
+    if has_scheme {
+        return link.to_string();
+    }
+    let (scheme, rest) = base.split_once("://").unwrap_or(("https", base));
+    if let Some(net) = link.strip_prefix("//") {
+        return format!("{scheme}://{net}");
+    }
+    let host_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let origin = format!("{scheme}://{}", &rest[..host_end]);
+    let base_path = &rest[host_end..];
+    let path_only = base_path.split(['?', '#']).next().unwrap_or("");
+    if link.starts_with('#') {
+        let without = base.split('#').next().unwrap_or(base);
+        return format!("{without}{link}");
+    }
+    if link.starts_with('?') {
+        return format!("{origin}{path_only}{link}");
+    }
+    let joined = if link.starts_with('/') {
+        link.to_string()
+    } else {
+        let dir = match path_only.rfind('/') {
+            Some(i) => &path_only[..=i],
+            None => "/",
+        };
+        format!("{dir}{link}")
+    };
+    // Split off the query and fragment, then tidy `.` and `..`.
+    let cut = joined.find(['?', '#']).unwrap_or(joined.len());
+    let (path, tail) = joined.split_at(cut);
+    let mut parts: Vec<&str> = Vec::new();
+    let segments: Vec<&str> = path.split('/').collect();
+    for (i, seg) in segments.iter().enumerate() {
+        let last = i + 1 == segments.len();
+        match *seg {
+            "." => {
+                if last {
+                    parts.push("");
+                }
+            }
+            ".." => {
+                if parts.len() > 1 {
+                    parts.pop();
+                }
+                if last {
+                    parts.push("");
+                }
+            }
+            other => parts.push(other),
+        }
+    }
+    let mut path = parts.join("/");
+    if !path.starts_with('/') {
+        path.insert(0, '/');
+    }
+    format!("{origin}{path}{tail}")
+}
+
 /// Encodes text for a URL or a form: everything but letters, digits and
 /// `-_.~` becomes `%XX`.
 pub fn percent_encode(text: &str) -> String {
@@ -324,6 +395,42 @@ pub fn accept_ready(listener: &TcpListener, limit: Option<u64>) -> Vec<TcpStream
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn links_join_like_a_browser() {
+        let base = "https://books.example/catalogue/page-2.html?x=1#top";
+        assert_eq!(
+            join_url(base, "page-3.html"),
+            "https://books.example/catalogue/page-3.html"
+        );
+        assert_eq!(
+            join_url(base, "../index.html"),
+            "https://books.example/index.html"
+        );
+        assert_eq!(
+            join_url(base, "../../a/./b.html"),
+            "https://books.example/a/b.html"
+        );
+        assert_eq!(
+            join_url(base, "/media/c.jpg"),
+            "https://books.example/media/c.jpg"
+        );
+        assert_eq!(
+            join_url(base, "//cdn.example/x.js"),
+            "https://cdn.example/x.js"
+        );
+        assert_eq!(
+            join_url(base, "?page=4"),
+            "https://books.example/catalogue/page-2.html?page=4"
+        );
+        assert_eq!(
+            join_url(base, "#end"),
+            "https://books.example/catalogue/page-2.html?x=1#end"
+        );
+        assert_eq!(join_url(base, "mailto:a@b.c"), "mailto:a@b.c");
+        assert_eq!(join_url("https://x.com", "a.html"), "https://x.com/a.html");
+        assert_eq!(join_url("https://x.com/a/", "./"), "https://x.com/a/");
+    }
 
     #[test]
     fn query_strings_are_decoded() {

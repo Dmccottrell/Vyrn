@@ -328,7 +328,7 @@ All **run today** (`src/vm/stdlib.rs`).
 | `vyrn.json` | `json.parse(text)`, `json.dumps(value, indent)`, `json.load(path)`, `json.save(path, value)` |
 | `vyrn.re` | `re.test(pattern, text)`, `re.find` (a match with `text`, `start`, `end`, `groups`, `named`, or `none`), `re.matches` (every match), `re.find_all`, `re.replace(pattern, text, with)` (`$1` inserts a group; `with` can be a function of the match), `re.split` |
 | `vyrn.csv` | `csv.read(path)` and `csv.parse(text)` (a list of maps from the header, or of lists with `header = false`), `csv.write(path, rows)`, `csv.format(rows)` |
-| `vyrn.http` client | `http.get(url, headers)`, `http.post(url, body, headers)`, `http.put`, `http.delete`: a response with `status`, `ok`, `text`, `json`, `headers` (`r.status` or `r["status"]`); no answer at all fails with `NetworkError`. Maps and lists are sent as JSON. `http.query({"q": "tea & cake"})` builds an encoded query string for after the `?` |
+| `vyrn.http` client | `http.get(url, headers)`, `http.post(url, body, headers)`, `http.put`, `http.delete`: a response with `status`, `ok`, `text`, `json`, `headers` (`r.status` or `r["status"]`); no answer at all fails with `NetworkError`. Maps and lists are sent as JSON. `http.query({"q": "tea & cake"})` builds an encoded query string for after the `?`; `http.join_url(page, link)` turns a link found on a page (`"../b.html"`) into a full address |
 
 ### Testing with fakes
 
