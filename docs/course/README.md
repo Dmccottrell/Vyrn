@@ -147,7 +147,7 @@ plan below.
 |---|---|---|
 | 70 ✅ | Stacks, queues, linked lists, trees | Undo and a word index |
 | 71 ✅ | Graphs: breadth-first and depth-first search, shortest paths; bits and flags | Route planner |
-| 72 | Async tasks: `async`, `await`, `spawn` | Many downloads at once |
+| 72 ✅ | Async tasks: `async`, `await`, `spawn` | Many downloads at once |
 | 73 | Channels, timeouts, `task.select`; retries and fault tolerance | A reliable worker |
 | 74 | Design patterns: factory, observer, strategy, decorator | A plugin system |
 | 75 | Profiling and speed: typed functions, the native compiler, `task.parallel` | Faster image filter |
