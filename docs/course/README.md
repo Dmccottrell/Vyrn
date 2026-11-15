@@ -151,7 +151,7 @@ plan below.
 | 73 ✅ | Channels, timeouts, `task.select`; retries and fault tolerance | A reliable worker |
 | 74 ✅ | Design patterns: factory, observer, strategy, decorator | A plugin system |
 | 75 ✅ | Profiling and speed: typed functions, the native compiler, `task.parallel` | Faster image filter |
-| 76 | Using C and Python libraries | Borrowing a library |
+| 76 ✅ | Using C and Python libraries | Borrowing a library |
 
 ### Unit 9: Games and 3D (days 77–79)
 
