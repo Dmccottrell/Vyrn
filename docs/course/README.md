@@ -109,7 +109,7 @@ plan below.
 | 45 ✅ | Web scraping (`vyrn.html`), following links, politeness | Catalogue scraper |
 | 46 ✅ | Regular expressions (`vyrn.re`) | Log reader |
 | 47 ✅ | Testing: `vyrn test`, `assert`, fixtures, fakes, testing routes | Tested deal finder |
-| 48 | JSON APIs: routes, status codes, REST design | An API other programs use |
+| 48 ✅ | JSON APIs: routes, status codes, REST design | An API other programs use |
 | 49 | Cookies, sessions, password hashing, logins | Members area |
 | 50 | A web app with a database | Blog |
 | 51 | Security: validation, XSS, CSRF, SQL injection, secrets | Securing the blog |
