@@ -1323,6 +1323,20 @@ fn operators_give_orderings_sums_and_keys() {
 }
 
 #[test]
+fn objects_can_act_as_collections() {
+    assert_eq!(
+        run("object Bag:\n    items: list = []\n\
+             \x20   create len(self) -> int: return len(self.items)\n\
+             \x20   create contains(self, x) -> bool: return x in self.items\n\
+             \x20   create iter(self):\n        each x in self.items:\n            yield x * 10\n        end\n    end\n\
+             end\n\
+             object Pair:\n    a: int\n    b: int\n    create iter(self) -> list: return [self.a, self.b]\nend\n\
+             main:\n    let b = Bag([1, 2, 3])\n    print(len(b), 2 in b, 5 in b, 5 not in b, [x each x in b], [x each x in Pair(7, 8)])\nend\n"),
+        "3 true false true [10, 20, 30] [7, 8]\n"
+    );
+}
+
+#[test]
 fn values_are_their_traits() {
     assert_eq!(
         run(

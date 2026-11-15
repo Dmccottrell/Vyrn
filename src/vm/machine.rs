@@ -1050,6 +1050,10 @@ impl Vm {
             }
         }
         let result = match callee {
+            // A function with `yield` gives its generator, unstarted.
+            Value::Function(closure) if closure.proto.is_generator => self
+                .new_generator(closure, slot + 1, argc)
+                .map_err(|e| self.runtime_error(e)),
             Value::Function(closure) => match self.push_frame(closure, slot, slot + 1, argc) {
                 Ok(()) => self.execute(root),
                 Err(e) => Err(self.runtime_error(e)),
@@ -2338,6 +2342,14 @@ impl Vm {
     /// its functions.
     fn machine_native(&mut self, id: u16, from: usize, argc: usize) -> Option<VmResult<Value>> {
         match builtins::NATIVES[id as usize].name {
+            // `len(bag)`: a type's own `len` method.
+            "len"
+                if argc == 1 && matches!(self.stack[from], Value::Struct(_) | Value::Object(_)) =>
+            {
+                let value = self.stack[from].clone();
+                let m = self.method_named(&value, "len")?;
+                Some(self.call_method_value(m, vec![value]))
+            }
             "web.test" => {
                 let args = self.stack[from..from + argc].to_vec();
                 Some(self.test_request(&args))
@@ -3256,7 +3268,21 @@ impl Vm {
                         item,
                         container,
                     } => {
-                        let found = check!(ops::contains(&reg!(item), &reg!(container)));
+                        // `x in bag`: a type's own `contains` method.
+                        let own = match &reg!(container) {
+                            c @ (Value::Struct(_) | Value::Object(_)) => {
+                                self.method_named(c, "contains").map(|m| (m, c.clone()))
+                            }
+                            _ => None,
+                        };
+                        let found = match own {
+                            Some((m, c)) => {
+                                let item = reg!(item).clone();
+                                save_ip!();
+                                check!(self.call_method_value(m, vec![c, item])).truthy()
+                            }
+                            None => check!(ops::contains(&reg!(item), &reg!(container))),
+                        };
                         put!(dst, Value::Bool(found));
                     }
 
@@ -3358,7 +3384,16 @@ impl Vm {
                         }
                     }
                     Op::IterInit { dst, src } => {
-                        let iter = match &reg!(src) {
+                        // `each x in bag`: a type's own `iter` method gives a
+                        // list or a generator to loop over.
+                        let mut source = reg!(src).clone();
+                        if matches!(source, Value::Struct(_) | Value::Object(_)) {
+                            if let Some(m) = self.method_named(&source, "iter") {
+                                save_ip!();
+                                source = check!(self.call_method_value(m, vec![source]));
+                            }
+                        }
+                        let iter = match &source {
                             g @ Value::Foreign(f) if f.as_any().is::<Generator>() => g.clone(),
                             other => check!(ops::make_iter(other)),
                         };
