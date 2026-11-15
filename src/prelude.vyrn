@@ -58,6 +58,16 @@ create __re_replace_with(pattern, text, f):
     return out + text[last:]
 end
 
+## `sum(xs, start)` for values whose type defines `operator +`.
+create __sum_with(xs, start = none):
+    if len(xs) == 0: return start ?? 0
+    var total = xs[0] if start is none else start + xs[0]
+    each x in xs[1:]:
+        total = total + x
+    end
+    return total
+end
+
 ## Runs a request through the middleware `chain` from `i` on, then the
 ## route: each middleware is `f(request, next)`.
 create __http_run(chain, i, request, handler, args):

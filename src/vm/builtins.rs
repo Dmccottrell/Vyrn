@@ -56,7 +56,7 @@ pub static NATIVES: &[Native] = &[
     fixed("abs", &["x"], 1, abs),
     variadic("min", min),
     variadic("max", max),
-    fixed("sum", &["xs"], 1, sum),
+    fixed("sum", &["xs", "start"], 1, sum),
     fixed("round", &["x", "digits"], 1, round),
     fixed("range", &["start", "stop", "step"], 1, range),
     fixed("enumerate", &["xs"], 1, enumerate),
@@ -781,7 +781,10 @@ fn sum(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
             .map_err(ops::tensor_error)?;
         return Ok(Value::Float(widen(r.value(0))));
     }
-    let mut total = Value::Int(0);
+    let mut total = match opt(args, 1) {
+        Some(start) => start.clone(),
+        None => Value::Int(0),
+    };
     for item in ops::collect(&args[0])? {
         total = ops::arith(ctx, ops::Arith::Add, &total, &item)?;
     }

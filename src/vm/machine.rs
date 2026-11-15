@@ -2268,6 +2268,17 @@ impl Vm {
             (m, vec![a.clone(), b.clone()])
         } else if matches!(symbol, "+" | "*") {
             (self.method_named(b, &name)?, vec![b.clone(), a.clone()])
+        } else if matches!(symbol, ">" | "<=" | ">=") {
+            // An ordering from `operator <` alone: `a > b` is `b < a`,
+            // `a <= b` is `not (b < a)`, `a >= b` is `not (a < b)`.
+            let less = self.method_named(a, "operator <")?;
+            let (x, y, negate) = match symbol {
+                ">" => (b, a, false),
+                "<=" => (b, a, true),
+                _ => (a, b, true),
+            };
+            let result = self.call_method_value(less, vec![x.clone(), y.clone()]);
+            return Some(result.map(|v| Value::Bool(v.truthy() != negate)));
         } else {
             return None;
         };
@@ -2293,6 +2304,19 @@ impl Vm {
         let helper = match builtins::NATIVES[id as usize].name {
             // Written in Vyrn, as it calls the model's `step`.
             "nn.generate" => "__nn_generate",
+            // Adding values whose type defines `operator +`.
+            "sum"
+                if (1..=2).contains(&argc)
+                    && match &self.stack[from] {
+                        Value::List(xs) => xs
+                            .borrow()
+                            .first()
+                            .is_some_and(|x| matches!(x, Value::Struct(_) | Value::Object(_))),
+                        _ => false,
+                    } =>
+            {
+                "__sum_with"
+            }
             "re.replace"
                 if argc == 3
                     && matches!(
@@ -3190,7 +3214,10 @@ impl Vm {
                     Op::Eq { dst, a, b } => {
                         let equal = match (&reg!(a), &reg!(b)) {
                             (Value::Int(x), Value::Int(y)) => x == y,
-                            (x @ (Value::Struct(_) | Value::Object(_)), y) => {
+                            // Nothing equals `none` but `none`: no `operator ==` is asked.
+                            (x @ (Value::Struct(_) | Value::Object(_)), y)
+                                if !matches!(y, Value::None) =>
+                            {
                                 let (x, y) = (x.clone(), y.clone());
                                 save_ip!();
                                 match self.try_operator("==", &x, &y) {
@@ -3205,7 +3232,10 @@ impl Vm {
                     Op::NotEq { dst, a, b } => {
                         let equal = match (&reg!(a), &reg!(b)) {
                             (Value::Int(x), Value::Int(y)) => x == y,
-                            (x @ (Value::Struct(_) | Value::Object(_)), y) => {
+                            // Nothing equals `none` but `none`: no `operator ==` is asked.
+                            (x @ (Value::Struct(_) | Value::Object(_)), y)
+                                if !matches!(y, Value::None) =>
+                            {
                                 let (x, y) = (x.clone(), y.clone());
                                 save_ip!();
                                 match self.try_operator("==", &x, &y) {

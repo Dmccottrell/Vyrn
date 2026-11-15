@@ -232,6 +232,11 @@ pub enum Key {
     Int(i64),
     Str(Rc<String>),
     Tuple(Vec<Key>),
+    /// A float with a fraction, by its bits (whole floats are `Int`, so
+    /// `2.0` and `2` are the same key).
+    Float(u64),
+    /// A struct (a value), by its type and fields.
+    Struct(u16, Vec<Key>),
 }
 
 impl Key {
@@ -241,10 +246,18 @@ impl Key {
             Value::Bool(b) => Key::Bool(*b),
             Value::Int(i) => Key::Int(*i),
             Value::Float(f) if f.fract() == 0.0 && f.abs() < 9.0e15 => Key::Int(*f as i64),
+            Value::Float(f) if f.is_finite() => Key::Float(f.to_bits()),
             Value::Str(s) => Key::Str(s.clone()),
             Value::Tuple(items) => {
                 Key::Tuple(items.iter().map(Key::from_value).collect::<Option<_>>()?)
             }
+            Value::Struct(inst) => Key::Struct(
+                inst.ty,
+                inst.fields
+                    .iter()
+                    .map(Key::from_value)
+                    .collect::<Option<_>>()?,
+            ),
             _ => return None,
         })
     }

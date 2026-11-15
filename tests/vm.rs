@@ -1306,6 +1306,23 @@ fn types_define_their_own_operators_and_text() {
 }
 
 #[test]
+fn operators_give_orderings_sums_and_keys() {
+    assert_eq!(
+        run("struct M:\n    p: int\n\
+             \x20   create operator +(self, o: M) -> M: return M(self.p + o.p)\n\
+             \x20   create operator ==(self, o: M) -> bool: return self.p == o.p\n\
+             \x20   create operator <(self, o: M) -> bool: return self.p < o.p\n\
+             end\n\
+             main:\n    let a = M(2)\n    let b = M(1)\n\
+             \x20   print(a > b, a <= b, a >= b, b <= a, a == none, a != none)\n\
+             \x20   print(sum([a, b]).p, sum([a, b], M(10)).p, sum([1, 2], 10), sum([]))\n\
+             \x20   print(len({M(1), M(1), M(3)}), {M(4): \"x\"}[M(4)], {2.5: \"y\"}[2.5])\n\
+             end\n"),
+        "true false true true false true\n3 13 13 0\n2 x y\n"
+    );
+}
+
+#[test]
 fn values_are_their_traits() {
     assert_eq!(
         run(
