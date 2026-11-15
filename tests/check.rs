@@ -412,3 +412,20 @@ fn generic_functions_infer_their_type_parameters() {
     );
     ok(&format!("{src}main:\n    let a: int = first([1, 2])\n    let b: [float] = pair(1, 2.5)\n    let c: str = first([\"x\"])\nend\n"));
 }
+
+#[test]
+fn list_and_map_types_written_either_way_check_their_items() {
+    assert_eq!(
+        one("main:\n    let xs: list[int] = [1, 2]\n    xs.append(\"three\")\nend\n"),
+        "an item of this list[int] is int, but this is str"
+    );
+    assert_eq!(
+        one("create f(xs: [str]):\n    xs.insert(0, 5)\nend\nmain:\n    f([])\nend\n"),
+        "an item of this list[str] is str, but this is int"
+    );
+    assert_eq!(
+        one("main:\n    let m: map[str, int] = {\"a\": 1}\n    let s: str = m.values()[0]\nend\n"),
+        "`s` is str, but this is int"
+    );
+    ok("main:\n    let xs: list[float] = [1.5]\n    xs.append(2)\n    xs.extend([3.5])\n    let last: float = xs.pop()\nend\n");
+}

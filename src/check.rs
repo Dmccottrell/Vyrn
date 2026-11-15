@@ -306,11 +306,21 @@ impl Table {
     fn ty_g(&self, t: &TypeExpr, generics: &[String]) -> Ty {
         match &t.kind {
             TypeExprKind::Any => Ty::Any,
-            TypeExprKind::Named { path, .. } => {
+            TypeExprKind::Named { path, args } => {
                 if path.segments.len() != 1 {
                     return Ty::Any;
                 }
                 let name = path.segments[0].name.as_str();
+                // `list[int]`, `map[str, float]`: the same as `[int]`, `{str: float}`.
+                let arg = |i: usize| match args.get(i) {
+                    Some(GenericArg::Type(t)) => self.ty_g(t, generics),
+                    _ => Ty::Any,
+                };
+                match (name, args.len()) {
+                    ("list", 1) => return Ty::List(Box::new(arg(0))),
+                    ("map" | "dict", 2) => return Ty::Map(Box::new(arg(0)), Box::new(arg(1))),
+                    _ => {}
+                }
                 if generics.iter().any(|g| g == name) {
                     return Ty::Var(name.to_string());
                 }
@@ -2049,6 +2059,45 @@ impl Checker<'_> {
                         {
                             self.error(format!("`{ty}` has no method `{}`", m.name), m.span);
                         }
+                    }
+                    // Lists and maps whose element types are known.
+                    match (&t, m.name.as_str()) {
+                        (Ty::List(elem), "append" | "insert" | "extend") => {
+                            let elem = (**elem).clone();
+                            let positional: Vec<&Arg> =
+                                args.iter().filter(|a| a.name.is_none()).collect();
+                            let item = match m.name.as_str() {
+                                "append" => positional.first(),
+                                "insert" => positional.get(1),
+                                _ => None,
+                            };
+                            if let Some(arg) = item.filter(|a| !a.spread) {
+                                let actual = self.expr(&arg.value);
+                                self.expect(&elem, &actual, arg.value.span, || {
+                                    format!("an item of this list[{}]", elem.name())
+                                });
+                            }
+                            if m.name == "extend" {
+                                if let Some(arg) = positional.first() {
+                                    let actual = self.expr(&arg.value);
+                                    if let Ty::List(other) = &actual {
+                                        self.expect(&elem, other, arg.value.span, || {
+                                            format!("an item of this list[{}]", elem.name())
+                                        });
+                                    }
+                                }
+                            }
+                            result = Ty::None;
+                        }
+                        (Ty::List(elem), "pop") => result = (**elem).clone(),
+                        (Ty::List(_), "index" | "count") => result = Ty::Int,
+                        (Ty::List(_), "copy") => result = t.clone(),
+                        (Ty::Map(_, v), "get") if args.len() == 1 => {
+                            result = Ty::Optional(Box::new((**v).clone()))
+                        }
+                        (Ty::Map(k, _), "keys") => result = Ty::List(k.clone()),
+                        (Ty::Map(_, v), "values") => result = Ty::List(v.clone()),
+                        _ => {}
                     }
                     receiver = Some((base, t));
                 }
