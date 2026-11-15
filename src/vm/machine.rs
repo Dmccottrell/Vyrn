@@ -4073,7 +4073,15 @@ impl Vm {
                                 let next = {
                                     let mut ch = ch.borrow_mut();
                                     match ch.queue.pop_front() {
-                                        Some(v) => Some(Some(v)),
+                                        Some(v) => {
+                                            // Room now: the longest-waiting
+                                            // sender's value goes in.
+                                            if let Some((value, sender)) = ch.senders.pop_front() {
+                                                ch.queue.push_back(value);
+                                                self.ready.extend(sender.finish(Ok(Value::None)));
+                                            }
+                                            Some(Some(v))
+                                        }
                                         None if ch.closed => Some(None),
                                         None => {
                                             ch.waiters.push(self.current);

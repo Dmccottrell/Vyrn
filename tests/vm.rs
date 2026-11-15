@@ -1392,6 +1392,16 @@ fn absolute_paths_resolve_dot_dot() {
 }
 
 #[test]
+fn async_each_over_a_full_channel_wakes_the_sender() {
+    assert_eq!(
+        run("async create producer(ch, n: int):\n    each i in 1 to n: ch.send(i)\n    ch.close()\nend\n\
+             async create consumer(ch) -> int:\n    var total = 0\n    async each x in ch:\n        total += x\n        await sleep(0.001)\n    end\n    return total\nend\n\
+             main:\n    let ch = channel(capacity = 2)\n    let p = producer(ch, 6)\n    let a = consumer(ch)\n    let b = consumer(ch)\n    await p\n    print(await a + await b)\nend\n"),
+        "21\n"
+    );
+}
+
+#[test]
 fn values_are_their_traits() {
     assert_eq!(
         run(
