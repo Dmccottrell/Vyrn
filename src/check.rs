@@ -986,9 +986,10 @@ impl Checker<'_> {
                     }
                 }
             }
-            StmtKind::Fail(e) | StmtKind::Defer(e) | StmtKind::Yield(e) => {
+            StmtKind::Fail(e) | StmtKind::Yield(e) => {
                 self.expr(e);
             }
+            StmtKind::Defer(s) => self.stmt(s),
             StmtKind::Stop | StmtKind::Skip => {}
             StmtKind::If(s) => {
                 let mut ends = Vec::new();

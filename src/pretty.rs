@@ -563,7 +563,10 @@ impl Printer {
             StmtKind::Return(None) => self.line("return"),
             StmtKind::Fail(e) => self.line(format!("fail {}", expr(e))),
             StmtKind::Yield(e) => self.line(format!("yield {}", expr(e))),
-            StmtKind::Defer(e) => self.line(format!("defer {}", expr(e))),
+            StmtKind::Defer(s) => {
+                self.line("defer");
+                self.stmt(s);
+            }
             StmtKind::Stop => self.line("stop"),
             StmtKind::Skip => self.line("skip"),
             StmtKind::If(i) => {

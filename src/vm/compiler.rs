@@ -1956,16 +1956,12 @@ impl Compiler {
 
     fn stmts(&mut self, stmts: &[Stmt]) {
         for (i, stmt) in stmts.iter().enumerate() {
-            if let StmtKind::Defer(expr) = &stmt.kind {
-                // `defer e` runs `e` when the enclosing block ends, however
+            if let StmtKind::Defer(deferred) = &stmt.kind {
+                // `defer s` runs `s` when the enclosing block ends, however
                 // it ends: the rest of the block becomes a `try` body with
-                // `e` as its `finally`.
+                // `s` as its `finally`.
                 self.set_pos(stmt.span);
-                let finally = Rc::new(vec![Stmt {
-                    id: stmt.id,
-                    span: stmt.span,
-                    kind: StmtKind::Expr(expr.clone()),
-                }]);
+                let finally = Rc::new(vec![(**deferred).clone()]);
                 let _ = self.try_finally(&stmts[i + 1..], &[], Some(finally));
                 return;
             }
@@ -4332,9 +4328,8 @@ fn scan_stmt(stmt: &Stmt, inside: bool, names: &mut HashSet<String>) {
                 scan_expr(v, inside, names);
             }
         }
-        StmtKind::Expr(e) | StmtKind::Fail(e) | StmtKind::Defer(e) | StmtKind::Yield(e) => {
-            scan_expr(e, inside, names)
-        }
+        StmtKind::Expr(e) | StmtKind::Fail(e) | StmtKind::Yield(e) => scan_expr(e, inside, names),
+        StmtKind::Defer(s) => scan_stmt(s, inside, names),
         StmtKind::Assign { target, value, .. } => {
             scan_expr(target, inside, names);
             scan_expr(value, inside, names);

@@ -590,7 +590,8 @@ pub enum StmtKind {
     Fail(Expr),
     /// `yield value`: makes the function a generator.
     Yield(Expr),
-    Defer(Expr),
+    /// `defer stmt`: a simple statement run when the block ends.
+    Defer(Box<Stmt>),
     /// Leaves the innermost loop.
     Stop,
     /// Continues with the next iteration of the innermost loop.
