@@ -113,7 +113,7 @@ plan below.
 | 49 ✅ | Cookies, sessions, password hashing, logins | Members area |
 | 50 ✅ | A web app with a database | Blog |
 | 51 ✅ | Security: validation, XSS, CSRF, SQL injection, secrets | Securing the blog |
-| 52 | Deployment: `vyrn build`, Docker, GitHub Actions | Blog on the internet |
+| 52 ✅ | Deployment: `vyrn build`, Docker, GitHub Actions | Blog on the internet |
 | 53 | Capstone | Todo web app |
 
 ### Unit 6: Data (days 54–59)
