@@ -3315,7 +3315,17 @@ impl Parser {
                 };
                 SeqPattern::Rest(name, self.span_from(start))
             } else {
-                SeqPattern::Item(self.pattern()?)
+                let pattern = self.pattern()?;
+                // `rest...`, as rest parameters and spreading are written.
+                match pattern.kind {
+                    PatternKind::Binding(name) if self.eat_p(P::Ellipsis) => {
+                        SeqPattern::Rest(Some(name), self.span_from(start))
+                    }
+                    PatternKind::Wildcard if self.eat_p(P::Ellipsis) => {
+                        SeqPattern::Rest(None, self.span_from(start))
+                    }
+                    _ => SeqPattern::Item(pattern),
+                }
             };
             items.push(item);
             if !self.eat_p(P::Comma) {

@@ -1306,6 +1306,16 @@ fn types_define_their_own_operators_and_text() {
 }
 
 #[test]
+fn list_patterns_take_the_rest_either_way() {
+    assert_eq!(
+        run("create f(xs):\n    when xs:\n        is [a, rest...]: return \"{a} {rest}\"\n        else: return \"empty\"\n    end\nend\n\
+             create g(xs):\n    when xs:\n        is [...rest, z]: return \"{rest} {z}\"\n        is [_...]: return \"empty\"\n    end\nend\n\
+             main:\n    print(f([1, 2, 3]), f([]), g([1, 2]), g([]))\nend\n"),
+        "1 [2, 3] empty [1] 2 empty\n"
+    );
+}
+
+#[test]
 fn functions_kept_in_fields_are_called_like_methods() {
     assert_eq!(
         run("object Client:\n    send: any\n    token: str = \"t\"\n\
