@@ -2494,6 +2494,56 @@ pub fn csv_write(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 
 /// `http.query({"q": "tea & cake", "page": 2})`: `q=tea%20%26%20cake&page=2`,
 /// the part of a URL after `?`, with every value safely encoded.
+/// `http.cookie(name, value, max_age, path = "/", http_only = true,
+/// secure = false, same_site = "Lax")`: the text of a `Set-Cookie` header.
+/// A `max_age` of 0 deletes the cookie; none keeps it until the browser
+/// closes.
+pub fn http_cookie(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let given = |i: usize| match args.get(i) {
+        None | Some(Value::None) | Some(Value::Missing) => None,
+        Some(v) => Some(v),
+    };
+    let name = text_arg(args, 0, "the cookie's name")?;
+    if name.is_empty() || name.contains(['=', ';', ' ', ',']) {
+        return Err(err(
+            "ValueError",
+            format!("{name:?} can't be a cookie's name"),
+        ));
+    }
+    let value = match &args[1] {
+        Value::Str(s) => s.to_string(),
+        other => ops::display(&ctx.program, other),
+    };
+    let mut out = format!("{name}={}", super::web::percent_encode(&value));
+    out.push_str(&format!(
+        "; Path={}",
+        match given(3) {
+            Some(Value::Str(p)) => p.to_string(),
+            _ => "/".to_string(),
+        }
+    ));
+    if let Some(v) = given(2) {
+        let seconds = match v {
+            Value::Int(n) => *n,
+            Value::Float(f) => *f as i64,
+            _ => return Err(type_error("`max_age` is a number of seconds")),
+        };
+        out.push_str(&format!("; Max-Age={}", seconds.max(0)));
+    }
+    if given(4).is_none_or(Value::truthy) {
+        out.push_str("; HttpOnly");
+    }
+    if given(5).is_some_and(Value::truthy) {
+        out.push_str("; Secure");
+    }
+    let same_site = match given(6) {
+        Some(Value::Str(s)) => s.to_string(),
+        _ => "Lax".to_string(),
+    };
+    out.push_str(&format!("; SameSite={same_site}"));
+    Ok(Value::str(out))
+}
+
 /// `http.join_url(base, link)`: a link on a page as a full address.
 pub fn http_join_url(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let base = text_arg(args, 0, "the page address")?;

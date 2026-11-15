@@ -473,6 +473,37 @@ pub static NATIVES: &[Native] = &[
     fixed("web.delete", &["url", "headers"], 1, S::http_delete),
     fixed("web.serve", &["port", "host", "requests"], 0, web_serve),
     fixed("web.provide", &["name", "value"], 2, web_provide),
+    fixed(
+        "web.cookie",
+        &[
+            "name",
+            "value",
+            "max_age",
+            "path",
+            "http_only",
+            "secure",
+            "same_site",
+        ],
+        2,
+        S::http_cookie,
+    ),
+    // ---- vyrn.crypto ----
+    fixed("crypto.sha256", &["text"], 1, super::lib_crypto::sha256),
+    fixed("crypto.hmac", &["key", "text"], 2, super::lib_crypto::hmac),
+    fixed(
+        "crypto.hash_password",
+        &["password"],
+        1,
+        super::lib_crypto::hash_password,
+    ),
+    fixed(
+        "crypto.check_password",
+        &["password", "stored"],
+        2,
+        super::lib_crypto::check_password,
+    ),
+    fixed("crypto.token", &["bytes"], 0, super::lib_crypto::token),
+    fixed("crypto.same", &["a", "b"], 2, super::lib_crypto::same_text),
     // Answered by the machine, which owns the routes.
     fixed(
         "web.test",
@@ -510,6 +541,7 @@ pub fn std_module(name: &str) -> Option<&'static str> {
         "physics" => Some("physics"),
         "nn" => Some("nn"),
         "host" => Some("host"),
+        "crypto" => Some("crypto"),
         _ => None,
     }
 }
@@ -518,7 +550,7 @@ pub fn std_module(name: &str) -> Option<&'static str> {
 pub const LIBRARY: &[&str] = &[
     "os", "fs", "path", "time", "random", "math", "json", "re", "csv", "http", "task", "db",
     "draw", "html", "template", "table", "chart", "mail", "game", "net", "sound", "physics", "nn",
-    "host",
+    "host", "crypto",
 ];
 
 pub fn library_list() -> String {

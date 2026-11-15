@@ -70,6 +70,8 @@ gltf = { version = "1", optional = true, default-features = false, features = ["
 gilrs = { version = "0.11", optional = true }
 # `fs.map`: reading big files (model weights, logs) without copying them.
 memmap2 = "0.9"
+# `vyrn.crypto`: secure random salts and tokens from the operating system.
+getrandom = "0.2"
 # `use vyrn.physics`: rigid bodies, collisions and character movement.
 rapier3d = { version = "0.36", optional = true }
 # `use vyrn.sound`: playback and decoding of WAV, Ogg Vorbis and MP3.

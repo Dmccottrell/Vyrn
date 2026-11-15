@@ -68,6 +68,21 @@ impl Foreign for HttpRequest {
             // Header names in lower case: `request.headers["user-agent"]`.
             "headers" => Ok(text_map(&self.headers)),
             "query" => Ok(text_map(&self.query)),
+            // `Cookie: a=1; b=2`, as a map.
+            "cookies" => Ok(text_map(
+                &self
+                    .headers
+                    .get("cookie")
+                    .map(|c| {
+                        c.split(';')
+                            .filter_map(|pair| pair.trim().split_once('='))
+                            .map(|(k, v)| {
+                                (k.trim().to_string(), super::web::percent_decode(v.trim()))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            )),
             // The fields of a submitted HTML form (empty for other bodies).
             "form" => Ok(text_map(&match self.headers.get("content-type") {
                 Some(t) if t.contains("x-www-form-urlencoded") => {

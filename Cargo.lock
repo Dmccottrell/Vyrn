@@ -3406,6 +3406,7 @@ dependencies = [
  "ego-tree",
  "flate2",
  "font8x8",
+ "getrandom",
  "gilrs",
  "gltf",
  "jiff",

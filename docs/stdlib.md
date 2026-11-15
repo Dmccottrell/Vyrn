@@ -164,7 +164,8 @@ server-sent events, and one that takes `socket` is a WebSocket.
 
 | API | Purpose |
 |---|---|
-| `request` parameter | `request.method`, `path`, `headers` (names in lower case), `query`, `form` (the fields of a submitted HTML form), `body` (text), `json` (the body parsed, or none), `client`, and `request.header("X-Key")` in any case. Form fields also fill route parameters by name, as query parameters do |
+| `request` parameter | `request.method`, `path`, `headers` (names in lower case), `query`, `cookies`, `form` (the fields of a submitted HTML form), `body` (text), `json` (the body parsed, or none), `client`, and `request.header("X-Key")` in any case. Form fields also fill route parameters by name, as query parameters do |
+| `http.cookie(name, value, max_age, path, http_only = true, secure, same_site = "Lax")` | The text of a `Set-Cookie` header: `http.Response(303, "", {"Set-Cookie": http.cookie("session", id), "Location": "/"})`; `max_age = 0` deletes it |
 | `http.Response(status, body, headers)` | Full control: `return http.Response(201, item, {"Location": "/items/7"})`. A `Content-Type` header replaces the usual one |
 | `http.use(f)` | Middleware around every route: `f(request, next)` gives the response, usually `next(request)`'s, or answers by itself (a 401, a cached page). The first added runs outermost |
 | `stream` parameter | Server-sent events: `stream.send(data, event = "name")` pushes one to the page (text as it is, anything else as JSON); the stream ends with the handler. Pages listen with `new EventSource("/path")` |
@@ -539,6 +540,16 @@ values)`, `chart.hist(values, bins)`, `chart.pie(labels, values)`, each with
 `title`, `x_label`, `y_label`, `width`, `height`. A map of name to values
 draws several series with a legend. `c.save("chart.png")` or
 `c.save("chart.svg")`; `c.svg()` gives the SVG text.
+
+### `vyrn.crypto`: hashing, passwords and tokens
+
+| API | Does |
+|---|---|
+| `crypto.hash_password(pw)` | Text safe to store instead of a password: PBKDF2-HMAC-SHA256, 100,000 rounds, a random salt (`pbkdf2-sha256$rounds$salt$hash`) |
+| `crypto.check_password(pw, stored)` | Whether `pw` is the password `stored` was made from |
+| `crypto.token(bytes = 32)` | A secure random token in hex, for session ids, reset links and API keys |
+| `crypto.sha256(text)`, `crypto.hmac(key, text)` | A hash; a signature only the key's holder can make (hex) |
+| `crypto.same(a, b)` | Equality in constant time, for comparing tokens and signatures |
 
 ### `vyrn.mail`: sending email
 

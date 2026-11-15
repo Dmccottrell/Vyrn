@@ -438,6 +438,29 @@ fn route_parameters_left_out_take_their_defaults() {
 }
 
 #[test]
+fn cookies_and_passwords() {
+    let program = compile_source(
+        "use vyrn.crypto\nuse vyrn.http\n\
+         route GET \"/login\" (): return http.Response(200, \"hi\", {\"Set-Cookie\": http.cookie(\"session\", \"a b\", max_age = 60)})\n\
+         route GET \"/me\" (request): return request.cookies\n\
+         main:\n\
+         \x20   let h = crypto.hash_password(\"pw\")\n\
+         \x20   print(crypto.check_password(\"pw\", h), crypto.check_password(\"px\", h), h != crypto.hash_password(\"pw\"), len(crypto.token()))\n\
+         \x20   print(http.test(\"GET\", \"/login\").headers[\"set-cookie\"])\n\
+         \x20   print(http.test(\"GET\", \"/me\", headers = {\"Cookie\": \"session=a%20b; x=1\"}).json)\n\
+         end\n",
+    )
+    .unwrap();
+    let out = Captured::default();
+    let mut vm = Vm::with_output(program, Box::new(out.clone()));
+    vm.run_main(&[]).unwrap();
+    assert_eq!(
+        out.text(),
+        "true false true 64\nsession=a%20b; Path=/; Max-Age=60; HttpOnly; SameSite=Lax\n{\"session\": \"a b\", \"x\": \"1\"}\n"
+    );
+}
+
+#[test]
 fn server_sent_events_stream_to_the_page() {
     let (port, server) = serve_program(
         "use vyrn.http\n\

@@ -22,6 +22,7 @@ pub mod gpu;
 pub mod json;
 pub mod kernel;
 pub mod lib_chart;
+mod lib_crypto;
 pub mod lib_db;
 #[cfg(feature = "draw")]
 pub mod lib_draw;
