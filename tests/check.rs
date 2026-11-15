@@ -492,3 +492,21 @@ fn numbers_have_only_number_methods() {
     );
     ok("main:\n    let x = 2.5\n    print(x.round(), x.floor(), (3).is_odd(), x.clamp(0, 1))\nend\n");
 }
+
+#[test]
+fn own_parameters_need_move_and_moved_values_are_gone() {
+    let take = "create take(own xs: list) -> int:\n    return len(xs)\nend\n";
+    assert_eq!(
+        one(&format!(
+            "{take}main:\n    var xs = [1]\n    print(take(xs))\nend\n"
+        )),
+        "`take` keeps its argument `xs`; pass it with `move`"
+    );
+    assert_eq!(
+        one(&format!(
+            "{take}main:\n    var xs = [1]\n    print(take(move xs))\n    print(xs)\nend\n"
+        )),
+        "`xs` is used after it was moved"
+    );
+    ok(&format!("{take}main:\n    var xs = [1]\n    print(take(xs.copy()), take([2]), take(move xs))\nend\n"));
+}

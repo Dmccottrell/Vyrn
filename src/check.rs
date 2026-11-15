@@ -2354,6 +2354,25 @@ impl Checker<'_> {
                         arg.value.kind,
                         ExprKind::Name(_) | ExprKind::Field { .. } | ExprKind::Index { .. }
                     );
+                // An `own` parameter keeps what it is given: a variable passed
+                // to it must say `move`, and can't be used afterwards.
+                if p.pass == PassMode::Own && !t.is_scalar() {
+                    if let ExprKind::Name(n) = &arg.value.kind {
+                        if self.lookup(&n.name).is_some() {
+                            self.error_hint(
+                                format!(
+                                    "`{name}` keeps its argument `{}`; pass it with `move`",
+                                    p.name
+                                ),
+                                arg.value.span,
+                                format!(
+                                    "write `move {}`; after that `{}` can't be used, or pass `{}.copy()`",
+                                    n.name, n.name, n.name
+                                ),
+                            );
+                        }
+                    }
+                }
                 if p.pass == PassMode::Mut && !arg.is_mut && is_place {
                     let text = root.as_ref().map(|r| r.name.clone()).unwrap_or_default();
                     self.error_hint(
