@@ -871,6 +871,19 @@ pub fn get_attr(value: &Value, name: &str) -> VmResult<Value> {
     if let Value::Foreign(f) = value {
         return f.get_attr(name);
     }
+    // `f.name`: a function's name, as it was declared.
+    if name == "name" {
+        match value {
+            Value::Function(c) => return Ok(Value::str(c.proto.name.clone())),
+            Value::Native(id) => {
+                let full = super::builtins::NATIVES[*id as usize].name;
+                return Ok(Value::str(
+                    full.rsplit('.').next().unwrap_or(full).to_string(),
+                ));
+            }
+            _ => {}
+        }
+    }
     if let Value::Clock(clock) = value {
         let c = clock.borrow();
         return match name {

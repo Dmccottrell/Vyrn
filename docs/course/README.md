@@ -134,7 +134,7 @@ plan below.
 | 61 ✅ | Enums, `when` with patterns, `none` safety (`?.`, `??`) | Traffic lights and parsers |
 | 62 ✅ | Generics and traits (interfaces, default methods) | Shapes and containers |
 | 63 ✅ | Operator overloading, `to_text`, custom ordering | Money and vectors |
-| 64 | Closures and decorators | Timing and caching |
+| 64 ✅ | Closures and decorators | Timing and caching |
 | 65 | Generators (`yield`) and lazy sequences | Endless sequences |
 | 66 | Resources: `using`, `close` | Safe files and connections |
 | 67 | Values and sharing: copies, references, `mut`, `own` | Bugs to find |

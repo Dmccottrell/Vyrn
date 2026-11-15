@@ -1337,6 +1337,14 @@ fn objects_can_act_as_collections() {
 }
 
 #[test]
+fn functions_know_their_names() {
+    assert_eq!(
+        run("create add(a, b): return a + b\nmain:\n    let f = x => x\n    print(add.name, f.name, len.name)\nend\n"),
+        "add <lambda> len\n"
+    );
+}
+
+#[test]
 fn values_are_their_traits() {
     assert_eq!(
         run(
