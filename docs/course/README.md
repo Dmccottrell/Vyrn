@@ -139,7 +139,7 @@ plan below.
 | 66 ✅ | Resources: `using`, `close` | Safe files and connections |
 | 67 ✅ | Values and sharing: copies, references, `mut`, `own` | Bugs to find |
 | 68 ✅ | Recursion and algorithms: searching, sorting, complexity | Speed races |
-| 69 | Capstone | An expression evaluator |
+| 69 ✅ | Capstone | An expression evaluator |
 
 ### Unit 8: Data structures, concurrency and speed (days 70–76)
 
