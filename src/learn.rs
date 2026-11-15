@@ -91,6 +91,7 @@ pub const DAYS: &[(&str, &str)] = &[
     ("day52", include_str!("../docs/course/day52.md")),
     ("day53", include_str!("../docs/course/day53.md")),
     ("day54", include_str!("../docs/course/day54.md")),
+    ("day55", include_str!("../docs/course/day55.md")),
     ("day60", include_str!("../docs/course/day60.md")),
     ("day61", include_str!("../docs/course/day61.md")),
     ("day62", include_str!("../docs/course/day62.md")),
