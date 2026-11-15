@@ -631,6 +631,158 @@ impl Foreign for Table {
                     _ => Ok(Value::str(text)),
                 }
             }
+            // `t.keep([row["age"] > 30 each row in t])`: the rows where the
+            // list says true.
+            "keep" => {
+                let mask = ops::collect(a(0, "mask").unwrap_or(&Value::None))?;
+                if mask.len() != self.rows.len() {
+                    return Err(err(
+                        "ValueError",
+                        format!(
+                            "the table has {} rows but the list has {}",
+                            self.rows.len(),
+                            mask.len()
+                        ),
+                    ));
+                }
+                Ok(wrap(Table {
+                    cols: self.cols.clone(),
+                    rows: self
+                        .rows
+                        .iter()
+                        .zip(mask)
+                        .filter(|(_, keep)| keep.truthy())
+                        .map(|(r, _)| r.clone())
+                        .collect(),
+                }))
+            }
+            // Rows with no empty cell (in the given columns, or any).
+            "drop_missing" => {
+                let cols: Vec<usize> = match a(0, "columns") {
+                    None | Some(Value::None) => (0..self.cols.len()).collect(),
+                    Some(Value::Str(s)) => vec![self.col(s)?],
+                    Some(v) => ops::collect(v)?
+                        .iter()
+                        .map(|c| match c {
+                            Value::Str(s) => self.col(s),
+                            _ => Err(type_error("columns are named by text")),
+                        })
+                        .collect::<VmResult<_>>()?,
+                };
+                Ok(wrap(Table {
+                    cols: self.cols.clone(),
+                    rows: self
+                        .rows
+                        .iter()
+                        .filter(|r| cols.iter().all(|&i| !matches!(r[i], Value::None)))
+                        .cloned()
+                        .collect(),
+                }))
+            }
+            "fill_missing" => {
+                let i = col_arg(0, "column")?;
+                let value = a(1, "value").cloned().unwrap_or(Value::None);
+                let mut t = self.clone();
+                for r in &mut t.rows {
+                    if matches!(r[i], Value::None) {
+                        r[i] = value.clone();
+                    }
+                }
+                Ok(wrap(t))
+            }
+            "rename" => {
+                let i = col_arg(0, "old")?;
+                let new = text_arg(pos, 1, "the new name")?.to_string();
+                let mut t = self.clone();
+                t.cols[i] = new;
+                Ok(wrap(t))
+            }
+            "drop" => {
+                let i = col_arg(0, "column")?;
+                let mut t = self.clone();
+                t.cols.remove(i);
+                for r in &mut t.rows {
+                    r.remove(i);
+                }
+                Ok(wrap(t))
+            }
+            // `orders.join(customers, "customer_id")`: each row with the
+            // other table's matching row beside it. `how = "left"` keeps rows
+            // with no match, with empty cells.
+            "join" => {
+                let other = match a(0, "other") {
+                    Some(Value::Foreign(f)) => f
+                        .as_any()
+                        .downcast_ref::<Table>()
+                        .ok_or_else(|| type_error("`join` needs another table"))?,
+                    _ => return Err(type_error("`join` needs another table")),
+                };
+                let on = text_arg(pos, 1, "the column to join on")?.to_string();
+                let how = match a(2, "how") {
+                    Some(Value::Str(s)) => s.to_string(),
+                    _ => "inner".to_string(),
+                };
+                if how != "inner" && how != "left" {
+                    return Err(err("ValueError", "`how` is \"inner\" or \"left\""));
+                }
+                let i = self.col(&on)?;
+                let j = other.col(&on)?;
+                let extra: Vec<usize> = (0..other.cols.len()).filter(|&k| k != j).collect();
+                let mut cols = self.cols.clone();
+                for &k in &extra {
+                    let name = &other.cols[k];
+                    cols.push(if self.cols.contains(name) {
+                        format!("{name}_2")
+                    } else {
+                        name.clone()
+                    });
+                }
+                let mut rows = Vec::new();
+                for r in &self.rows {
+                    let mut matched = false;
+                    for o in &other.rows {
+                        if ops::equals(&r[i], &o[j]) && !matches!(r[i], Value::None) {
+                            matched = true;
+                            let mut row = r.clone();
+                            row.extend(extra.iter().map(|&k| o[k].clone()));
+                            rows.push(row);
+                        }
+                    }
+                    if !matched && how == "left" {
+                        let mut row = r.clone();
+                        row.extend(extra.iter().map(|_| Value::None));
+                        rows.push(row);
+                    }
+                }
+                Ok(wrap(Table { cols, rows }))
+            }
+            // A summary of each number column: count, mean, min and max.
+            "describe" => {
+                let mut rows = Vec::new();
+                for (i, c) in self.cols.iter().enumerate() {
+                    let nums = self.numbers(i);
+                    if nums.is_empty() {
+                        continue;
+                    }
+                    let mean = nums.iter().sum::<f64>() / nums.len() as f64;
+                    let min = nums.iter().cloned().fold(f64::INFINITY, f64::min);
+                    let max = nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                    rows.push(vec![
+                        Value::str(c.clone()),
+                        Value::Int(nums.len() as i64),
+                        Value::Float((mean * 100.0).round() / 100.0),
+                        Value::Float(min),
+                        Value::Float(max),
+                    ]);
+                }
+                Ok(wrap(Table {
+                    cols: ["column", "count", "mean", "min", "max"]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                    rows,
+                }))
+            }
             _ => Err(err("FieldError", format!("a Table has no method `{name}`"))),
         }
     }

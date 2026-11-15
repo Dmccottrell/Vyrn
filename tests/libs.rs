@@ -761,3 +761,22 @@ fn line_charts_take_text_on_the_x_axis() {
          end\n");
     assert_eq!(out, "true true\n");
 }
+
+#[test]
+fn tables_clean_filter_and_join() {
+    let out = run(
+        "use vyrn.table\n\
+         main:\n\
+         \x20   let p = table.from_csv(\"id,name,age,city\\n1,Ada,36,London\\n2,Alan,,Leeds\\n4,Mo,29,Leeds\\n\")\n\
+         \x20   print(p.drop_missing().column(\"name\"), p.fill_missing(\"age\", 0).column(\"age\"))\n\
+         \x20   print(p.keep([r[\"city\"] == \"Leeds\" each r in p]).column(\"name\"))\n\
+         \x20   let o = table.from_csv(\"order,id,total\\n100,1,9.5\\n102,9,3\\n\")\n\
+         \x20   print(o.join(p, \"id\").column(\"name\"), o.join(p, \"id\", how = \"left\").column(\"name\"))\n\
+         \x20   print(o.rename(\"total\", \"amount\").drop(\"order\").columns, p.describe().column(\"column\"))\n\
+         end\n",
+    );
+    assert_eq!(
+        out,
+        "[\"Ada\", \"Mo\"] [36, 0, 29]\n[\"Alan\", \"Mo\"]\n[\"Ada\"] [\"Ada\", none]\n[\"id\", \"amount\"] [\"id\", \"age\"]\n"
+    );
+}

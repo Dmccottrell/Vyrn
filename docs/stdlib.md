@@ -531,6 +531,11 @@ page.
 | `t.sort(column, descending)`, `t.select(columns)`, `t.add_column(name, values)` | New tables |
 | `t.sum`, `t.mean`, `t.median`, `t.min`, `t.max`, `t.count`, `t.unique` | Of one column |
 | `t.group_by(column, value, how)` | One row per group: `how` is sum, mean, median, min, max or count |
+| `t.keep(mask)` | The rows where a list of true/false says true: `t.keep([r["age"] > 30 each r in t])` |
+| `t.drop_missing(columns)`, `t.fill_missing(column, value)` | Without rows that have empty cells (in those columns, or any); with empty cells filled |
+| `t.rename(old, new)`, `t.drop(column)` | New tables with a column renamed or removed |
+| `t.join(other, on, how = "inner")` | Each row with the other table's matching rows beside it; `how = "left"` keeps rows with no match |
+| `t.describe()` | A table of count, mean, min and max for each number column |
 | `t.to_csv(path)`, `each row in t` | Writing, and rows as maps |
 
 ### `vyrn.chart`: charts
