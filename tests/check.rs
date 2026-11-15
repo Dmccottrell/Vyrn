@@ -458,3 +458,28 @@ fn function_types_check_lambdas_and_calls() {
         "this is int, not a function, so it cannot be called"
     );
 }
+
+#[test]
+fn traits_are_types_and_bounds_are_enforced() {
+    let prelude = "trait Shape:\n    create area(self) -> float\nend\n\
+                   struct Sq:\n    s: float\nend\nstruct Dog:\n    n: str\nend\n\
+                   impl Shape for Sq:\n    create area(self) -> float:\n        return self.s\n    end\nend\n\
+                   create total[T: Shape](xs: list[T]) -> float:\n    return 0.0\nend\n";
+    ok(&format!("{prelude}main:\n    let t: Shape = Sq(2.0)\n    print(t.area() + 1.0, total([Sq(1.0)]))\n    let all: list[Shape] = [Sq(1.0)]\nend\n"));
+    assert_eq!(
+        one(&format!(
+            "{prelude}main:\n    print(total([Dog(\"x\")]))\nend\n"
+        )),
+        "`T` in `total` must be a `Shape`, but here it is Dog"
+    );
+    assert_eq!(
+        one(&format!("{prelude}main:\n    let s: Shape = 5\nend\n")),
+        "`s` is Shape, but this is int"
+    );
+    assert_eq!(
+        one(&format!(
+            "{prelude}main:\n    let t: Shape = Sq(1.0)\n    t.bark()\nend\n"
+        )),
+        "`Shape` has no method `bark`"
+    );
+}

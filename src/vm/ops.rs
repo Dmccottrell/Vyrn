@@ -1106,7 +1106,9 @@ pub fn is_type(program: &Program, value: &Value, name: &str) -> bool {
     };
     while let Some(t) = ty {
         let def = &program.types[t as usize];
-        if program.symbols.name(def.name) == name {
+        if program.symbols.name(def.name) == name
+            || def.traits.iter().any(|t| program.symbols.name(*t) == name)
+        {
             return true;
         }
         ty = def.parent;

@@ -90,6 +90,8 @@ pub struct TypeDef {
     /// Fields and methods only the type's own methods may use, including
     /// those of its base classes.
     pub private: Vec<Symbol>,
+    /// The traits it implements, by name: `x is Shape` checks them.
+    pub traits: Vec<Symbol>,
 }
 
 #[derive(Debug)]

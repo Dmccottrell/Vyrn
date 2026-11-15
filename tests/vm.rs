@@ -1306,6 +1306,18 @@ fn types_define_their_own_operators_and_text() {
 }
 
 #[test]
+fn values_are_their_traits() {
+    assert_eq!(
+        run(
+            "trait Named:\n    create name(self) -> str\nend\nstruct A:\n    x: int\nend\n\
+             impl Named for A:\n    create name(self) -> str: return \"a\"\nend\n\
+             main:\n    print(A(1) is Named, 5 is Named, A(1) is A)\nend\n"
+        ),
+        "true false true\n"
+    );
+}
+
+#[test]
 fn list_patterns_take_the_rest_either_way() {
     assert_eq!(
         run("create f(xs):\n    when xs:\n        is [a, rest...]: return \"{a} {rest}\"\n        else: return \"empty\"\n    end\nend\n\

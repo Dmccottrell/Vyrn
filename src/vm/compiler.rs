@@ -454,6 +454,10 @@ impl Compiler {
             // `impl Shape for Square:` gets the trait's default methods it
             // does not write itself, and must write the rest.
             let trait_name = decl.trait_.as_ref().and_then(type_name);
+            if let Some(n) = &trait_name {
+                let symbol = self.symbols.intern(n);
+                self.types[ty as usize].traits.push(symbol);
+            }
             if let Some(t) = trait_name.as_ref().and_then(|n| traits.get(n).copied()) {
                 let written: HashSet<&str> = decl
                     .methods
@@ -1286,6 +1290,7 @@ impl Compiler {
             variants: Vec::new(),
             ctor: None,
             private: Vec::new(),
+            traits: Vec::new(),
         });
         self.type_index.insert(name.to_string(), ty);
         Some(ty)

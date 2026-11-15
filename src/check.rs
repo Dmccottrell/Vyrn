@@ -126,6 +126,8 @@ struct FnSig {
     params: Vec<ParamInfo>,
     /// `None` when the return type is not written.
     ret: Option<Ty>,
+    /// `T: Shape`: the traits a type parameter must implement.
+    bounds: Vec<(String, String)>,
 }
 
 #[derive(Debug, Default)]
@@ -150,6 +152,10 @@ struct Table {
     opaque: HashSet<String>,
     /// Each trait's default methods (those with a body), by trait name.
     trait_defaults: HashMap<String, Vec<(String, FnSig)>>,
+    /// Every method of each trait, required or not.
+    traits: HashMap<String, HashMap<String, FnSig>>,
+    /// The traits each type implements.
+    implements: HashMap<String, HashSet<String>>,
     /// C functions that pass or return pointers, which only `unsafe:` code
     /// may call.
     raw_externs: HashSet<String>,
@@ -177,7 +183,7 @@ impl Table {
                     self.opaque.insert(t.name.name.clone());
                 }
                 ItemKind::Trait(t) => {
-                    self.opaque.insert(t.name.name.clone());
+                    self.traits.insert(t.name.name.clone(), HashMap::new());
                     let defaults = t
                         .methods
                         .iter()
@@ -249,6 +255,12 @@ impl Table {
                             }
                             _ => None,
                         });
+                        if let (Some(t), Some(n)) = (&trait_name, &name) {
+                            self.implements
+                                .entry(n.clone())
+                                .or_default()
+                                .insert(t.clone());
+                        }
                         if let Some(defaults) = trait_name.and_then(|t| self.trait_defaults.get(&t))
                         {
                             for (name, sig) in defaults {
@@ -261,6 +273,14 @@ impl Table {
                             info.methods.extend(sigs);
                         }
                     }
+                }
+                ItemKind::Trait(t) => {
+                    let sigs = t
+                        .methods
+                        .iter()
+                        .map(|f| (f.name.name.clone(), self.signature(f)))
+                        .collect();
+                    self.traits.insert(t.name.name.clone(), sigs);
                 }
                 ItemKind::RouteGroup(g) => self.collect(&g.items),
                 ItemKind::Extern(e) => {
@@ -297,6 +317,19 @@ impl Table {
                 })
                 .collect(),
             ret: f.result.returns.as_ref().map(|t| self.ty_g(t, &generics)),
+            bounds: f
+                .generics
+                .iter()
+                .flat_map(|g| {
+                    g.bounds.iter().filter_map(move |b| match &b.kind {
+                        TypeExprKind::Named { path, .. } => path
+                            .segments
+                            .last()
+                            .map(|s| (g.name.name.clone(), s.name.clone())),
+                        _ => None,
+                    })
+                })
+                .collect(),
         }
     }
 
@@ -339,7 +372,10 @@ impl Table {
                     "str" => Ty::Str,
                     "none" => Ty::None,
                     "tensor" | "Tensor" | "vec2" | "vec3" | "vec4" | "mat3" | "mat4" => Ty::Tensor,
-                    _ if self.types.contains_key(name) || self.enums.contains(name) => {
+                    _ if self.types.contains_key(name)
+                        || self.enums.contains(name)
+                        || self.traits.contains_key(name) =>
+                    {
                         Ty::Named(name.to_string())
                     }
                     _ => Ty::Any,
@@ -402,6 +438,9 @@ impl Table {
     }
 
     fn method(&self, ty: &str, name: &str) -> Option<&FnSig> {
+        if let Some(methods) = self.traits.get(ty) {
+            return methods.get(name);
+        }
         let mut current = Some(ty.to_string());
         let mut hops = 0;
         while let Some(t) = current {
@@ -421,6 +460,9 @@ impl Table {
     /// Whether every ancestor of `ty` is declared here, so a missing field
     /// is certain.
     fn fully_known(&self, ty: &str) -> bool {
+        if self.traits.contains_key(ty) {
+            return true;
+        }
         let mut current = Some(ty.to_string());
         let mut hops = 0;
         while let Some(t) = current {
@@ -489,7 +531,7 @@ impl Table {
         let mut current = Some(sub.to_string());
         let mut hops = 0;
         while let Some(t) = current {
-            if t == sup {
+            if t == sup || self.implements.get(&t).is_some_and(|ts| ts.contains(sup)) {
                 return true;
             }
             current = self.types.get(&t).and_then(|i| i.parent.clone());
@@ -2069,6 +2111,7 @@ impl Checker<'_> {
                                 .collect(),
                             ret: Some(result.clone()),
                             elementwise: false,
+                            bounds: Vec::new(),
                         });
                     }
                 } else {
@@ -2192,6 +2235,7 @@ impl Checker<'_> {
                             })
                             .collect(),
                         ret: Some((*ret).clone()),
+                        bounds: Vec::new(),
                     });
                     result = *ret;
                 }
@@ -2312,6 +2356,29 @@ impl Checker<'_> {
                     *at,
                     "a `mut` argument must be the only way the call can reach that value",
                 );
+            }
+        }
+        // `T: Shape`: what `T` stands for must implement `Shape`.
+        if let Some(sig) = &sig {
+            for (var, trait_name) in &sig.bounds {
+                let Some((ty, at)) = bindings.get(var) else {
+                    continue;
+                };
+                let fits = match ty {
+                    Ty::Any | Ty::Var(_) => true,
+                    Ty::Named(n) => self.table.is_subtype(n, trait_name),
+                    _ => false,
+                };
+                if !fits {
+                    self.error_hint(
+                        format!(
+                            "`{var}` in `{name}` must be a `{trait_name}`, but here it is {}",
+                            ty.name()
+                        ),
+                        *at,
+                        format!("only types with `impl {trait_name} for ...` fit"),
+                    );
+                }
             }
         }
         if on_tensors {
