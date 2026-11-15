@@ -36,6 +36,7 @@ pub fn check(module: &Module) -> Vec<Diagnostic> {
         borrowed: Vec::new(),
         unsafe_depth: 0,
         diagnostics: Vec::new(),
+        narrowed_paths: HashSet::new(),
     };
     checker.items(&module.items);
     let mut seen = HashSet::new();
@@ -641,9 +642,19 @@ struct Checker<'t> {
     /// How many `unsafe:` blocks enclose the code being checked.
     unsafe_depth: usize,
     diagnostics: Vec<Diagnostic>,
+    /// Fields known not to be `none` here, by path: `node.left` after
+    /// `if node.left != none:`.
+    narrowed_paths: HashSet<String>,
 }
 
 type MoveState = Vec<Vec<Option<Moved>>>;
+
+/// What is known not to be `none` at a point: variables, then field paths.
+#[derive(Clone)]
+struct NarrowState {
+    vars: Vec<Vec<Option<Ty>>>,
+    paths: HashSet<String>,
+}
 
 impl Checker<'_> {
     fn error(&mut self, message: impl Into<String>, span: Span) {
@@ -1015,8 +1026,7 @@ impl Checker<'_> {
                     self.pop();
                     self.set_move_state(&after_condition);
                     // Later branches run only when this condition was false.
-                    let len = outside.len().min(self.scopes.len());
-                    self.set_narrow_state(&outside[..len]);
+                    self.set_narrow_state(&outside);
                     self.narrow(&when_false);
                 }
                 match &s.else_body {
@@ -1380,6 +1390,7 @@ impl Checker<'_> {
                     }
                     Some(var) => {
                         self.check_changeable(n, target.span, "assign to");
+                        self.forget_paths(&n.name);
                         if op == AssignOp::Assign {
                             self.expect(&var.ty, &actual, value.span, || format!("`{}`", n.name));
                             // Assigning gives a moved variable a value again,
@@ -1439,6 +1450,9 @@ impl Checker<'_> {
 
     /// Checks a write through a field or index of `place`.
     fn mutate_place(&mut self, place: &Expr) {
+        if let Some(path) = place_text(place) {
+            self.forget_paths(&path);
+        }
         let Some(root) = Self::root_of(place) else {
             self.expr(place);
             return;
@@ -1491,9 +1505,17 @@ impl Checker<'_> {
     /// The type of a simple place expression, without reporting anything.
     fn peek_ty(&self, e: &Expr) -> Ty {
         match &e.kind {
-            ExprKind::Name(n) => self.lookup(&n.name).map_or(Ty::Any, |v| v.ty.clone()),
+            ExprKind::Name(n) => self.lookup(&n.name).map_or(Ty::Any, |v| v.current()),
             ExprKind::Field { base, name, .. } => match self.peek_ty(base) {
-                Ty::Named(t) => self.table.field(&t, &name.name).unwrap_or(Ty::Any),
+                Ty::Named(t) => match self.table.field(&t, &name.name) {
+                    Some(Ty::Optional(inner))
+                        if place_text(e).is_some_and(|p| self.narrowed_paths.contains(&p)) =>
+                    {
+                        *inner
+                    }
+                    Some(t) => t,
+                    None => Ty::Any,
+                },
                 _ => Ty::Any,
             },
             ExprKind::Index { base, .. } => match self.peek_ty(base) {
@@ -1618,16 +1640,24 @@ impl Checker<'_> {
         };
         match &e.kind {
             ExprKind::Compare { operands, ops } if ops.len() == 1 => {
-                let name = match (&operands[0].kind, &operands[1].kind) {
-                    (ExprKind::Name(n), ExprKind::None) | (ExprKind::None, ExprKind::Name(n)) => n,
+                let place = match (&operands[0].kind, &operands[1].kind) {
+                    (_, ExprKind::None) => &operands[0],
+                    (ExprKind::None, _) => &operands[1],
                     _ => return (Vec::new(), Vec::new()),
                 };
-                if !optional(name) {
-                    return (Vec::new(), Vec::new());
-                }
+                let key = match &place.kind {
+                    ExprKind::Name(n) if optional(n) => n.name.clone(),
+                    ExprKind::Field { .. } if matches!(self.peek_ty(place), Ty::Optional(_)) => {
+                        match place_text(place) {
+                            Some(t) => t,
+                            None => return (Vec::new(), Vec::new()),
+                        }
+                    }
+                    _ => return (Vec::new(), Vec::new()),
+                };
                 match ops[0] {
-                    CompareOp::NotEq => (vec![name.name.clone()], Vec::new()),
-                    CompareOp::Eq => (Vec::new(), vec![name.name.clone()]),
+                    CompareOp::NotEq => (vec![key], Vec::new()),
+                    CompareOp::Eq => (Vec::new(), vec![key]),
                     _ => (Vec::new(), Vec::new()),
                 }
             }
@@ -1664,6 +1694,10 @@ impl Checker<'_> {
     /// Marks variables as not `none` from here on.
     fn narrow(&mut self, names: &[String]) {
         for name in names {
+            if name.contains('.') {
+                self.narrowed_paths.insert(name.clone());
+                continue;
+            }
             if let Some(v) = self.lookup_mut(name) {
                 if let Ty::Optional(inner) = v.current() {
                     v.narrowed = Some(*inner);
@@ -1672,38 +1706,56 @@ impl Checker<'_> {
         }
     }
 
-    fn narrow_state(&self) -> Vec<Vec<Option<Ty>>> {
-        self.scopes
-            .iter()
-            .map(|s| s.iter().map(|v| v.narrowed.clone()).collect())
-            .collect()
+    fn narrow_state(&self) -> NarrowState {
+        NarrowState {
+            vars: self
+                .scopes
+                .iter()
+                .map(|s| s.iter().map(|v| v.narrowed.clone()).collect())
+                .collect(),
+            paths: self.narrowed_paths.clone(),
+        }
     }
 
-    fn set_narrow_state(&mut self, state: &[Vec<Option<Ty>>]) {
-        for (scope, saved) in self.scopes.iter_mut().zip(state) {
+    fn set_narrow_state(&mut self, state: &NarrowState) {
+        for (scope, saved) in self.scopes.iter_mut().zip(&state.vars) {
             for (var, n) in scope.iter_mut().zip(saved) {
                 var.narrowed = n.clone();
             }
         }
+        self.narrowed_paths = state.paths.clone();
+    }
+
+    /// Forgets what was known about `path` and the fields below it, after
+    /// it is assigned.
+    fn forget_paths(&mut self, path: &str) {
+        let below = format!("{path}.");
+        self.narrowed_paths
+            .retain(|p| p != path && !p.starts_with(&below));
     }
 
     /// After paths join, a variable stays narrowed only if it is on every
     /// path that reaches the join.
-    fn join_narrow(states: &[Vec<Vec<Option<Ty>>>]) -> Vec<Vec<Option<Ty>>> {
+    fn join_narrow(states: &[NarrowState]) -> NarrowState {
         let Some(first) = states.first() else {
-            return Vec::new();
+            return NarrowState {
+                vars: Vec::new(),
+                paths: HashSet::new(),
+            };
         };
         let mut out = first.clone();
-        for (i, scope) in out.iter_mut().enumerate() {
+        for (i, scope) in out.vars.iter_mut().enumerate() {
             for (j, slot) in scope.iter_mut().enumerate() {
                 let same = states
                     .iter()
-                    .all(|s| s.get(i).and_then(|sc| sc.get(j)) == Some(&*slot));
+                    .all(|s| s.vars.get(i).and_then(|sc| sc.get(j)) == Some(&*slot));
                 if !same {
                     *slot = None;
                 }
             }
         }
+        out.paths
+            .retain(|p| states.iter().all(|s| s.paths.contains(p)));
         out
     }
 
@@ -1952,7 +2004,14 @@ impl Checker<'_> {
                         self.maybe_none(base, &format!("`.{}`", name.name));
                         Ty::Any
                     }
-                    t => self.field(&t, name),
+                    t => match self.field(&t, name) {
+                        Ty::Optional(inner)
+                            if place_text(e).is_some_and(|p| self.narrowed_paths.contains(&p)) =>
+                        {
+                            *inner
+                        }
+                        other => other,
+                    },
                 }
             }
             ExprKind::Call { callee, args } => self.call(callee, args),

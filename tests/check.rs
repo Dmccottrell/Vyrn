@@ -519,3 +519,13 @@ fn strict_code_cannot_change_read_only_parameters_through_methods() {
     );
     ok("strict create add(mut xs: list[int]):\n    xs.append(1)\nend\ncreate loose(xs: list[int]):\n    xs.append(1)\nend\nmain:\n    var a = [1]\n    add(mut a)\n    loose(a)\nend\n");
 }
+
+#[test]
+fn checking_a_field_for_none_narrows_it() {
+    let n = "object N:\n    v: int\n    next: N? = none\nend\ncreate take(n: N) -> int:\n    return n.v\nend\n";
+    ok(&format!("{n}create f(head: N):\n    if head.next != none:\n        print(take(head.next), head.next.v)\n    end\n    if head.next == none: return\n    print(take(head.next))\nend\nmain:\n    f(N(1))\nend\n"));
+    assert_eq!(
+        one(&format!("{n}create f(head: N):\n    if head.next == none: return\n    head.next = none\n    print(take(head.next))\nend\nmain:\n    f(N(1))\nend\n")),
+        "argument `n` of `take` is N, but this may be none"
+    );
+}
