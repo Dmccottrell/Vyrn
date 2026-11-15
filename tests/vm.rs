@@ -1402,6 +1402,14 @@ fn async_each_over_a_full_channel_wakes_the_sender() {
 }
 
 #[test]
+fn methods_on_slices_of_text_and_tuples_work() {
+    assert_eq!(
+        run("main:\n    let a = \"--dry=1\"\n    let t = (1, 2, 3)\n    print(a[2:].split(\"=\"), a[2:5].upper(), len(t[1:]))\nend\n"),
+        "[\"dry\", \"1\"] DRY 2\n"
+    );
+}
+
+#[test]
 fn values_are_their_traits() {
     assert_eq!(
         run(

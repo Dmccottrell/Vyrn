@@ -36,8 +36,9 @@ test suite, so what you read is what Vyrn really prints.
 
 ## The syllabus
 
-Days marked ✅ are written as lessons with exercises; the rest follow the
-plan below.
+All 84 days are written as lessons with exercises (✅). Days 80 to 84 are
+project briefs: a goal, a checklist and a warm-up exercise, for projects
+of your own.
 
 ### Unit 1: The basics (days 1–10)
 
@@ -167,11 +168,11 @@ Each day is a project brief: what to build, a checklist, and hints.
 
 | Day | Project |
 |---|---|
-| 80 | A command-line tool (`os.args`, files, exit codes) |
-| 81 | A full-stack web app with a database and logins |
-| 82 | A data report generated every morning |
-| 83 | A game of your own design |
-| 84 | Your own project, built, tested, packaged and deployed |
+| 80 ✅ | A command-line tool (`os.args`, files, exit codes) |
+| 81 ✅ | A full-stack web app with a database and logins |
+| 82 ✅ | A data report generated every morning |
+| 83 ✅ | A game of your own design |
+| 84 ✅ | Your own project, built, tested, packaged and deployed |
 
 ## What the course covers, compared with other languages
 

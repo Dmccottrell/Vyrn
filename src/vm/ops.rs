@@ -836,9 +836,19 @@ pub fn set_index(obj: &mut Value, index: &Value, value: Value) -> VmResult<()> {
         // A method called on `t[i]` stores the item back afterwards; text and
         // tuples can't change, so storing what is already there is fine.
         Value::Tuple(items) => {
-            let unchanged = int_index(index)
-                .and_then(|i| normalize_index(i, items.len()))
-                .is_some_and(|at| equals(&items[at], &value));
+            let unchanged = match int_index(index).and_then(|i| normalize_index(i, items.len())) {
+                Some(at) => equals(&items[at], &value),
+                None => match (selection(index, items.len()), &value) {
+                    (Some(Ok(picks)), Value::Tuple(v)) => {
+                        picks.len() == v.len()
+                            && picks
+                                .iter()
+                                .zip(v.iter())
+                                .all(|(&i, x)| equals(&items[i], x))
+                    }
+                    _ => false,
+                },
+            };
             if unchanged {
                 Ok(())
             } else {
@@ -851,6 +861,14 @@ pub fn set_index(obj: &mut Value, index: &Value, value: Value) -> VmResult<()> {
                 (Some(at), Value::Str(v)) => {
                     text.chars().nth(at).map(String::from).as_deref() == Some(v.as_str())
                 }
+                // `s[2:].split(...)`: the slice is stored back unchanged.
+                (None, Value::Str(v)) => match selection(index, n) {
+                    Some(Ok(picks)) => {
+                        let chars: Vec<char> = text.chars().collect();
+                        picks.into_iter().map(|i| chars[i]).collect::<String>() == v.as_str()
+                    }
+                    _ => false,
+                },
                 _ => false,
             };
             if unchanged {
