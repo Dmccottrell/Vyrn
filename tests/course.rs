@@ -1,7 +1,8 @@
 //! The course in docs/course, checked the way a learner meets it:
 //!
 //! - every `vyrn` example prints exactly the `text` block after it (or
-//!   ends in the error that block shows);
+//!   ends in the error that block shows, or fails to start with the
+//!   checker's error that it shows);
 //! - every `vyrn check` block (windows, the network) compiles;
 //! - every exercise's starter compiles, and its solution, given the
 //!   exercise's input, prints what `vyrn learn check` expects;
@@ -24,6 +25,11 @@ fn run_example(name: &str, block: &Block, next: Option<&Block>, failures: &mut V
             "{name}:{line}: printed\n{out}\nbut the page shows\n{}",
             next.text
         )),
+        // An example may show a mistake the checker finds: the page then
+        // shows the first error, as `vyrn run` prints it.
+        Err(RunError::Compile(e))
+            if e.first()
+                .is_some_and(|d| next.text == format!("error: {}\n", d.message)) => {}
         Err(RunError::Compile(e)) => {
             let report: String = e.iter().map(|d| d.render(name, &block.text)).collect();
             failures.push(format!("{name}:{line}: does not compile:\n{report}"))
