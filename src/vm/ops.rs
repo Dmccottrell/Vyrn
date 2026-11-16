@@ -57,7 +57,7 @@ pub struct Ctx {
     /// as JSON, gives back the result as JSON or an error message.
     pub host: Option<HostFn>,
     /// Timers started by `sleep`, each finishing its task when it expires.
-    pub timers: Vec<(std::time::Instant, Rc<super::task::TaskHandle>)>,
+    pub timers: Vec<(super::sys::Instant, Rc<super::task::TaskHandle>)>,
     /// Tasks made ready by builtins, such as a channel receiving a value.
     pub wakeups: Vec<super::task::TaskId>,
     /// Work done outside the VM (`task.Pool` threads, WebSocket messages):

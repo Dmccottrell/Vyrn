@@ -13,8 +13,11 @@
 //! | `vyrn_alloc(len) -> ptr` | memory for the host to write input into |
 //! | `vyrn_free(ptr, len)` | releases memory from `vyrn_alloc` or a reply |
 //! | `vyrn_run(ptr, len) -> reply` | compiles and runs a program's `main:` (the playground) |
+//! | `vyrn_run_input(ptr, len) -> reply` | the same, for `source \0 input`: `input()` reads the input's lines |
 //! | `vyrn_load(ptr, len) -> reply` | loads a program bundle, runs `main:` hosted, keeps it for requests |
 //! | `vyrn_handle(ptr, len) -> reply` | answers one HTTP request with the loaded program's routes |
+//! | `vyrn_set_time(seconds)` | the time now (seconds since 1970), for `time.now()`; `sleep` moves a virtual clock on from there |
+//! | `vyrn_seed(ptr, len)` | fresh random bytes from the host, for `vyrn.crypto` |
 //!
 //! A reply is a pointer to `[u32 length][bytes]`; the host reads it and
 //! frees `length + 4` bytes. `vyrn_run` and `vyrn_load` reply with one
@@ -79,6 +82,23 @@ fn status_reply(ok: bool, text: String) -> *mut u8 {
     reply(bytes)
 }
 
+/// The host says what time it is: the module has no clock of its own.
+#[no_mangle]
+pub extern "C" fn vyrn_set_time(seconds: f64) {
+    vyrn::vm::sys::set_unix_time(seconds);
+}
+
+/// The host gives random bytes (`crypto.getRandomValues`) for secure
+/// random numbers.
+///
+/// # Safety
+///
+/// `ptr..ptr+len` must have been written by the host.
+#[no_mangle]
+pub unsafe extern "C" fn vyrn_seed(ptr: *const u8, len: usize) {
+    vyrn::vm::sys::seed_random(input(ptr, len));
+}
+
 /// Compiles and runs a program; replies with what it printed, or its
 /// errors rendered against the source.
 ///
@@ -88,6 +108,34 @@ fn status_reply(ok: bool, text: String) -> *mut u8 {
 #[no_mangle]
 pub unsafe extern "C" fn vyrn_run(ptr: *const u8, len: usize) -> *mut u8 {
     let src = String::from_utf8_lossy(input(ptr, len)).into_owned();
+    run_with(&src, None)
+}
+
+/// Like `vyrn_run`, for `source \0 input`: what `input()` reads, a line at a
+/// time (the course's exercises that ask questions).
+///
+/// # Safety
+///
+/// `ptr..ptr+len` must be UTF-8 written by the host.
+#[no_mangle]
+pub unsafe extern "C" fn vyrn_run_input(ptr: *const u8, len: usize) -> *mut u8 {
+    let text = String::from_utf8_lossy(input(ptr, len)).into_owned();
+    let (src, stdin) = text.split_once('\0').unwrap_or((text.as_str(), ""));
+    run_with(src, Some(stdin))
+}
+
+fn run_with(src: &str, stdin: Option<&str>) -> *mut u8 {
+    // Each run starts with no files, databases or environment variables.
+    vyrn::vm::sys::reset();
+    // SAFETY: SQLite is only used on this thread, and no database is open
+    // between runs.
+    unsafe {
+        use sqlite_wasm_rs::vfs::VfsFilesManager;
+        if let Ok(files) = sqlite_wasm_rs::vfs::memvfs::MemVfsUtil::get() {
+            let _ = files.clear();
+        }
+    }
+    let src = src.to_string();
     let program = match compile_source(&src) {
         Ok(p) => p,
         Err(errors) => {
@@ -100,6 +148,9 @@ pub unsafe extern "C" fn vyrn_run(ptr: *const u8, len: usize) -> *mut u8 {
     };
     let out = Captured::default();
     let mut vm = Vm::with_output(program, Box::new(out.clone()));
+    if let Some(stdin) = stdin {
+        vm.set_input(stdin);
+    }
     let result = vm.run_main(&[]);
     let mut text = out.text();
     match result {
@@ -191,4 +242,94 @@ pub unsafe extern "C" fn vyrn_handle(ptr: *const u8, len: usize) -> *mut u8 {
     bytes.push(0);
     bytes.extend_from_slice(response.body.as_bytes());
     reply(bytes)
+}
+
+// ==== what SQLite needs from its host =========================================
+//
+// `vyrn.db` compiles SQLite in. Built without wasm-bindgen it asks its host
+// for time, random bytes and sleep through these functions; they answer from
+// the same virtual clock and seeded random source as the rest of Vyrn, so
+// the module still needs no imports.
+
+#[no_mangle]
+pub extern "C" fn rust_sqlite_wasm_host_sleep(seconds: u64, nanoseconds: u32) {
+    vyrn::vm::sys::sleep(std::time::Duration::new(seconds, nanoseconds));
+}
+
+/// # Safety
+///
+/// `buf..buf+len` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn rust_sqlite_wasm_host_random(buf: *mut u8, len: usize) -> usize {
+    if len == 0 || buf.is_null() {
+        return 0;
+    }
+    let out = std::slice::from_raw_parts_mut(buf, len);
+    match vyrn::vm::sys::random_bytes(out) {
+        Ok(()) => len,
+        Err(_) => 0,
+    }
+}
+
+/// # Safety
+///
+/// `out` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn rust_sqlite_wasm_host_epoch_timestamp_in_ms(out: *mut i64) -> i32 {
+    out.write((vyrn::vm::sys::unix_now() * 1000.0) as i64);
+    0
+}
+
+/// # Safety
+///
+/// `buf..buf+len` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn rust_sqlite_wasm_host_fill_entropy(buf: *mut u8, len: usize) -> i32 {
+    if len == 0 {
+        return 0;
+    }
+    match vyrn::vm::sys::random_bytes(std::slice::from_raw_parts_mut(buf, len)) {
+        Ok(()) => 0,
+        Err(_) => 2,
+    }
+}
+
+/// SQLite's `localtime`: the browser's time is given as UTC.
+///
+/// # Safety
+///
+/// `out` must be writable for ten `i32`s.
+#[no_mangle]
+pub unsafe extern "C" fn rust_sqlite_wasm_host_localtime(
+    unix_seconds: i64,
+    out: *mut [i32; 10],
+) -> i32 {
+    let days = unix_seconds.div_euclid(86_400);
+    let secs = unix_seconds.rem_euclid(86_400);
+    // Days since 1970-01-01 to (year, month, day): Howard Hinnant's algorithm.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    const BEFORE: [i64; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let yearday = BEFORE[(month - 1) as usize] + day - 1 + i64::from(leap && month > 2);
+    out.write([
+        year as i32,
+        month as i32,
+        day as i32,
+        (secs / 3600) as i32,
+        (secs / 60 % 60) as i32,
+        (secs % 60) as i32,
+        (days + 4).rem_euclid(7) as i32,
+        yearday as i32,
+        0,
+        0,
+    ]);
+    0
 }

@@ -1,0 +1,57 @@
+# Publishes the Learn Vyrn website (site/) to GitHub Pages: the course from
+# docs/course, with every exercise written and checked in the browser by
+# Vyrn compiled to WebAssembly. In the repository's settings, Pages must
+# use "GitHub Actions" as its source.
+name: Website
+
+on:
+  push:
+    branches: [main]
+    paths: ["docs/course/**", "site/**", "src/**", "runtime/wasm/**", "Cargo.toml", ".github/workflows/site.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            runtime/wasm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build Vyrn for the browser
+        working-directory: runtime/wasm
+        run: cargo build --release --target wasm32-unknown-unknown
+      - name: Export the course
+        run: cargo run --release --no-default-features -- learn export build/course
+      - name: Build the website
+        run: node site/build.mjs build/course/course.json runtime/wasm/target/wasm32-unknown-unknown/release/vyrn_wasm.wasm build/site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

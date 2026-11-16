@@ -185,6 +185,15 @@ terminal game loop) run as they are. `examples/game.vyrn` and
 `examples/inference.vyrn` show larger programs and call functions from
 packages that do not exist yet (`load_level`, `load_model`).
 
+## Learn Vyrn website
+
+`site/` is the course as a website, like an online coding school: 84 days
+of lessons, each with an editor and console beside it, exercises checked
+in the browser, hints, solutions and saved progress. Vyrn runs in the page
+as WebAssembly, so nothing is installed and no code leaves the browser.
+`.github/workflows/site.yml` publishes it to GitHub Pages; `site/README.md`
+says how to build it yourself.
+
 ## Playground
 
 `playground/index.html` runs Vyrn in the browser: the whole toolchain as one

@@ -731,7 +731,7 @@ impl Foreign for Chart {
                 };
                 let lower = path.to_lowercase();
                 if lower.ends_with(".svg") {
-                    std::fs::write(path.as_str(), to_svg(self))
+                    super::sys::write(path.as_str(), to_svg(self).as_bytes())
                         .map_err(|e| err("IoError", format!("cannot write {path}: {e}")))?;
                     return Ok(Value::None);
                 }

@@ -385,7 +385,8 @@ vyrn learn 3.2          read lesson 3.2 and get its exercise file
 vyrn learn check 3.2    run your answer and compare it with the goal
 vyrn learn hint 3.2     a nudge (ask again for the next one)
 vyrn learn solution 3.2 one way to solve it
-vyrn learn next         the first lesson you have not finished";
+vyrn learn next         the first lesson you have not finished
+vyrn learn export DIR   the whole course as DIR/course.json, for the website";
 
 /// Runs `vyrn learn ...`. `run_file` runs a Vyrn file with the given input
 /// and gives what it printed (stdout and stderr).
@@ -418,6 +419,23 @@ pub fn command(args: &[String], run_file: &dyn Fn(&Path, &str) -> (String, Strin
                 None => {
                     out.push_str("You have finished every lesson. Congratulations!\n");
                     0
+                }
+            }
+        }
+        // `vyrn learn export site/`: the course as `course.json`, for the
+        // website.
+        ["export", dir] => {
+            let path = Path::new(dir).join("course.json");
+            match std::fs::create_dir_all(dir)
+                .and_then(|_| std::fs::write(&path, export_json(&days)))
+            {
+                Ok(()) => {
+                    let _ = writeln!(out, "wrote {}", path.display());
+                    0
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "cannot write {}: {e}", path.display());
+                    1
                 }
             }
         }
@@ -653,6 +671,101 @@ fn solution(lesson: &Lesson, out: &mut String) -> i32 {
     0
 }
 
+// ==== the course as JSON, for the website ==================================
+
+const README: &str = include_str!("../docs/course/README.md");
+
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The units from the course README: `### Unit 3: Title (days 21–30)`.
+fn units() -> Vec<(String, usize, usize)> {
+    README
+        .lines()
+        .filter_map(|l| l.strip_prefix("### Unit "))
+        .filter_map(|l| {
+            let (head, days) = l.rsplit_once(" (days ")?;
+            let (a, b) = days.trim_end_matches(')').split_once('–')?;
+            Some((
+                format!("Unit {head}"),
+                a.trim().parse().ok()?,
+                b.trim().parse().ok()?,
+            ))
+        })
+        .collect()
+}
+
+/// Every day, lesson, example and exercise, as one JSON document.
+pub fn export_json(days: &[Day]) -> String {
+    let mut out = String::from("{\n\"units\": [");
+    for (i, (title, a, b)) in units().iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let _ = write!(
+            out,
+            "{{\"title\": {}, \"first\": {a}, \"last\": {b}}}",
+            json_str(title)
+        );
+    }
+    out.push_str("],\n\"days\": [\n");
+    for (i, d) in days.iter().enumerate() {
+        if i > 0 {
+            out.push_str(",\n");
+        }
+        let _ = write!(
+            out,
+            "{{\"number\": {}, \"title\": {}, \"intro\": {}, \"lessons\": [",
+            d.number,
+            json_str(&d.title),
+            json_str(&d.intro)
+        );
+        for (j, l) in d.lessons.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            let _ = write!(
+                out,
+                "\n  {{\"id\": {}, \"title\": {}, \"text\": {}",
+                json_str(&l.id),
+                json_str(&l.title),
+                json_str(&l.text)
+            );
+            if let Some(e) = &l.exercise {
+                let hints: Vec<String> = e.hints.iter().map(|h| json_str(h)).collect();
+                let _ = write!(
+                    out,
+                    ", \"exercise\": {{\"starter\": {}, \"input\": {}, \"expect\": {}, \"solution\": {}, \"hints\": [{}]}}",
+                    json_str(&e.starter),
+                    json_str(&e.input),
+                    json_str(&e.expect),
+                    json_str(&e.solution),
+                    hints.join(", ")
+                );
+            }
+            out.push('}');
+        }
+        out.push_str("]}");
+    }
+    out.push_str("\n]}\n");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -679,5 +792,16 @@ mod tests {
     fn output_comparison_ignores_trailing_space() {
         assert!(same_output("a \nb\n\n", "a\nb"));
         assert!(!same_output("a\nc\n", "a\nb\n"));
+    }
+
+    #[test]
+    fn exports_the_course_as_json() {
+        let json = export_json(&[parse_day(DAY)]);
+        assert!(json.contains(r#""title": "Unit 1: The basics", "first": 1, "last": 10"#));
+        assert!(json.contains(r#""id": "1.1", "title": "Printing""#));
+        assert!(json.contains(r#""expect": "2\n""#));
+        assert!(json.contains(r#""solution": "main:\n    print(2)\nend\n""#));
+        assert!(json.contains(r#""hints": ["use print"]"#));
+        assert_eq!(json_str("a\"b\\\n\t\u{1}"), r#""a\"b\\\n\t\u0001""#);
     }
 }

@@ -76,20 +76,9 @@ pub fn pbkdf2(password: &[u8], salt: &[u8], rounds: u32) -> [u8; 32] {
 /// Bytes from the operating system's secure random source.
 fn random_bytes(n: usize) -> VmResult<Vec<u8>> {
     let mut buf = vec![0u8; n];
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        getrandom::getrandom(&mut buf)
-            .map_err(|e| err("CryptoError", format!("no secure random numbers: {e}")))?;
-        Ok(buf)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = &mut buf;
-        Err(err(
-            "Unavailable",
-            "secure random numbers are not available here",
-        ))
-    }
+    super::sys::random_bytes(&mut buf)
+        .map_err(|e| err("CryptoError", format!("no secure random numbers: {e}")))?;
+    Ok(buf)
 }
 
 /// Compares without stopping at the first difference, so timing tells an

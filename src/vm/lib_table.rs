@@ -624,7 +624,7 @@ impl Foreign for Table {
                 let text = self.to_csv(ctx);
                 match a(0, "path") {
                     Some(Value::Str(path)) => {
-                        std::fs::write(path.as_str(), text)
+                        super::sys::write(path.as_str(), text.as_bytes())
                             .map_err(|e| err("IoError", format!("cannot write {path}: {e}")))?;
                         Ok(Value::None)
                     }
@@ -810,7 +810,7 @@ impl Foreign for Table {
 /// `table.read_csv(path)`
 pub fn read_csv(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let path = text_arg(args, 0, "the path")?;
-    let text = std::fs::read_to_string(path).map_err(|e| {
+    let text = super::sys::read_to_string(path).map_err(|e| {
         err(
             if e.kind() == std::io::ErrorKind::NotFound {
                 "NotFound"

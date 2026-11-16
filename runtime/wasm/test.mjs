@@ -24,8 +24,21 @@ r = vyrn.run("main:\n    let n = 1\n    n = 2\nend\n");
 assert.equal(r.ok, false);
 assert.match(r.output, /cannot assign to `n`: it is declared with `let`/);
 
-r = vyrn.run('main:\n    attempt:\n        print(now())\n    catch Unavailable:\n        print("no clock")\n    end\nend\n');
-assert.deepEqual(r, { ok: true, output: "no clock\n" });
+// Time comes from the host; `sleep` moves a virtual clock without waiting.
+r = vyrn.run("use vyrn.time\nmain:\n    let a = now()\n    sleep(30)\n    print(round(now() - a), time.now() > 1700000000)\nend\n");
+assert.deepEqual(r, { ok: true, output: "30 true\n" });
+
+// Files, databases and environment variables live in memory, fresh each run.
+const files = 'use vyrn.fs\nuse vyrn.db\nuse vyrn.os\nmain:\n    print(fs.exists("a.txt"), os.env("X"))\n    write_text("a.txt", "hi")\n    os.set_env("X", "1")\n    let d = db.open("a.db")\n    d.execute("create table t (n int)")\n    print(read_text("a.txt"), os.env("X"), d.query("select count(*) as c from t"))\nend\n';
+for (let i = 0; i < 2; i++) assert.deepEqual(vyrn.run(files), { ok: true, output: 'false none\nhi 1 [{"c": 0}]\n' });
+
+// Secure random numbers, from the seed the host gives.
+r = vyrn.run("use vyrn.crypto\nmain:\n    print(len(crypto.token(16)) >= 16)\nend\n");
+assert.deepEqual(r, { ok: true, output: "true\n" });
+
+// `input()` reads the lines given with the program.
+r = vyrn.run('main:\n    let name = input("Name: ")\n    print("Hi, {name}")\nend\n', "Ada\n");
+assert.deepEqual(r, { ok: true, output: "Name: Hi, Ada\n" });
 
 if (process.env.VYRN_EDGE_DIR) {
   const dir = process.env.VYRN_EDGE_DIR;

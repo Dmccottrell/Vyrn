@@ -910,9 +910,6 @@ fn yield_now(ctx: &mut Ctx, _: &[Value]) -> VmResult<Value> {
 
 /// A task that finishes after `seconds`.
 pub(crate) fn sleep_task(ctx: &mut Ctx, seconds: f64) -> VmResult<Value> {
-    if cfg!(target_arch = "wasm32") {
-        return Err(no_clock());
-    }
     if !(seconds >= 0.0 && seconds.is_finite()) {
         return Err(err(
             "ValueError",
@@ -921,7 +918,7 @@ pub(crate) fn sleep_task(ctx: &mut Ctx, seconds: f64) -> VmResult<Value> {
     }
     let id = ctx.new_task_id();
     let handle = Rc::new(super::task::TaskHandle::new(id, "sleep"));
-    let until = std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds);
+    let until = super::sys::Instant::now() + std::time::Duration::from_secs_f64(seconds);
     ctx.timers.push((until, handle.clone()));
     Ok(Value::Task(handle))
 }
@@ -929,9 +926,6 @@ pub(crate) fn sleep_task(ctx: &mut Ctx, seconds: f64) -> VmResult<Value> {
 /// `Clock(hz = 60, frames = none)`: a fixed-rate clock for game loops.
 /// `frames` stops it after that many ticks.
 fn clock(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
-    if cfg!(target_arch = "wasm32") {
-        return Err(no_clock());
-    }
     let hz = match opt(args, 0) {
         Some(v) => number(v, "`hz`")?,
         None => 60.0,
@@ -1075,14 +1069,6 @@ fn ffi_function(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     }
 }
 
-/// Hosts without a clock (WebAssembly with no imports) cannot time things.
-fn no_clock() -> Value {
-    err(
-        "Unavailable",
-        "this platform has no clock, so `sleep`, `now` and `Clock` are not available here",
-    )
-}
-
 /// `channel()`: a queue for passing values between tasks.
 /// `channel(capacity = n)` holds at most `n`; `send` then waits for room,
 /// which slows a fast producer down to its consumer's pace.
@@ -1107,11 +1093,8 @@ fn channel(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 
 /// Seconds on a monotonic clock, for measuring time.
 fn now(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
-    if cfg!(target_arch = "wasm32") {
-        return Err(no_clock());
-    }
     thread_local! {
-        static START: std::time::Instant = std::time::Instant::now();
+        static START: super::sys::Instant = super::sys::Instant::now();
     }
     Ok(Value::Float(START.with(|s| s.elapsed().as_secs_f64())))
 }
@@ -1327,7 +1310,7 @@ fn load_tokenizer(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 
 fn read_text(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let path = string_arg(&args[0], "the path")?;
-    std::fs::read_to_string(path)
+    super::sys::read_to_string(path)
         .map(Value::str)
         .map_err(|e| io_error(format!("cannot read {path}: {e}")))
 }
@@ -1335,7 +1318,8 @@ fn read_text(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 fn write_text(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let path = string_arg(&args[0], "the path")?;
     let text = ops::display(&ctx.program, &args[1]);
-    std::fs::write(path, text).map_err(|e| io_error(format!("cannot write {path}: {e}")))?;
+    super::sys::write(path, text.as_bytes())
+        .map_err(|e| io_error(format!("cannot write {path}: {e}")))?;
     Ok(Value::None)
 }
 

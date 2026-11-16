@@ -98,6 +98,10 @@ jobs:
       - name: Run it under Node
         working-directory: runtime/wasm
         run: node test.mjs
+      - name: Build the course website (runs every solution in the browser runtime)
+        run: |
+          cargo run --release --no-default-features -- learn export build/course
+          node site/build.mjs build/course/course.json runtime/wasm/target/wasm32-unknown-unknown/release/vyrn_wasm.wasm build/site
 
   embed:
     name: embedding library (${{ matrix.os }})

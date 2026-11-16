@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Learn Vyrn</title>
+<meta name="description" content="Learn to program in Vyrn: 84 days of lessons with exercises you write and check right in your browser.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/">Learn <span>Vyrn</span></a>
+  <nav class="crumbs" id="crumbs" aria-label="Where you are"></nav>
+  <div class="topbar-end">
+    <div class="overall" id="overall" title="Lessons finished"></div>
+    <button class="icon-btn" id="theme" type="button" aria-label="Switch between light and dark">◐</button>
+  </div>
+</header>
+<main id="view" tabindex="-1"></main>
+<script type="application/json" id="course-data"></script>
+<script type="application/octet-stream" id="vyrn-wasm"></script>
+<script src="app.js"></script>
+</body>
+</html>

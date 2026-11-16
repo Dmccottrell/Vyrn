@@ -302,7 +302,7 @@ pub fn render_file(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let Some(Value::Str(path)) = args.first() else {
         return Err(type_error("`template.render_file` takes a path first"));
     };
-    let src = std::fs::read_to_string(path.as_str()).map_err(|e| {
+    let src = super::sys::read_to_string(path.as_str()).map_err(|e| {
         err(
             if e.kind() == std::io::ErrorKind::NotFound {
                 "NotFound"

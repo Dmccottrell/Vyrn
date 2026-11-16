@@ -194,7 +194,7 @@ pub struct Vm {
 struct Profile {
     /// When each frame on the stack started, and the time spent in the
     /// functions it called so far, by depth.
-    starts: Vec<(std::time::Instant, std::time::Duration)>,
+    starts: Vec<(super::sys::Instant, std::time::Duration)>,
     /// Calls and own time (not counting the functions it called), by name.
     totals: HashMap<String, (u64, std::time::Duration)>,
 }
@@ -649,7 +649,7 @@ impl Vm {
                 }
                 if !self.ctx.jobs.is_empty() {
                     // Work on pool threads: check back shortly.
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    super::sys::sleep(std::time::Duration::from_millis(1));
                     continue;
                 }
                 let Some(when) = self.ctx.timers.iter().map(|(t, _)| *t).min() else {
@@ -657,9 +657,9 @@ impl Vm {
                     // can provide; they stay until then.
                     return Ok(());
                 };
-                let now = std::time::Instant::now();
+                let now = super::sys::Instant::now();
                 if when > now {
-                    std::thread::sleep(when - now);
+                    super::sys::sleep(when - now);
                 }
                 continue;
             }
@@ -1407,16 +1407,16 @@ impl Vm {
                 // Wait for a connection, or for the next timer if sooner.
                 let mut wait = std::time::Duration::from_millis(2);
                 if let Some(when) = next_timer {
-                    wait = wait.min(when.saturating_duration_since(std::time::Instant::now()));
+                    wait = wait.min(when.saturating_duration_since(super::sys::Instant::now()));
                 }
-                std::thread::sleep(wait);
+                super::sys::sleep(wait);
                 continue;
             }
             match next_timer {
                 Some(when) => {
-                    let now = std::time::Instant::now();
+                    let now = super::sys::Instant::now();
                     if when > now {
-                        std::thread::sleep(when - now);
+                        super::sys::sleep(when - now);
                     }
                 }
                 None => {
@@ -1712,7 +1712,7 @@ impl Vm {
         if self.ctx.timers.is_empty() {
             return;
         }
-        let now = std::time::Instant::now();
+        let now = super::sys::Instant::now();
         let mut i = 0;
         while i < self.ctx.timers.len() {
             if self.ctx.timers[i].0 <= now {
@@ -1990,7 +1990,7 @@ impl Vm {
         if let Some(p) = &mut self.profile {
             p.starts.truncate(self.frames.len());
             p.starts
-                .push((std::time::Instant::now(), std::time::Duration::ZERO));
+                .push((super::sys::Instant::now(), std::time::Duration::ZERO));
         }
         self.frames.push(Frame {
             closure,

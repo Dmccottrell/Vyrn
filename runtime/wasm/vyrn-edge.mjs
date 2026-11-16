@@ -4,7 +4,7 @@
 // `Response` types every one of these platforms provides.
 //
 //   const vyrn = await loadVyrn(wasmBytesOrModule);
-//   vyrn.run(source)                    -> { ok, output }        (the playground)
+//   vyrn.run(source, input?)            -> { ok, output }        (the playground; input feeds input())
 //   const handle = vyrn.serve(bundle)   -> (request) => Response (an edge API)
 
 const encoder = new TextEncoder();
@@ -31,10 +31,24 @@ export async function loadVyrn(wasm) {
     return { ok: bytes[0] === 0, output: decoder.decode(bytes.subarray(1)) };
   }
 
+  // The module has no clock or random source of its own: give it ours.
+  function now() {
+    if (x.vyrn_set_time) x.vyrn_set_time(Date.now() / 1000);
+    if (x.vyrn_seed && globalThis.crypto) {
+      const seed = crypto.getRandomValues(new Uint8Array(32));
+      const ptr = x.vyrn_alloc(seed.length);
+      new Uint8Array(x.memory.buffer, ptr, seed.length).set(seed);
+      x.vyrn_seed(ptr, seed.length);
+      x.vyrn_free(ptr, seed.length);
+    }
+  }
+
   return {
     /** Compiles and runs a program's `main:`; returns what it printed. */
-    run(source) {
-      return status(call("vyrn_run", encoder.encode(source)));
+    run(source, input) {
+      now();
+      if (input === undefined) return status(call("vyrn_run", encoder.encode(source)));
+      return status(call("vyrn_run_input", encoder.encode(source + "\0" + input)));
     },
 
     /**
@@ -42,6 +56,7 @@ export async function loadVyrn(wasm) {
      * returns a fetch handler serving its routes.
      */
     serve(bundle) {
+      now();
       const loaded = status(call("vyrn_load", bundle));
       if (!loaded.ok) throw new Error(loaded.output);
       if (loaded.output) console.log(loaded.output.trimEnd());
@@ -54,6 +69,7 @@ export async function loadVyrn(wasm) {
         const message = new Uint8Array(head.length + body.length);
         message.set(head);
         message.set(body, head.length);
+        now();
         const reply = call("vyrn_handle", message);
         const code = reply[0] | (reply[1] << 8);
         const end = reply.indexOf(0, 2);

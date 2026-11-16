@@ -17,6 +17,7 @@ use std::rc::Rc;
 use super::builtins::{integer, number, opt};
 use super::foreign::Foreign;
 use super::ops::{self, err, type_error, Arith, Ctx, VmResult};
+use super::sys;
 use super::value::{Key, Map, Value};
 
 fn text_arg<'a>(args: &'a [Value], i: usize, what: &str) -> VmResult<&'a str> {
@@ -675,8 +676,8 @@ pub struct File {
 }
 
 enum FileState {
-    Reading(std::io::BufReader<std::fs::File>),
-    Writing(std::io::BufWriter<std::fs::File>),
+    Reading(super::sys::Reader),
+    Writing(super::sys::Writer),
     Closed,
 }
 
@@ -697,19 +698,9 @@ pub fn open(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     };
     let what = format!("cannot open {path}");
     let state = match mode.trim_end_matches(['b', 't']) {
-        "r" => FileState::Reading(std::io::BufReader::new(
-            std::fs::File::open(&path).map_err(|e| io_error(&what, e))?,
-        )),
-        "w" => FileState::Writing(std::io::BufWriter::new(
-            std::fs::File::create(&path).map_err(|e| io_error(&what, e))?,
-        )),
-        "a" => FileState::Writing(std::io::BufWriter::new(
-            std::fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(&path)
-                .map_err(|e| io_error(&what, e))?,
-        )),
+        "r" => FileState::Reading(sys::open_read(&path).map_err(|e| io_error(&what, e))?),
+        "w" => FileState::Writing(sys::open_write(&path, false).map_err(|e| io_error(&what, e))?),
+        "a" => FileState::Writing(sys::open_write(&path, true).map_err(|e| io_error(&what, e))?),
         other => {
             return Err(err(
                 "ValueError",
@@ -728,10 +719,7 @@ pub fn open(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 }
 
 impl File {
-    fn reader<T>(
-        &self,
-        f: impl FnOnce(&mut std::io::BufReader<std::fs::File>) -> std::io::Result<T>,
-    ) -> VmResult<T> {
+    fn reader<T>(&self, f: impl FnOnce(&mut sys::Reader) -> std::io::Result<T>) -> VmResult<T> {
         match &mut *self.state.borrow_mut() {
             FileState::Reading(r) => {
                 f(r).map_err(|e| io_error(&format!("cannot read {}", self.path), e))
@@ -1114,16 +1102,16 @@ pub fn os_args(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
 
 pub fn os_env(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let name = text_arg(args, 0, "the variable name")?;
-    Ok(match std::env::var(name) {
-        Ok(v) => Value::str(v),
-        Err(_) => opt(args, 1).cloned().unwrap_or(Value::None),
+    Ok(match sys::env(name) {
+        Some(v) => Value::str(v),
+        None => opt(args, 1).cloned().unwrap_or(Value::None),
     })
 }
 
 pub fn os_set_env(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let name = text_arg(args, 0, "the variable name")?;
     let value = ops::display(&ctx.program, &args[1]);
-    std::env::set_var(name, value);
+    sys::set_env(name, &value);
     Ok(Value::None)
 }
 
@@ -1136,7 +1124,7 @@ pub fn os_load_env(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         Some(Value::Str(s)) => s.to_string(),
         _ => ".env".to_string(),
     };
-    let text = match std::fs::read_to_string(&path) {
+    let text = match sys::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(io_error(&format!("cannot read {path}"), e)),
@@ -1161,8 +1149,8 @@ pub fn os_load_env(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
                 value = &value[1..value.len() - 1];
             }
         }
-        if std::env::var_os(name).is_none() {
-            std::env::set_var(name, value);
+        if sys::env(name).is_none() {
+            sys::set_env(name, value);
         }
         names.push(Value::str(name.to_string()));
     }
@@ -1170,7 +1158,7 @@ pub fn os_load_env(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 }
 
 pub fn os_environ(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
-    let mut vars: Vec<(String, String)> = std::env::vars().collect();
+    let mut vars: Vec<(String, String)> = sys::env_vars();
     vars.sort();
     let mut map = Map::default();
     for (k, v) in vars {
@@ -1273,21 +1261,15 @@ pub fn os_run(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 // ==== vyrn.fs and vyrn.path ===================================================
 
 pub fn fs_exists(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
-    Ok(Value::Bool(
-        std::path::Path::new(text_arg(args, 0, "the path")?).exists(),
-    ))
+    Ok(Value::Bool(sys::exists(text_arg(args, 0, "the path")?)))
 }
 
 pub fn fs_is_file(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
-    Ok(Value::Bool(
-        std::path::Path::new(text_arg(args, 0, "the path")?).is_file(),
-    ))
+    Ok(Value::Bool(sys::is_file(text_arg(args, 0, "the path")?)))
 }
 
 pub fn fs_is_dir(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
-    Ok(Value::Bool(
-        std::path::Path::new(text_arg(args, 0, "the path")?).is_dir(),
-    ))
+    Ok(Value::Bool(sys::is_dir(text_arg(args, 0, "the path")?)))
 }
 
 /// `fs.list(dir = ".")`: the names in a directory, sorted.
@@ -1296,10 +1278,10 @@ pub fn fs_list(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         Some(_) => text_arg(args, 0, "the directory")?,
         None => ".",
     };
-    let mut names: Vec<String> = std::fs::read_dir(dir)
+    let mut names: Vec<String> = sys::list(dir)
         .map_err(|e| io_error(&format!("cannot list {dir}"), e))?
-        .filter_map(Result::ok)
-        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .into_iter()
+        .map(|(name, _)| name)
         .collect();
     names.sort();
     Ok(Value::list(names.into_iter().map(Value::str).collect()))
@@ -1311,11 +1293,12 @@ pub fn fs_walk(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let mut out = Vec::new();
     let mut pending = vec![std::path::PathBuf::from(dir)];
     while let Some(d) = pending.pop() {
-        let entries = std::fs::read_dir(&d)
-            .map_err(|e| io_error(&format!("cannot list {}", d.display()), e))?;
-        for entry in entries.filter_map(Result::ok) {
-            let path = entry.path();
-            if path.is_dir() {
+        let shown = d.to_string_lossy().into_owned();
+        let entries =
+            sys::list(&shown).map_err(|e| io_error(&format!("cannot list {shown}"), e))?;
+        for (name, is_dir) in entries {
+            let path = d.join(name);
+            if is_dir {
                 pending.push(path);
             } else {
                 out.push(path.to_string_lossy().into_owned());
@@ -1328,72 +1311,56 @@ pub fn fs_walk(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 
 pub fn fs_mkdir(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let path = text_arg(args, 0, "the directory")?;
-    std::fs::create_dir_all(path).map_err(|e| io_error(&format!("cannot create {path}"), e))?;
+    sys::create_dir_all(path).map_err(|e| io_error(&format!("cannot create {path}"), e))?;
     Ok(Value::None)
 }
 
 pub fn fs_remove(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let path = text_arg(args, 0, "the path")?;
-    let p = std::path::Path::new(path);
-    let result = if p.is_dir() {
-        std::fs::remove_dir_all(p)
-    } else {
-        std::fs::remove_file(p)
-    };
-    result.map_err(|e| io_error(&format!("cannot remove {path}"), e))?;
+    sys::remove(path).map_err(|e| io_error(&format!("cannot remove {path}"), e))?;
     Ok(Value::None)
 }
 
 pub fn fs_rename(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let from = text_arg(args, 0, "the old path")?;
     let to = text_arg(args, 1, "the new path")?;
-    std::fs::rename(from, to).map_err(|e| io_error(&format!("cannot move {from} to {to}"), e))?;
+    sys::rename(from, to).map_err(|e| io_error(&format!("cannot move {from} to {to}"), e))?;
     Ok(Value::None)
 }
 
 pub fn fs_copy(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let from = text_arg(args, 0, "the source")?;
     let to = text_arg(args, 1, "the destination")?;
-    std::fs::copy(from, to).map_err(|e| io_error(&format!("cannot copy {from} to {to}"), e))?;
+    sys::copy(from, to).map_err(|e| io_error(&format!("cannot copy {from} to {to}"), e))?;
     Ok(Value::None)
 }
 
 pub fn fs_size(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let path = text_arg(args, 0, "the path")?;
-    std::fs::metadata(path)
-        .map(|m| Value::Int(m.len() as i64))
+    sys::size(path)
+        .map(|n| Value::Int(n as i64))
         .map_err(|e| io_error(&format!("cannot read {path}"), e))
 }
 
 /// `fs.modified(path)`: when the file last changed, in seconds since 1970.
 pub fn fs_modified(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let path = text_arg(args, 0, "the path")?;
-    let m = std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .map_err(|e| io_error(&format!("cannot read {path}"), e))?;
-    Ok(Value::Float(
-        m.duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0),
-    ))
+    sys::modified(path)
+        .map(Value::Float)
+        .map_err(|e| io_error(&format!("cannot read {path}"), e))
 }
 
 pub fn fs_read_lines(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let path = text_arg(args, 0, "the path")?;
     let text =
-        std::fs::read_to_string(path).map_err(|e| io_error(&format!("cannot read {path}"), e))?;
+        sys::read_to_string(path).map_err(|e| io_error(&format!("cannot read {path}"), e))?;
     Ok(Value::list(text.lines().map(Value::str).collect()))
 }
 
 pub fn fs_append_text(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let path = text_arg(args, 0, "the path")?;
     let text = ops::display(&ctx.program, &args[1]);
-    std::fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(path)
-        .and_then(|mut f| f.write_all(text.as_bytes()))
-        .map_err(|e| io_error(&format!("cannot write {path}"), e))?;
+    sys::append(path, text.as_bytes()).map_err(|e| io_error(&format!("cannot write {path}"), e))?;
     Ok(Value::None)
 }
 
@@ -1401,7 +1368,7 @@ pub fn fs_append_text(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 /// 0 to 255.
 pub fn fs_read_bytes(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let path = text_arg(args, 0, "the path")?;
-    let data = std::fs::read(path).map_err(|e| io_error(&format!("cannot read {path}"), e))?;
+    let data = sys::read(path).map_err(|e| io_error(&format!("cannot read {path}"), e))?;
     Ok(Value::list(
         data.into_iter().map(|b| Value::Int(i64::from(b))).collect(),
     ))
@@ -1425,7 +1392,7 @@ pub fn fs_write_bytes(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
             .collect::<VmResult<_>>()?,
         None => return Err(err("CallError", "`write_bytes` needs the data to write")),
     };
-    std::fs::write(path, data).map_err(|e| io_error(&format!("cannot write {path}"), e))?;
+    sys::write(path, &data).map_err(|e| io_error(&format!("cannot write {path}"), e))?;
     Ok(Value::None)
 }
 
@@ -1499,26 +1466,18 @@ pub fn path_absolute(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 }
 
 pub fn path_home(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
-    Ok(std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
+    Ok(sys::env("HOME")
+        .or_else(|| sys::env("USERPROFILE"))
         .map(Value::str)
         .unwrap_or(Value::None))
 }
 
 // ==== vyrn.time ==============================================================
 
-fn unix_now() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
-}
+use sys::unix_now;
 
 /// `time.now()`: seconds since 1970-01-01 UTC, with a fraction.
 pub fn time_now(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
-    if cfg!(target_arch = "wasm32") {
-        return Err(err("Unavailable", "this platform has no clock"));
-    }
     Ok(Value::Float(unix_now()))
 }
 
@@ -1612,10 +1571,12 @@ fn fixed_offset(zone: &str) -> Option<i64> {
     (h <= 18 && m < 60).then_some(sign * (h * 3600 + m * 60))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn time_zone(zone: &str) -> VmResult<jiff::tz::TimeZone> {
     if zone.eq_ignore_ascii_case("local") {
+        #[cfg(not(target_arch = "wasm32"))]
         return Ok(jiff::tz::TimeZone::system());
+        #[cfg(target_arch = "wasm32")]
+        return Ok(jiff::tz::TimeZone::UTC);
     }
     jiff::tz::TimeZone::get(zone).map_err(|_| {
         err(
@@ -1628,7 +1589,6 @@ fn time_zone(zone: &str) -> VmResult<jiff::tz::TimeZone> {
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn named_zone_offset(zone: &str, ts: f64) -> VmResult<(i64, String)> {
     let tz = time_zone(zone)?;
     let at = jiff::Timestamp::from_second(ts.floor() as i64)
@@ -1637,17 +1597,6 @@ fn named_zone_offset(zone: &str, ts: f64) -> VmResult<(i64, String)> {
     Ok((
         i64::from(info.offset().seconds()),
         info.abbreviation().to_string(),
-    ))
-}
-
-#[cfg(target_arch = "wasm32")]
-fn named_zone_offset(zone: &str, _: f64) -> VmResult<(i64, String)> {
-    Err(err(
-        "Unavailable",
-        format!(
-            "named time zones such as {} are not available here; use an offset such as \"+05:30\"",
-            quote(zone)
-        ),
     ))
 }
 
@@ -2207,7 +2156,7 @@ fn json_string(s: &str) -> String {
 pub fn json_load(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let path = text_arg(args, 0, "the path")?;
     let text =
-        std::fs::read_to_string(path).map_err(|e| io_error(&format!("cannot read {path}"), e))?;
+        sys::read_to_string(path).map_err(|e| io_error(&format!("cannot read {path}"), e))?;
     let json = super::json::parse(&text).map_err(|e| err("ValueError", format!("{path}: {e}")))?;
     Ok(ops::from_json(&json))
 }
@@ -2216,7 +2165,8 @@ pub fn json_save(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let path = text_arg(args, 0, "the path")?.to_string();
     let text = json_dumps(ctx, &[args[1].clone(), Value::Int(2)])?;
     let text = ops::display(&ctx.program, &text);
-    std::fs::write(&path, text + "\n").map_err(|e| io_error(&format!("cannot write {path}"), e))?;
+    sys::write(&path, (text + "\n").as_bytes())
+        .map_err(|e| io_error(&format!("cannot write {path}"), e))?;
     Ok(Value::None)
 }
 
@@ -2440,7 +2390,7 @@ fn csv_value(text: &str, header: bool, sep: char) -> VmResult<Value> {
 pub fn csv_read(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let path = text_arg(args, 0, "the path")?;
     let text =
-        std::fs::read_to_string(path).map_err(|e| io_error(&format!("cannot read {path}"), e))?;
+        sys::read_to_string(path).map_err(|e| io_error(&format!("cannot read {path}"), e))?;
     csv_value(
         &text,
         opt(args, 1).is_none_or(Value::truthy),
@@ -2498,7 +2448,7 @@ pub fn csv_write(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let rest: Vec<Value> = args[1..].to_vec();
     let text = csv_format(ctx, &rest)?;
     let text = ops::display(&ctx.program, &text);
-    std::fs::write(&path, text).map_err(|e| io_error(&format!("cannot write {path}"), e))?;
+    sys::write(&path, text.as_bytes()).map_err(|e| io_error(&format!("cannot write {path}"), e))?;
     Ok(Value::None)
 }
 

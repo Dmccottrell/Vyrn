@@ -12,7 +12,8 @@
 //! does. A clock that falls far behind (a breakpoint, a slow frame) skips
 //! ahead instead of running a burst of frames to catch up.
 
-use std::time::{Duration, Instant};
+use super::sys::Instant;
+use std::time::Duration;
 
 #[derive(Debug)]
 pub struct Clock {
@@ -61,7 +62,7 @@ impl Clock {
         let mut now = Instant::now();
         if self.frame > 0 {
             if now < self.next {
-                std::thread::sleep(self.next - now);
+                super::sys::sleep(self.next - now);
                 now = Instant::now();
             } else if now - self.next > MAX_LAG {
                 self.next = now;

@@ -66,9 +66,11 @@ layer.
 ### 2.2 Edge: WebAssembly
 
 `runtime/wasm` compiles the whole toolchain (parser, checker, compiler,
-VM) to `wasm32-unknown-unknown`: an 867 KB module with **no imports**, so
+VM, with SQLite and HTML parsing) to `wasm32-unknown-unknown`: a 3.8 MB
+module (about 1.4 MB compressed) with **no imports**, so
 any WebAssembly host can load it. Its interface is plain memory and
-integers (`vyrn_run`, `vyrn_load`, `vyrn_handle`), and
+integers (`vyrn_run`, `vyrn_load`, `vyrn_handle`, `vyrn_set_time`,
+`vyrn_seed`), and
 `runtime/wasm/vyrn-edge.mjs` wraps it in the web platform's own types:
 
 ```js
@@ -109,21 +111,26 @@ the declared struct), providers and response rules as the TCP server.
 `examples/api.vyrn` answered `GET`, `POST`, 404 and 201 identically to the
 native server when driven by Node with web `Request` objects.
 
-**What is stubbed.** A WebAssembly module with no imports has no operating
-system, so the capabilities that need one fail with a teaching error that a
-program can `catch`, instead of crashing:
+**What the host provides, and what is stubbed.** A WebAssembly module
+with no imports has no operating system. What a program needs from one
+is either given by the host through an export, or kept in memory, or
+fails with a teaching error that a program can `catch`:
 
-| Capability | On the edge |
+| Capability | On WebAssembly |
 |---|---|
 | Sockets (`web.serve` listening) | hosted mode: the platform delivers requests |
-| Files (`read_text`, `load_weights`, `open`) | unavailable: `IoError` ("operation not supported") |
-| Clock (`sleep`, `now`, `Clock`) | unavailable: `Unavailable` error |
-| Threads, GPU | none; tensors run on the CPU path |
+| Clock (`time.now`, `now`, `sleep`, `Clock`) | the host sets the time (`vyrn_set_time`, done by `vyrn-edge.mjs`); `sleep` moves a virtual clock forward at once instead of waiting |
+| Secure random numbers (`vyrn.crypto`) | from a seed the host gives (`vyrn_seed`, from `crypto.getRandomValues`), stretched with SHA-256 |
+| Files (`read_text`, `open`, `vyrn.fs`, CSV and JSON files) | an in-memory file system, emptied before each `vyrn_run` |
+| Environment variables (`os.env`) | in memory, empty at the start of each run |
+| Databases (`vyrn.db`) | SQLite, with databases in memory |
+| Named time zones | the time-zone database is built in |
+| Windows, sound, PNG images, threads, GPU | none; tensors run on the CPU path |
 | Python and C bridges | not built for WebAssembly |
 
-The next step is optional imports the host may provide (`env.now_ms`,
-`env.fetch`, and WebGPU in browsers), each switching a stub back to the
-real capability. Modules without them keep working.
+`src/vm/sys.rs` is the one place files, environment variables, time and
+random bytes come from, so each has exactly two versions: the operating
+system's, and the WebAssembly one.
 
 ## 3. The native tier (runs today)
 

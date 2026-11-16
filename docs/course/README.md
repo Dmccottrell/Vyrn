@@ -30,6 +30,14 @@ differs, it shows the first difference. `vyrn learn hint 1.2` gives
 one nudge at a time, and `vyrn learn solution 1.2` shows an answer. Your
 progress is saved in `vyrn-course/progress.txt`.
 
+Or take it on the **Learn Vyrn website** (`site/`), with nothing to
+install: each lesson on the left, an editor and console on the right. Run
+the examples, write the exercise, press *Check answer*; hints, solutions
+and your progress are all there, kept in your browser. Vyrn itself runs
+in the page as WebAssembly, including files and SQLite databases; the
+few exercises that open windows say so and give the `vyrn learn` command
+instead.
+
 You can also read the lessons here, one file per day: `day01.md`,
 `day02.md`, ... Every example and every solution in them is run by the
 test suite, so what you read is what Vyrn really prints.

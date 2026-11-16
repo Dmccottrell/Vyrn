@@ -142,7 +142,7 @@ footer code { font-family: var(--font-code); }
 
 <footer>
   <span>The whole Vyrn toolchain (parser, checker, compiler and VM) runs here as one WebAssembly module.</span>
-  <span>WebAssembly has no clock or files, so <code>sleep</code>, <code>now</code> and <code>read_text</code> are unavailable on this page.</span>
+  <span>Files and databases live in memory for one run; <code>sleep</code> moves time on at once instead of waiting.</span>
 </footer>
 
 <script type="application/octet-stream" id="vyrn-wasm"></script>
@@ -237,6 +237,13 @@ onmessage = async (event) => {
   const { module, source } = event.data;
   if (!instance) instance = await WebAssembly.instantiate(module, {});
   const x = instance.exports;
+  // The module has no clock or random source of its own: give it ours.
+  x.vyrn_set_time(Date.now() / 1000);
+  const seed = crypto.getRandomValues(new Uint8Array(32));
+  const sp = x.vyrn_alloc(32);
+  new Uint8Array(x.memory.buffer, sp, 32).set(seed);
+  x.vyrn_seed(sp, 32);
+  x.vyrn_free(sp, 32);
   const bytes = enc.encode(source);
   const ptr = x.vyrn_alloc(bytes.length);
   new Uint8Array(x.memory.buffer, ptr, bytes.length).set(bytes);
