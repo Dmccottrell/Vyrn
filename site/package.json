@@ -1,0 +1,9 @@
+{
+  "name": "learn-vyrn-site",
+  "private": true,
+  "type": "module",
+  "description": "The Learn Vyrn website's server functions (api/).",
+  "dependencies": {
+    "@anthropic-ai/sdk": "1.8.0"
+  }
+}

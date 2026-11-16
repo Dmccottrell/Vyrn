@@ -1,0 +1,149 @@
+# game.vyrn: the rules of the game: the player, the commands, saving.
+#
+# Kept apart from main.vyrn (which only starts the game and reads the
+# keyboard), so the tests in tests/ can play the game by calling
+# `Game.handle` directly.
+
+use vyrn.json
+use vyrn.fs
+use world (Room)
+
+const SAVE_FILE = "save.json"
+
+# Short forms players type, and what they mean.
+const SHORTCUTS = {"n": "go north", "s": "go south", "e": "go east", "w": "go west", "i": "inventory", "l": "look"}
+
+## Everything about the player that changes as they play. An object,
+## because there is one player and the whole game changes it.
+object Player:
+    room: str = "gate"
+    inventory: list = []
+    moves: int = 0
+
+    create has(self, item: str) -> bool:
+        return item in self.inventory
+    end
+end
+
+## The game: the world, the player, and the commands.
+object Game:
+    rooms: map
+    player: Player
+    over: bool = false
+
+    ## The room the player is standing in.
+    create here(self) -> Room:
+        return self.rooms[self.player.room]
+    end
+
+    ## What the player sees when they look around.
+    create describe(self) -> str:
+        let room = self.here()
+        var text = "== {room.name} ==\n{room.description}"
+        if len(room.items) > 0:
+            text += "\nYou see: {", ".join(room.items)}."
+        end
+        text += "\nExits: {", ".join(sorted(room.exits.keys()))}."
+        return text
+    end
+
+    ## `go north`: moves, unless the way is locked.
+    create go(self, direction: str) -> str:
+        let room = self.here()
+        if direction not in room.exits:
+            return "You can't go {direction} from here."
+        end
+        # A locked exit needs an item in the inventory.
+        let needed = room.locked.get(direction, "")
+        if needed != "" and not self.player.has(needed):
+            return "The way {direction} is locked. You need a {needed}."
+        end
+        self.player.room = room.exits[direction]
+        self.player.moves += 1
+        return self.describe()
+    end
+
+    ## `take lamp`: from the room into the inventory.
+    create take(self, item: str) -> str:
+        var room = self.here()
+        if item not in room.items:
+            return "There is no {item} here."
+        end
+        # `Room` is a struct (a value), so change the copy and store it
+        # back in the map.
+        room.items.remove(item)
+        self.rooms[self.player.room] = room
+        self.player.inventory.append(item)
+        # Taking the crown wins the game.
+        if item == "crown":
+            self.over = true
+            return "You lift the Crown of Vyrn. You win, in {self.player.moves} moves!"
+        end
+        return "Taken: {item}."
+    end
+
+    ## `drop rope`: from the inventory into the room.
+    create drop(self, item: str) -> str:
+        if not self.player.has(item):
+            return "You don't have a {item}."
+        end
+        self.player.inventory.remove(item)
+        var room = self.here()
+        room.items.append(item)
+        self.rooms[self.player.room] = room
+        return "Dropped: {item}."
+    end
+
+    ## Writes the player and every room's items to a JSON file.
+    create save(self) -> str:
+        let data = {
+            "room": self.player.room,
+            "inventory": self.player.inventory,
+            "moves": self.player.moves,
+            "items": {id: room.items each id, room in self.rooms.items()},
+        }
+        json.save(SAVE_FILE, data)
+        return "Game saved."
+    end
+
+    ## Reads the save file back, if there is one.
+    create load(self) -> str:
+        if not fs.exists(SAVE_FILE): return "There is no saved game."
+        let data = json.load(SAVE_FILE)
+        self.player = Player(data["room"], data["inventory"], data["moves"])
+        each id, items in data["items"].items():
+            var room = self.rooms[id]
+            room.items = items
+            self.rooms[id] = room
+        end
+        return "Game loaded.\n" + self.describe()
+    end
+
+    ## Turns one typed line into an answer.
+    create handle(self, line: str) -> str:
+        # Tidy the input: lowercase, extra spaces gone, shortcuts expanded.
+        var command = " ".join(line.lower().split())
+        command = SHORTCUTS.get(command, command)
+        # Split into the verb and the rest: "take rope" -> "take", "rope".
+        let words = command.split(" ")
+        let verb = words[0] if len(words) > 0 else ""
+        let rest = " ".join(words[1:])
+        when verb:
+            is "look": return self.describe()
+            is "go": return self.go(rest)
+            is "take", "get": return self.take(rest)
+            is "drop": return self.drop(rest)
+            is "inventory":
+                if len(self.player.inventory) == 0: return "You carry nothing."
+                return "You carry: {", ".join(self.player.inventory)}."
+            is "save": return self.save()
+            is "load": return self.load()
+            is "help": return "Commands: look, go <direction> (n, s, e, w), take <item>, drop <item>, inventory (i), save, load, quit."
+            is "quit":
+                self.over = true
+                return "Goodbye!"
+            is "": return ""
+            else: return "I don't understand \"{line}\". Type help."
+        end
+    end
+end

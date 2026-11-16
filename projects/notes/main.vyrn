@@ -1,0 +1,78 @@
+# Vyrn Notes: a small web app.
+#
+#   vyrn run
+#
+# then open http://localhost:8080 in a browser. Set the PORT environment
+# variable to use another port.
+#
+# What this project shows: a web server built from `route` declarations,
+# a JSON API (list, create, search, delete), a page served as HTML,
+# dependency injection with `http.provide`, request bodies checked against
+# a struct, a SQLite database, and proper HTTP status codes.
+#
+# The API, which the page uses and which any other program can use too:
+#
+#   GET    /api/notes          every note, newest first
+#   POST   /api/notes          {"title": ..., "body": ...} -> the new note
+#   GET    /api/search?q=...   notes containing the words
+#   DELETE /api/notes/{id}     removes a note (404 if there is none)
+
+use vyrn.http
+use vyrn.os
+use store (Note, NoteStore)
+use page (PAGE)
+
+## What a POST to /api/notes must contain. If a field is missing or has
+## the wrong type, the server answers 400 before the route even runs.
+struct NewNote:
+    title: str
+    body: str
+end
+
+## A failure named NotFound is answered with HTTP status 404.
+struct NotFound:
+    id: int
+end
+
+## A failure named BadRequest is answered with HTTP status 400.
+struct BadRequest:
+    reason: str
+end
+
+# The page. Text that starts with `<` is sent as HTML.
+route GET "/" ():
+    return PAGE
+end
+
+# `notes` is filled in by `http.provide("notes", ...)` in main: every
+# route that asks for a parameter of that name gets the same store.
+route GET "/api/notes" (notes: NoteStore):
+    return notes.all()
+end
+
+# `body` is the request's JSON, turned into a NewNote.
+# Returning (201, note) sends status 201 Created with the note as JSON.
+route POST "/api/notes" (body: NewNote, notes: NoteStore):
+    let title = body.title.strip()
+    if title == "": fail BadRequest("a note needs a title")
+    return 201, notes.add(title, body.body.strip())
+end
+
+# `q` comes from the query string: /api/search?q=milk
+route GET "/api/search" (q: str, notes: NoteStore):
+    return notes.search(q)
+end
+
+# `{id}` in the path becomes the `id` parameter, converted to an int.
+# Returning none sends 204 No Content.
+route DELETE "/api/notes/{id}" (id: int, notes: NoteStore):
+    if not notes.remove(id): fail NotFound(id)
+    return none
+end
+
+main:
+    let port = int(os.env("PORT", "8080"))
+    http.provide("notes", NoteStore("notes.db"))
+    print("Vyrn Notes is running at http://localhost:{port} (Ctrl+C to stop)")
+    http.serve(port = port)
+end

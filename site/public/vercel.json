@@ -1,0 +1,8 @@
+{
+  "headers": [
+    { "source": "/vyrn.wasm", "headers": [{ "key": "Content-Type", "value": "application/wasm" }] }
+  ],
+  "crons": [
+    { "path": "/api/remind", "schedule": "0 22 * * *" }
+  ]
+}

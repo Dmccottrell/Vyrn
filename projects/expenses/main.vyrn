@@ -1,0 +1,105 @@
+# Expense tracker: a command-line tool that remembers what you spend.
+#
+#   vyrn run add 12.50 food "lunch with Sam"
+#   vyrn run add 900 rent
+#   vyrn run list
+#   vyrn run list food
+#   vyrn run summary
+#   vyrn run delete 3
+#
+# The data lives in expenses.db next to where you run it.
+# What this project shows: a program split into modules, a SQLite database,
+# reading command-line arguments, money done properly in whole cents,
+# helpful error messages, and exit codes for scripts.
+
+use vyrn.os
+use vyrn.time
+use money (parse_cents, format_cents)
+use store (Store, Expense)
+
+const HELP = """Expense tracker
+
+  add <amount> <category> [note]   record something you spent
+  list [category]                  show expenses, newest first
+  summary                          totals per category
+  delete <id>                      remove one expense"""
+
+## Today's date as text, such as "2026-11-12".
+create today() -> str:
+    return time.format(time.now(), "%Y-%m-%d")
+end
+
+## `add <amount> <category> [note]`
+create add(store: Store, args: list):
+    if len(args) < 2: fail ValueError("add needs an amount and a category, like: add 12.50 food")
+    let cents = parse_cents(args[0])
+    # Categories are stored in lowercase, so "Food" and "food" are the same.
+    let category = args[1].lower()
+    # Everything after the category is the note: `add 5 food big coffee`.
+    let note = " ".join(args[2:])
+    let id = store.add(today(), category, cents, note)
+    print("Added #{id}: {format_cents(cents)} on {category}")
+end
+
+## `list [category]`: a table of expenses.
+create show_list(store: Store, args: list):
+    let expenses = store.list(args[0].lower() if len(args) > 0 else none)
+    if len(expenses) == 0:
+        print("No expenses yet. Try: add 12.50 food lunch")
+        return
+    end
+    # Fixed-width columns: `<` pads on the right, `>` on the left.
+    print("{"id":>4}  {"date":<10}  {"category":<10}  {"amount":>10}  note")
+    each e in expenses:
+        print("{e.id:>4}  {e.day:<10}  {e.category:<10}  {format_cents(e.cents):>10}  {e.note}")
+    end
+end
+
+## `summary`: totals per category, with a bar for each.
+create summary(store: Store):
+    let totals = store.totals()
+    if len(totals) == 0:
+        print("Nothing to sum up yet.")
+        return
+    end
+    let grand = sum([cents each _, cents in totals])
+    each category, cents in totals:
+        # Each bar is up to 30 characters, in proportion to the share.
+        let share = cents / grand
+        let bar = "#" * round(share * 30)
+        print("{category:<10} {format_cents(cents):>10}  {share:>4.0%}  {bar}")
+    end
+    print("{"total":<10} {format_cents(grand):>10}")
+end
+
+main:
+    let args = os.args()
+    if len(args) == 0:
+        print(HELP)
+        return
+    end
+    let store = Store("expenses.db")
+    let command = args[0]
+    let rest = args[1:]
+    # Any mistake (a bad amount, a missing argument) becomes one clear
+    # message and exit code 1, which scripts can check.
+    attempt:
+        when command:
+            is "add": add(store, rest)
+            is "list": show_list(store, rest)
+            is "summary": summary(store)
+            is "delete":
+                if len(rest) == 0: fail ValueError("delete needs the expense's id, like: delete 3")
+                if store.delete(int(rest[0])):
+                    print("Deleted #{rest[0]}")
+                else:
+                    print("There is no expense #{rest[0]}")
+                end
+            is "help", "--help": print(HELP)
+            else: fail ValueError("unknown command `{command}`; try `help`")
+        end
+    catch ValueError as e:
+        print("Error:", e.message)
+        os.exit(1)
+    end
+end

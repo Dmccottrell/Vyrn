@@ -1,0 +1,110 @@
+# physics.vyrn: a room of crates you can walk around in and knock over.
+#
+#   vyrn run examples/physics.vyrn
+#
+#   mouse / arrows    look            W A S D    walk
+#   space             jump            click / F  shoot (pushes what it hits)
+#   E                 drop a crate    Esc        quit
+#
+# vyrn.physics does the hard parts: crates fall, stack, tumble and settle;
+# the player is a character that slides along walls and climbs the steps;
+# a shot is a ray that finds the first body and shoves it. The drawing
+# uses textures (a checkered floor made in code) and a lamp.
+
+use vyrn.draw
+use vyrn.physics
+
+const WIDTH = 800
+const HEIGHT = 500
+const EYE = 0.7          # metres above the character's middle
+const SPEED = 4.0        # metres per second
+const LOOK = 0.15        # degrees per pixel of mouse movement
+
+## A floor texture drawn with code: a 2-by-2 checker.
+create checker(a: str, b: str):
+    let t = draw.canvas(2, 2)
+    t.clear(a)
+    t.pixel(1, 0, b)
+    t.pixel(0, 1, b)
+    return t.to_image()
+end
+
+main:
+    let world = physics.world()
+    # Fixed things: the floor, four walls and some steps.
+    world.box(0, -0.5, 0, 24, 1, 24, fixed = true)
+    let walls = [[0, 1.5, 12, 24, 3, 0.4], [0, 1.5, -12, 24, 3, 0.4], [12, 1.5, 0, 0.4, 3, 24], [-12, 1.5, 0, 0.4, 3, 24]]
+    each w in walls: world.box(w[0], w[1], w[2], w[3], w[4], w[5], fixed = true)
+    each i in 0 until 4: world.box(-6, 0.1 + i * 0.2, -4 + i * 1.2, 3, 0.2 + i * 0.4, 1.2, fixed = true)
+    # A tower of crates.
+    var crates = []
+    each level in 0 until 5:
+        each k in 0 until 3:
+            crates.append(world.box(3 + k * 1.05, 0.5 + level, 4, 1, 1, 1, mass = 5))
+        end
+    end
+    let player = world.character(0, 1, -6)
+    var fall = 0.0
+
+    let floor_tex = checker("#7d8f6a", "#6a7a59")
+    let win = draw.window(WIDTH, HEIGHT, "Physics")
+    let cam = draw.camera(0, 1.6, -6)
+    win.hide_cursor()
+    var dt = 1.0 / 60
+    loop win.open():
+        # Looking and walking, as in examples/fps.vyrn.
+        var yaw = win.mouse_dx * LOOK
+        var pitch = -win.mouse_dy * LOOK
+        if win.key_down("left"): yaw -= 120 * dt
+        if win.key_down("right"): yaw += 120 * dt
+        if win.key_down("up"): pitch += 90 * dt
+        if win.key_down("down"): pitch -= 90 * dt
+        cam.turn(yaw, pitch)
+        let rad = cam.yaw * 3.14159 / 180
+        var forward = 0.0
+        var side = 0.0
+        if win.key_down("w"): forward += 1
+        if win.key_down("s"): forward -= 1
+        if win.key_down("d"): side += 1
+        if win.key_down("a"): side -= 1
+        let step = SPEED * dt
+        let dx = (rad.sin() * forward + rad.cos() * side) * step
+        let dz = (rad.cos() * forward - rad.sin() * side) * step
+        # Gravity, and jumping from the ground.
+        if player.grounded and fall < 0: fall = 0.0
+        if win.key_pressed("space") and player.grounded: fall = 5.0
+        fall -= 9.81 * dt
+        player.move(dx, fall * dt, dz)
+        cam.move_to(player.x, player.y + EYE, player.z)
+
+        # Shooting: the first body along the view gets a shove.
+        if win.clicked() or win.key_pressed("f"):
+            let hit = world.raycast(cam.position, cam.direction, max = 50, ignore = player)
+            if hit != none and hit["body"].kind == "box":
+                let d = cam.direction
+                hit["body"].push(d[0] * 25, d[1] * 25 + 5, d[2] * 25)
+            end
+        end
+        if win.key_pressed("e"):
+            let d = cam.direction
+            crates.append(world.box(cam.position[0] + d[0] * 2, cam.position[1] + 1, cam.position[2] + d[2] * 2, 1, 1, 1, mass = 5))
+        end
+        world.step(dt)
+
+        # Drawing.
+        win.clear("#9fc3e6")
+        win.fog("#9fc3e6", start = 15, end = 40)
+        win.point_light(0, 2.5, 0, "#ffd9a0", 1.2, 9)
+        win.box(cam, [0, -0.05, 0, 24, 0.1, 24], "white", texture = floor_tex)
+        each w in walls: win.box(cam, w, "#c9b79c")
+        each i in 0 until 4: win.box(cam, [-6, 0.1 + i * 0.2, -4 + i * 1.2, 3, 0.2 + i * 0.4, 1.2], "#a0a0a8")
+        each c in crates:
+            win.cube(cam, c.x, c.y, c.z, 1, "#b5793b", rotation = c.rotation)
+        end
+        let (cx, cy) = (WIDTH / 2, HEIGHT / 2)
+        win.line(cx - 8, cy, cx + 8, cy, "white", width = 2)
+        win.line(cx, cy - 8, cx, cy + 8, "white", width = 2)
+        win.text("{len(crates)} crates   click: shoot   E: drop a crate", 12, 12, "white")
+        dt = win.show()
+    end
+end

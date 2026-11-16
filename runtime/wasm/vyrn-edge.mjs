@@ -1,0 +1,106 @@
+// Vyrn on WebAssembly hosts: browsers, Vercel Edge Functions, Cloudflare
+// Workers, Deno Deploy, Bun and Node. Standard JavaScript only: the module
+// needs no imports, and requests and responses are the web `Request` and
+// `Response` types every one of these platforms provides.
+//
+//   const vyrn = await loadVyrn(wasmBytesOrModule);
+//   vyrn.run(source, input?)            -> { ok, output }        (the playground; input feeds input())
+//   vyrn.files()                        -> [{ name, data }]      (what the last run wrote: pictures, data)
+//   const handle = vyrn.serve(bundle)   -> (request) => Response (an edge API)
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+export async function loadVyrn(wasm) {
+  const module = wasm instanceof WebAssembly.Module ? wasm : await WebAssembly.compile(wasm);
+  const instance = await WebAssembly.instantiate(module, {});
+  const x = instance.exports;
+
+  // Copies bytes into Vyrn's memory, calls `fn`, and returns the reply.
+  function call(fn, bytes) {
+    const ptr = x.vyrn_alloc(bytes.length);
+    new Uint8Array(x.memory.buffer, ptr, bytes.length).set(bytes);
+    const reply = x[fn](ptr, bytes.length);
+    x.vyrn_free(ptr, bytes.length);
+    const len = new DataView(x.memory.buffer).getUint32(reply, true);
+    const out = new Uint8Array(x.memory.buffer, reply + 4, len).slice();
+    x.vyrn_free(reply, len + 4);
+    return out;
+  }
+
+  function status(bytes) {
+    return { ok: bytes[0] === 0, output: decoder.decode(bytes.subarray(1)) };
+  }
+
+  // The module has no clock or random source of its own: give it ours.
+  function now() {
+    if (x.vyrn_set_time) x.vyrn_set_time(Date.now() / 1000);
+    if (x.vyrn_seed && globalThis.crypto) {
+      const seed = crypto.getRandomValues(new Uint8Array(32));
+      const ptr = x.vyrn_alloc(seed.length);
+      new Uint8Array(x.memory.buffer, ptr, seed.length).set(seed);
+      x.vyrn_seed(ptr, seed.length);
+      x.vyrn_free(ptr, seed.length);
+    }
+  }
+
+  return {
+    /** Compiles and runs a program's `main:`; returns what it printed. */
+    run(source, input) {
+      now();
+      if (input === undefined) return status(call("vyrn_run", encoder.encode(source)));
+      return status(call("vyrn_run_input", encoder.encode(source + "\0" + input)));
+    },
+
+    /** The files the last run wrote: [{ name, data: Uint8Array }]. */
+    files() {
+      if (!x.vyrn_files) return [];
+      const bytes = (() => {
+        const reply = x.vyrn_files();
+        const len = new DataView(x.memory.buffer).getUint32(reply, true);
+        const out = new Uint8Array(x.memory.buffer, reply + 4, len).slice();
+        x.vyrn_free(reply, len + 4);
+        return out;
+      })();
+      const view = new DataView(bytes.buffer), list = [];
+      for (let i = 0; i + 4 <= bytes.length;) {
+        const n = view.getUint32(i, true); i += 4;
+        const name = decoder.decode(bytes.subarray(i, i + n)); i += n;
+        const size = view.getUint32(i, true); i += 4;
+        list.push({ name, data: bytes.slice(i, i + size) }); i += size;
+      }
+      return list;
+    },
+
+    /**
+     * Loads a program bundle from `vyrn build --target=wasm32-edge` and
+     * returns a fetch handler serving its routes.
+     */
+    serve(bundle) {
+      now();
+      const loaded = status(call("vyrn_load", bundle));
+      if (!loaded.ok) throw new Error(loaded.output);
+      if (loaded.output) console.log(loaded.output.trimEnd());
+      return async function handle(request) {
+        const url = new URL(request.url);
+        const body = request.body ? new Uint8Array(await request.arrayBuffer()) : new Uint8Array();
+        const head = encoder.encode(
+          [request.method, url.pathname, url.search.replace(/^\?/, ""), request.headers.get("content-type") ?? ""].join("\0") + "\0",
+        );
+        const message = new Uint8Array(head.length + body.length);
+        message.set(head);
+        message.set(body, head.length);
+        now();
+        const reply = call("vyrn_handle", message);
+        const code = reply[0] | (reply[1] << 8);
+        const end = reply.indexOf(0, 2);
+        const type = decoder.decode(reply.subarray(2, end));
+        const payload = reply.subarray(end + 1);
+        return new Response(code === 204 ? null : payload, {
+          status: code,
+          headers: { "content-type": type },
+        });
+      };
+    },
+  };
+}

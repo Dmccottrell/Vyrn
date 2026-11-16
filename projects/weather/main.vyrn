@@ -1,0 +1,73 @@
+# Weather report: data analysis from a CSV file to charts and a web page.
+#
+#   vyrn run
+#
+# Reads a year of daily weather for four cities (making the data file the
+# first time), works out each city's highs, lows and rain, draws two
+# charts, prints a summary, and writes out/report.html: open it in a
+# browser.
+#
+# What this project shows: CSV files, tables (filtering, sorting,
+# grouping, averages), charts saved as PNG and embedded as SVG, an HTML
+# report from a template, and a program split into small modules that
+# each do one job.
+
+use vyrn.chart
+use vyrn.fs
+use vyrn.table
+use data (generate)
+use analysis (summarize, cities, monthly_highs, rain_totals, MONTHS)
+use report (render)
+
+const DATA_FILE = "weather.csv"
+
+main:
+    # 1. Get the data: make it the first time, then reuse the file.
+    if not fs.exists(DATA_FILE):
+        print("Making {DATA_FILE}...")
+        generate(DATA_FILE)
+    end
+    # read_csv turns number columns into numbers automatically.
+    let t = table.read_csv(DATA_FILE)
+    print("Read {len(t)} rows: {t.columns}")
+    print("")
+
+    # 2. Summarize each city and print a small table in the terminal.
+    let summaries = [summarize(t, c) each c in cities(t)]
+    print("{"city":<8} {"avg high":>9} {"hottest":>9} {"coldest":>9} {"rain":>9} {"rainy days":>11}")
+    each s in summaries:
+        print("{s.city:<8} {s.average_high:>7.1f} C {s.hottest:>7.1f} C {s.coldest:>7.1f} C {s.rain_total:>6.0f} mm {s.rainy_days:>11}")
+    end
+
+    # 3. Charts. A map of name -> values draws one line per city with a
+    #    legend.
+    fs.mkdir("out")
+    let highs = monthly_highs(t)
+    let temperature_chart = chart.line(MONTHS, highs, title = "Average daily high (°C)", x_label = "month", y_label = "°C", width = 820, height = 360)
+    let rain = rain_totals(t)
+    let rain_chart = chart.bar([c each c, _ in rain], [mm each _, mm in rain], title = "Total rain in 2025 (mm)", width = 820, height = 300)
+    temperature_chart.save("out/temperature.png")
+    rain_chart.save("out/rain.png")
+
+    # 4. The report. Structs work in templates: {{city}} reads the field.
+    let page = render({
+        "year": 2025,
+        "days": len(t) // len(summaries),
+        "city_count": len(summaries),
+        "cities": summaries,
+        "temperature_chart": temperature_chart.svg(),
+        "rain_chart": rain_chart.svg(),
+    })
+    write_text("out/report.html", page)
+
+    # 5. A few findings, worked out from the numbers above.
+    let hottest = max(summaries, key = s => s.hottest)
+    let wettest = rain[0]
+    let steadiest = min(cities(t), key = c => max(highs[c]) - min(highs[c]))
+    print("")
+    print("Hottest day: {hottest.hottest} C in {hottest.city} on {hottest.hottest_day}")
+    print("Wettest city: {wettest[0]} with {wettest[1]:.0f} mm")
+    print("Steadiest weather: {steadiest} (smallest gap between its warmest and coldest month)")
+    print("")
+    print("Wrote out/report.html, out/temperature.png and out/rain.png")
+end

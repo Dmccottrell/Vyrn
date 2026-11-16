@@ -1,0 +1,721 @@
+# The Vyrn Standard Library
+
+Status: v0.4. Where an API already runs in the interpreter it
+says **runs today**; everything else is design, which this document fixes so
+that implementation can follow it. Syntax follows `docs/grammar.ebnf` v0.4.
+
+## 1. Three tiers
+
+| Tier | How you get it | What belongs there |
+|---|---|---|
+| **Prelude** | Always in scope, no `use` | What a beginner needs in their first hour: core types, `print`, `len`, `open`, collections, tensor math |
+| **`vyrn.*` modules** | `use vyrn.http`, `use vyrn.fs`, ... | Capabilities with a larger surface, a lifecycle or I/O policy: servers, memory mapping, task supervision, neural-network layers |
+| **Packages** | `use app.storage (Db)` | Everything else, versioned by the package manager |
+
+A name earns a place in the Prelude only if all four hold:
+
+1. **Beginner-first.** A first script would otherwise need a `use` line for it.
+2. **Free when unused.** It is a builtin in the VM's table or a type the
+   compiler knows. Nothing is initialized or linked until a program calls it.
+3. **No policy.** It takes no position on how to structure an application.
+   `print` and `open` qualify. A router, a thread pool or a logging framework
+   does not.
+4. **Stable.** It will not need a breaking change. APIs still evolving live in
+   a module, where a new version can sit beside the old one.
+
+### Name resolution
+
+Names resolve innermost first, so a program can always shadow the Prelude:
+
+1. locals and parameters (innermost block first), then captured variables
+2. top-level declarations of the file
+3. names brought in by `use ... (a, b as c)`
+4. the Prelude
+
+`use vyrn.http` binds the module to the name `http` and nothing else. There
+are no glob imports, so reading a file tells you where every name comes
+from. `use vyrn.http as web` renames the module. **Runs today:** this order is
+what `src/vm/compiler.rs` (`resolve`) implements, and `use vyrn.web` /
+`use vyrn.http` with both import forms works.
+
+## 2. The Prelude
+
+### 2.1 Types
+
+The Prelude's types are the language's own. The familiar long names map to
+Vyrn's spelling as follows:
+
+| Concept | Vyrn spelling | Notes |
+|---|---|---|
+| String | `str` | UTF-8, immutable, shared by reference count; slicing makes a view |
+| List | `[T]` | Growable, shared by reference; `[T; N]` is a fixed array stored inline |
+| Map | `{K: V}` | Insertion-ordered hash map |
+| Tensor | `tensor[dtype; dims]` | `tensor[f32]` leaves the rank open; `vec2`/`vec3`/`vec4` are small tensors |
+| Optional | `T?` | `none` or a `T`; `x?.f` and `x ?? default` |
+| Numbers | `int` (`i8` to `u64`), `float` (`f16`, `bf16`, `f32`, `f64`), `bool` | |
+| Tuples | `(A, B)` | `()` is the unit type |
+| Tasks | `Task[T]`, `Channel[T]` | What an `async` function call and `channel()` return |
+| Errors | `Error` and the built-in kinds (`IoError`, `KeyError`, `TypeError`, `NotFound`, ...) | Any struct can be passed to `fail` |
+
+### 2.2 Functions
+
+| Group | Names | Status |
+|---|---|---|
+| Input and output | `print`, `input(prompt)` | runs today |
+| Conversion | `str`, `int` (`int("ff", 16)` reads other bases), `float`, `bool`, `list`, `dict`, `set`, `repr`, `chr`, `ord`, `hex`, `oct`, `bin`, `typeof` | runs today |
+| Sequences | `len`, `range`, `enumerate`, `zip`, `reversed`, `any`, `all`, `sum`, and `sorted`, `min`, `max` with `key =` (and `reverse =` for `sorted`), `map(f, xs)`, `filter(f, xs)` | runs today |
+| Math | `abs`, `round`, `sqrt`, `exp`, `tanh`, `floor`, `ceil`, `pow`, `divmod` | runs today |
+| Text | `format(value, spec)`; the same specs inside strings: `"{price:.2f}"`, `"{n:,}"`, `"{name:>8}"`, `"{ratio:.1%}"`, `"{n:#x}"` | runs today |
+| Files | `open(path, mode = "r")` returning a `File` (`read`, `readline`, `lines`, `write`, `write_line`, `close`; `each line in f`) for use with `using`; `read_text`, `write_text` | runs today |
+| Data | `parse_json`, `to_json` | runs today |
+| Tasks | `sleep`, `channel`, `join`, `now` | runs today |
+| Games | `Clock(hz, frames)` | runs today |
+| Tensors | `tensor`, `zeros`, `ones`, `rand`, `arange`, `eye`, `vec2`/`vec3`/`vec4`, `softmax`, `relu`, `gelu`, `argmax`, `@`, `memory`, `fit`, `set_memory_limit`, `format_bytes` | runs today |
+| Weights | `load_weights`, `save_weights`, `load_tokenizer` | runs today; moving to `vyrn.nn` (section 6) |
+| Devices | `cpu`, `gpu` (indexed: `gpu[0]`, `gpu[0 to 3]`) | runs today |
+
+`open` belongs in the Prelude because reading a file is part of a first
+script, and `using` already makes it safe:
+
+```vyrn
+using open("scores.txt") as f:
+    each line in f.lines():
+        print(line)
+    end
+end
+```
+
+`using` calls `close()` on every way out of the block, including failures
+(**runs today**). `"w"` replaces a file and `"a"` adds to its end.
+
+### 2.3 Methods of strings, lists, maps and sets
+
+All **run today**. Methods that take a function (`map`, `filter`, `sort`
+with `key =`, ...) are written in Vyrn itself, in `src/prelude.vyrn`.
+
+| Type | Methods |
+|---|---|
+| `str` | `upper`, `lower`, `title`, `capitalize`, `swapcase`, `strip`/`lstrip`/`rstrip` (optionally of given characters), `split(sep, limit)`, `rsplit`, `lines`, `chars`, `join`, `replace`, `startswith`, `endswith`, `find`, `rfind`, `index`, `count`, `contains`, `partition`, `rpartition`, `removeprefix`, `removesuffix`, `zfill`, `ljust`, `rjust`, `center`, `repeat`, `format(spec)`, `isdigit`, `isalpha`, `isalnum`, `isspace`, `isupper`, `islower`, `is_empty`, `encode` |
+| `[T]` | `append`, `extend`, `insert`, `pop`, `remove`, `clear`, `sort(key, reverse)`, `reverse`, `copy`, `index`, `count`, `contains`, `first`, `last`, `is_empty`, `unique`, `join(sep)`, `chunks(n)`, `sum`; taking a function: `map`, `filter`, `reduce`, `find`, `find_index`, `any`, `all`, `count_if`, `min_by`, `max_by`, `sum_by`, `group_by`, `each`, `take_while`, `drop_while`; and `flatten` |
+| `{K: V}` | `keys`, `values`, `items`, `get(key, default)`, `pop(key, default)`, `update`, `setdefault`, `has`, `copy`, `clear`, `is_empty`; taking a function: `map_values`, `filter` |
+| set | `{1, 2, 3}`, `{x each x in xs}` or `set(xs)`; `add`, `remove`, `discard`, `has`, `union`, `intersection`, `difference`, `symmetric_difference`, `issubset`, `issuperset`, `copy`, `clear`; the operators `|`, `&`, `-`, `^`; `in`; `len` |
+
+A program may declare its own `map`, `sorted` or any other Prelude name;
+its declaration wins.
+
+## 3. `vyrn.http`: a FastAPI-style async router
+
+`vyrn.http` turns the language's `route` declarations into a running server.
+The design follows FastAPI's three ideas, adapted to a compiled language:
+
+1. **The signature is the contract.** Parameters are filled from the path,
+   then the query string, then the request body, then registered providers.
+   Declared types are checked before the handler runs (a `400` otherwise),
+   and the declared result type is the response schema.
+2. **Dependency injection by name and type.** `http.provide("db", db)` makes
+   every route parameter named `db` receive that value. Tests provide fakes
+   the same way.
+3. **Every handler is a task.** A route body is implicitly `async`; awaiting
+   a database or a model never blocks other requests.
+
+```vyrn
+use vyrn.http
+
+struct Item:
+    id: int
+    name: str
+end
+
+struct NotFound:
+    id: int
+end
+
+route GET "/items/{id}" (id: int, db) -> Item fails NotFound:
+    if id not in db: fail NotFound(id)
+    return db[id]
+end
+
+route POST "/items" (body: Item, db) -> (int, Item):
+    db[body.id] = body
+    return 201, body
+end
+
+main:
+    http.provide("db", {1: Item(1, "lamp")})
+    http.serve(port = 8080)
+end
+```
+
+**Runs today:** `route` and `routes` groups, path parameters converted to
+their declared types, query parameters, a JSON `body` converted to the
+declared struct (a missing field is a `400`), `http.provide`,
+`http.serve(port, host, requests)`, handlers running as concurrent tasks,
+and responses built from return values. A string is sent as `text/plain`,
+`(status, value)` sets the status, `none` is `204`, anything else is JSON.
+A failure is a JSON error whose status follows its kind: `NotFound` is 404,
+`BadRequest` 400, `Unauthorized` 401, `Forbidden` 403, otherwise 500.
+`vyrn.web` is the same module under its earlier name.
+
+### 3.1 Requests, responses, middleware, live connections
+
+**Runs today.** Three parameter names are special: a route that takes
+`request` gets the whole request, one that takes `stream` sends
+server-sent events, and one that takes `socket` is a WebSocket.
+
+| API | Purpose |
+|---|---|
+| `request` parameter | `request.method`, `path`, `headers` (names in lower case), `query`, `cookies`, `form` (the fields of a submitted HTML form), `body` (text), `json` (the body parsed, or none), `client`, and `request.header("X-Key")` in any case. Form fields also fill route parameters by name, as query parameters do |
+| `http.cookie(name, value, max_age, path, http_only = true, secure, same_site = "Lax")` | The text of a `Set-Cookie` header: `http.Response(303, "", {"Set-Cookie": http.cookie("session", id), "Location": "/"})`; `max_age = 0` deletes it |
+| `http.Response(status, body, headers)` | Full control: `return http.Response(201, item, {"Location": "/items/7"})`. A `Content-Type` header replaces the usual one |
+| `http.use(f)` | Middleware around every route: `f(request, next)` gives the response, usually `next(request)`'s, or answers by itself (a 401, a cached page). The first added runs outermost |
+| `stream` parameter | Server-sent events: `stream.send(data, event = "name")` pushes one to the page (text as it is, anything else as JSON); the stream ends with the handler. Pages listen with `new EventSource("/path")` |
+| `socket` parameter | A WebSocket: `socket.send(x)`, `msg = await socket.receive()` (JSON arrives as maps and lists, other text as text; none once the other side closes), `socket.close()`, `socket.closed` |
+| `http.get`, `http.post`, ... | Calling other services (see 5a) |
+| `http.test(method, path, body, headers, form)` | Sends a request to the program's own routes, through its middleware, without a network: `http.test("POST", "/signup", form = {"name": "Ada"})`. Gives a response like `http.get`'s. For tests and trying routes out |
+
+```vyrn check
+use vyrn.http
+
+create needs_key(request, next):
+    if request.header("X-Key") != "secret": return http.Response(401, {"error": "no key"})
+    return next(request)
+end
+
+route GET "/clock" (stream):
+    each i in 1 to 10:
+        stream.send({"tick": i})
+        await sleep(1)
+    end
+end
+
+route GET "/chat" (socket):
+    socket.send("welcome")
+    loop:
+        let msg = await socket.receive()
+        if msg == none: stop
+        socket.send("you said: {msg}")
+    end
+end
+
+main:
+    http.use(needs_key)
+    http.serve(port = 8080)
+end
+```
+
+Still design: `http.Router(prefix)` values for mounting modules (the
+`routes "/prefix":` group covers most of it today), and
+`http.serve(workers = n)` with a listener per OS thread.
+
+What stays out: templates, ORMs, sessions. Those are packages.
+
+## 4. `vyrn.fs`: files, and memory mapping without copies
+
+The Prelude's `open` covers reading and writing. `vyrn.fs` is for programs
+where copies matter: model weights, datasets, logs larger than RAM.
+
+```vyrn
+use vyrn.fs
+
+create count_errors(path: str) -> int:
+    var errors = 0
+    using fs.map(path) as data:
+        each line in data.lines():
+            if line.startswith("ERROR"): errors += 1
+        end
+    end
+    return errors
+end
+```
+
+`fs.map(path)` maps the file into the address space (`mmap`, or
+`MapViewOfFile` on Windows) and returns a `Mapped` value. No byte is read
+until it is touched, and nothing is copied:
+
+- `len(data)` and `data.size` are its length in bytes; `data.text(start, end)`
+  and `data.bytes(start, end)` read a range; `data.find(text, start)` gives
+  where some text first appears (or -1); `data.count_lines()` counts lines
+  without making them; `data.lines()` gives every line as text.
+- `fs.tensor_view(data, dtype, shape, offset)` makes a tensor from `f32`,
+  `f16` or `bf16` values at a byte offset, such as one weight out of a
+  model file.
+
+Only the pages a program touches are read from disk. What it reads out
+(text, numbers, a tensor) is copied into Vyrn values; zero-copy views that
+the borrow checker keeps inside the `using` block are the next step.
+
+**Why this matters for large models.** A 14B-parameter model at 4 bits is
+about 8 GB on disk. Reading it into a buffer and then uploading it costs
+8 GB of RAM on top of the GPU copy. Mapping it means the pages stream from
+the page cache straight into the GPU upload (`vyrn.nn` uses this, section 6),
+and on a 32 GB machine nothing is held twice.
+
+**Runs today:** `fs.exists`, `fs.is_file`, `fs.is_dir`, `fs.list(dir)`,
+`fs.walk(dir)`, `fs.mkdir` (with parents), `fs.remove` (files and
+directories), `fs.rename`, `fs.copy`, `fs.size`, `fs.modified`,
+`fs.read_text`, `fs.write_text`, `fs.append_text`, `fs.read_lines`. A file
+that is not there fails with `NotFound`. `fs.map` and `fs.tensor_view`, as
+above. Still design:
+
+| API | Behaviour |
+|---|---|
+| `fs.map_mut(path, size) -> MappedMut` | Writable mapping; changes reach the file on `flush()` or at the end of `using` |
+| `fs.glob(pattern)`, `fs.stat(path)` | Directory work beyond `fs.walk` |
+| `fs.watch(path)` | A `Channel` of change events, for `async for` |
+
+On WebAssembly there is no `mmap`, so `fs.map` reads the file into linear
+memory once. Programs keep the same code and lose only the laziness.
+
+## 5. `vyrn.task`: green threads and supervision
+
+**Runs today, in the language itself:** every `async` function call starts a
+*green thread*. Tasks are stackful, so any function can `await`, and each
+suspended task costs only its own registers and frames. A single-threaded
+scheduler runs them with timers and channels, reports deadlocks, and warns
+about failed tasks nobody awaited. The Prelude keeps the everyday part:
+`spawn`, `await`, `async for`, `sleep`, `channel`, `join`.
+
+`vyrn.task` adds the structure that larger programs need.
+
+```vyrn
+use vyrn.task
+
+async create fetch(url: str) -> str:
+    await sleep(0.1)
+    return "page at {url}"
+end
+
+async create crawl(urls: [str]) -> [str]:
+    # Structured concurrency: the group outlives none of its tasks. Tasks
+    # still running at `end` are cancelled.
+    using task.group() as g:
+        each url in urls: g.spawn(fetch(url))
+        return await g.wait()
+    end
+end
+```
+
+**Runs today:** everything below. Awaiting a cancelled task fails with
+`Cancelled`.
+
+| API | Purpose |
+|---|---|
+| `task.group()` | Structured concurrency, as above: `g.spawn(work)`, `await g.wait()` (or `await g`) for every result, `g.cancel()` to stop the unfinished |
+| `task.timeout(seconds, work)` | `await task.timeout(2.0, fetch(url))` gives the result, or fails with `Timeout` and stops the work |
+| `task.parallel(work, items, workers)` | `[work(x) each x in items]` spread over every CPU core: each worker thread runs its own copy of the program, so nothing is shared and nothing needs locking. `work` is a top-level function; items and results are plain data (numbers, text, lists, maps, sets, structs) |
+| `task.select(a, b, ...)` | Waits for the first of several tasks or channels; `await` gives `(index, value)` |
+| `task.cancel(t)`, `task.done(t)` | Stop a task; whether it has finished |
+| `task.yield_now()` | Lets other tasks run inside a long computation |
+| `channel(capacity = n)` | A bounded channel: `ch.send(x)` waits while it is full, which slows a fast producer to its consumer's pace; `ch.capacity()`, `ch.full()`, `ch.len()` |
+| `task.Pool(workers = n)` | Threads that stay ready for CPU-heavy calls: `await pool.run(f, args...)` runs `f` on one of them while other tasks keep running, `await pool.map(f, items)` spreads the items over them, `pool.close()` stops them. As with `task.parallel`, `f` is a top-level function and values are copied between threads, so nothing is shared; a failure there comes back as `PoolError` |
+
+The split follows the cost model. Green threads are cheap and share one OS
+thread, so the Prelude has them. A `Pool` adds threads, and with them the
+rule that values cross threads only by `own`. That is an explicit choice,
+so it sits behind `use vyrn.task`.
+
+## 5a. Everyday modules
+
+All **run today** (`src/vm/stdlib.rs`).
+
+| Module | Functions |
+|---|---|
+| (built in) | `read_text`, `write_text`, `append_text`, `read_bytes` / `write_bytes` (lists of 0 to 255), `open(path, mode)` |
+| `vyrn.os` | `os.args()` (the arguments after the file name), `os.env(name, default)`, `os.set_env`, `os.environ()`, `os.load_env(path = ".env")` (reads `NAME=value` lines into the environment, never replacing a variable already set), `os.cwd()`, `os.chdir`, `os.exit(code)`, `os.platform()`, `os.run(command, input)`: a list (`["git", "status"]`) or a shell line; gives `code`, `ok`, `out`, `err` |
+| `vyrn.path` | `path.join(a, b, ...)`, `path.name`, `path.stem`, `path.ext`, `path.parent`, `path.absolute`, `path.home()` |
+| `vyrn.time` | `time.now()` (seconds since 1970), `time.format(t, "%Y-%m-%d %H:%M:%S", zone)` (also `%z` and `%Z`), `time.parse(text, pattern, zone)`, `time.date(t, zone)` (year, month, day, hour, minute, second, weekday, zone, offset), `time.make(year, month, day, hour, minute, second, zone)`, `time.add(t, years, months, days, hours, minutes, seconds, zone)` (calendar arithmetic that keeps the clock time across daylight saving), `time.zone()`, `time.monotonic()`, `time.sleep`. A `zone` is `"UTC"` (the default), `"local"`, a name such as `"America/New_York"`, or an offset such as `"+05:30"` |
+| `vyrn.random` | `random.int(low, high)` (both included), `random.float(low, high)`, `random.choice`, `random.shuffle` (in place), `random.sample(xs, k)`, `random.seed(n)` |
+| `vyrn.math` | `sqrt`, `exp`, `log(x, base)`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `hypot`, `degrees`, `radians`, `floor`, `ceil`, `gcd`, `factorial`, `clamp`, `isnan`, `isinf`; constants `pi`, `e`, `tau`, `inf`, `nan` |
+| `vyrn.json` | `json.parse(text)`, `json.dumps(value, indent)`, `json.load(path)`, `json.save(path, value)` |
+| `vyrn.re` | `re.test(pattern, text)`, `re.find` (a match with `text`, `start`, `end`, `groups`, `named`, or `none`), `re.matches` (every match), `re.find_all`, `re.replace(pattern, text, with)` (`$1` inserts a group; `with` can be a function of the match), `re.split` |
+| `vyrn.csv` | `csv.read(path)` and `csv.parse(text)` (a list of maps from the header, or of lists with `header = false`), `csv.write(path, rows)`, `csv.format(rows)` |
+| `vyrn.http` client | `http.get(url, headers)`, `http.post(url, body, headers)`, `http.put`, `http.delete`: a response with `status`, `ok`, `text`, `json`, `headers` (`r.status` or `r["status"]`); no answer at all fails with `NetworkError`. Maps and lists are sent as JSON. `http.query({"q": "tea & cake"})` builds an encoded query string for after the `?`; `http.join_url(page, link)` turns a link found on a page (`"../b.html"`) into a full address |
+
+### Testing with fakes
+
+`vyrn test` runs every `create test_...()` in `tests/`; `assert(condition,
+message)` checks, and a failed comparison says both sides
+(`AssertionError: 6 == 5 is false`). `assert_fails(() => f(x), "ValueError")`
+checks that a call fails (with that kind, if given) and gives the error. To test code without its real dependencies (a database,
+the network, the clock), pass it a **fake**:
+
+| API | Does |
+|---|---|
+| `fake(returns = x)` | A stand-in function that gives back `x` |
+| `fake(returns_each = [a, b])`, `fake(fails = ValueError("..."))` | One value per call; or failing on purpose |
+| `fake(methods = {"save": fake(returns = true)})` | A stand-in object; any other method is a fake too |
+| `f.calls`, `f.call_count`, `f.called`, `f.last_call`, `f.called_with(args...)`, `f.reset()` | What happened to it |
+
+## 5b. Application modules
+
+All **run today**. Each module's file in `src/vm/` starts with an example.
+
+### `vyrn.db`: SQLite databases
+
+```vyrn
+use vyrn.db
+
+main:
+    using db.open("shop.db") as conn:
+        conn.execute("create table if not exists items (name text, price real)")
+        conn.execute("insert into items values (?, ?)", ["pen", 1.5])
+        each row in conn.query("select * from items where price < ?", [10]):
+            print(row["name"], row["price"])
+        end
+    end
+end
+```
+
+| API | Does |
+|---|---|
+| `db.open(path)` | A database file (made if missing); `":memory:"` lives only while the program runs |
+| `conn.execute(sql, params)` | Runs a statement, gives the rows changed; several statements without params run as a script |
+| `conn.execute_many(sql, rows)` | One statement per row of params |
+| `conn.query(sql, params)` | Every row, as maps from column to value |
+| `conn.query_one(...)`, `conn.value(...)` | The first row, or its first column; `none` when there is none |
+| `conn.last_id()`, `conn.tables()` | The last inserted row id; the table names |
+| `conn.begin()`, `conn.commit()`, `conn.rollback()`, `conn.close()` | Transactions; `using` closes |
+| `conn.create_table(name, columns)` | A table from `{"name": "text", "age": "int"}`, plus an `id` column |
+| `conn.insert(table, record)` | Adds a map or struct as a row; gives its `id` |
+| `conn.all(table)`, `conn.find(table, where)`, `conn.find_one(table, where)` | Rows matching every `column: value` in `where` |
+| `conn.update(table, where, changes)`, `conn.delete(table, where)` | How many rows changed; `delete` needs a `where` |
+
+Params are a list for `?` or a map for `:name`, always bound separately
+from the SQL, so input cannot change a statement. Errors are
+`DatabaseError` with SQLite's message.
+
+### `vyrn.draw`: pictures, games, 3D and windows
+
+| API | Does |
+|---|---|
+| `draw.window(w, h, title)` | A window: `loop win.open():` ... `win.show()` (60 fps; gives seconds since the last frame) |
+| `draw.canvas(w, h)` | The same surface without a window; `save("pic.png")`, `get_pixel(x, y)` |
+| `clear`, `pixel`, `line`, `rect`, `circle`, `triangle`, `polygon`, `text`, `image` | Drawing on either; `fill = false` and `width` for outlines; colours by name, `"#rrggbb"`, `[r, g, b]` or `[r, g, b, a]` |
+| `win.key_down(k)`, `win.key_pressed(k)` | Keys by name: `"left"`, `"space"`, `"a"`, `"1"`, ... |
+| `win.mouse_x`, `win.mouse_y`, `win.mouse_down(button)`, `win.clicked()`, `win.typed()` | The mouse, and text typed this frame |
+| `win.button(label, x, y)`, `win.input(name, x, y, w, hint)`, `win.checkbox(label, x, y, checked)`, `win.set_input(name, text)` | Widgets for apps: a button is true on the frame it is clicked; an input gives its text |
+| `win.label(text)`, `win.slider(name, low, high, value)` | Text, and a slider to drag (gives its value) |
+| `win.layout(x, y, gap = 10)`, `win.row()`, `win.end_row()`, `win.space(px)` | Leave out x and y and widgets lay themselves out: one under another, or side by side between `row()` and `end_row()` |
+| `draw.turtle(surface)` | `forward`, `back`, `left`, `right`, `goto`, `home`, `pen_up`, `pen_down`, `color`, `width`, `circle`, `dot`, `write`, `begin_fill`, `end_fill` |
+| `draw.image(path)` | A PNG, drawn with `surface.image(img, x, y, scale)` |
+| `draw.camera(x, y, z)` | 3D: `move`, `move_to`, `forward`, `turn`, `look_at`, `set_fov` |
+| `cube`, `sphere`, `plane`, `mesh`, `line3d` | 3D shapes, shaded, hidden behind nearer ones: `win.cube(cam, x, y, z, size, color, rotation = [rx, ry, rz])` |
+| `draw.mesh(points, triangles)`, `draw.cube_mesh()`, `draw.sphere_mesh(detail)` | Shapes of your own |
+| `draw.overlaps(x1, y1, w1, h1, x2, y2, w2, h2)`, `draw.rgb`, `draw.text_width` | Collisions, colours, text size |
+| `win.box(cam, [x, y, z, w, h, d], colour)` | A box from the same lists `vyrn.game` collides with |
+| `cam.direction`, `cam.position`, `cam.strafe(d)`, `cam.fly(d)` | First-person aiming and movement |
+| `win.mouse_dx`, `win.mouse_dy`, `win.hide_cursor()`, `win.show_cursor()` | Mouse look |
+| `pad = draw.gamepad(n = 0)` (once a frame; none without one), `draw.gamepads()` | Game controllers: `pad.down("a")`, `pad.pressed("a")` (since the last frame), `pad.stick("left")` ([x, y], -1 to 1), `pad.trigger("right")` (0 to 1), `pad.name`. Buttons, Xbox layout: `a b x y lb rb lt rt back start home l3 r3 up down left right` |
+| `draw.load_obj(path)` | A model exported from Blender and other 3D tools, with its texture coordinates, normals (smooth shading) and the PNG texture its `.mtl` file names |
+| `texture = img` on `box`, `cube`, `sphere`, `plane`, `mesh` | Paints the shape with an image from `draw.image(path)` or `canvas.to_image()`; on a `box` it repeats once per unit |
+| `draw.mesh(points, triangles, uvs, smooth, texture)` | Your own shapes, with texture coordinates and smooth shading; `mesh.vertices` gives the points |
+| `draw.load_model(path)` | An animated glTF model (`.gltf` or `.glb`, from Blender, Mixamo and others): `model.animations`, `model.duration(name)`, `model.mesh(animation, time)` (posed, as a mesh), and `win.model(cam, model, x, y, z, size, color, rotation, animation, time)` to draw it |
+| `win.light(direction, color, strength)`, `win.ambient(level, color)`, `win.point_light(x, y, z, color, strength, range)`, `win.fog(color, start, end)` | Lighting: the sun, light that reaches everywhere, lamps (placed each frame, after `clear`), and fog that fades distant things |
+| `draw.renderer()`, `draw.use_gpu(on)` | What fills 3D shapes: a real GPU when there is one (Vulkan, Metal or DirectX 12), otherwise Vyrn's software renderer; `VYRN_GPU=on/off` also chooses |
+
+### `vyrn.game`: the maths of 3D games
+
+Boxes are `[x, y, z, width, height, depth]` (centre and size); points
+and directions are `[x, y, z]`.
+
+| API | Does |
+|---|---|
+| `game.raycast(origin, direction, boxes, max_distance)` | The first box a ray hits: `{"index", "distance", "point"}`, or `none` (hitscan shots, line of sight) |
+| `game.overlaps3d(a, b)` | Whether two boxes touch |
+| `game.slide(position, movement, boxes, size)` | Moves without passing through boxes, sliding along walls |
+| `game.distance(a, b)`, `game.normalize(v)` | Between points; a direction of length 1 |
+
+### `vyrn.net`: multiplayer and other programs
+
+| API | Does |
+|---|---|
+| `net.udp(port)` | A UDP socket (any free port without one): fast messages that may be lost, for game state every frame |
+| `sock.send("host:port", data)`, `sock.receive()`, `sock.receive_all()`, `sock.port` | Send any Vyrn data; receive `{"from", "data"}` or `none` without waiting |
+| `net.listen(port)`, `server.accept()` | A TCP server; each new connection, or `none` |
+| `net.connect("host:port")`, `conn.send(data)`, `conn.receive()`, `conn.receive_all()`, `conn.open`, `conn.close()` | A reliable, ordered TCP connection |
+
+Data travels as JSON. Nothing waits, so sockets fit in a game loop;
+`examples/multiplayer.vyrn` is a server and its players.
+
+### `vyrn.sound`: sound effects and music
+
+| API | Does |
+|---|---|
+| `sound.load(path)` | A WAV, Ogg Vorbis or MP3 file, decoded once so playing it is instant |
+| `sound.tone(frequency, seconds, wave, volume)` | A sound made from a `"sine"`, `"square"`, `"triangle"`, `"saw"` or `"noise"` wave |
+| `snd.play(volume = 1.0, loop = false, speed = 1.0)` | Plays it, mixed with anything else playing; gives a handle |
+| `playing.stop()`, `pause()`, `resume()`, `set_volume(v)`, `set_speed(s)`, `playing.playing` | Controlling it |
+| `snd.duration`, `snd.save("beep.wav")`, `sound.available()`, `sound.stop_all()` | Length; writing a WAV; whether there is a sound device; silence |
+| `snd.play(at = [x, y, z], range = 30)`, `playing.move_to(x, y, z)`, `playing.balance` | A sound in the 3D world: louder in the nearer ear, quieter with distance, silent past `range`; it can move while it plays |
+| `sound.listener(camera)` or `sound.listener(x, y, z, yaw)` | Where the player hears from; call it each frame as the camera moves |
+
+Without a sound device, playing is silent rather than an error, so games
+still run.
+
+`docs/course/game-dev.md` teaches game programming with them, and
+`examples/fps.vyrn` is a complete small shooter.
+
+Everything is drawn in software, so it looks the same on every machine.
+`examples/snake.vyrn`, `examples/cube3d.vyrn` and `examples/tips.vyrn`
+are a game, a 3D scene and a small app.
+
+### `vyrn.host`: the program Vyrn runs inside
+
+When Vyrn runs inside another program, such as a game in Unreal Engine
+(`unreal/README.md`) or any C or C++ program using `vyrn.dll` and
+`vyrn.h` (`runtime/embed`), that program can give scripts functions to
+call.
+
+| API | Does |
+|---|---|
+| `host.call(name, args...)` | Calls the host's function `name`; the arguments and the result travel as JSON |
+| `host.available()` | Whether Vyrn is running inside a host (false under `vyrn run`) |
+
+A host function that fails raises a `HostError`, which `catch` can handle.
+
+### `vyrn.physics`: a physics engine for games
+
+Bodies fall, bounce, stack, tumble and settle (Rapier underneath). Units
+are metres, kilograms and seconds; y is up.
+
+| API | Does |
+|---|---|
+| `physics.world(gravity = -9.81)` | An empty world; `world.step(dt)` moves time on |
+| `world.box(x, y, z, width, height, depth)`, `world.ball(x, y, z, radius)`, `world.capsule(x, y, z, radius, height)` | Bodies. Options: `mass`, `bounce` (0 to 1), `friction`, `fixed = true` (floors, walls), `kinematic = true` (moved only by the program), `upright = true` (never tips over), `sensor = true` (detects but doesn't block), `name` |
+| `world.character(x, y, z, radius = 0.4, height = 1.8, step = 0.3)` | A player or enemy: `ch.move(dx, dy, dz)` walks, sliding along walls, climbing steps and slopes, staying on the ground; `ch.grounded` |
+| `body.x`, `.y`, `.z`, `.position`, `.rotation` (degrees, as `win.cube` takes it), `.velocity`, `.spin`, `.size`, `.box`, `.mass`, `.kind`, `.name`, `.sleeping` | Where it is and how it moves |
+| `body.push(x, y, z)`, `body.spin_by(x, y, z)`, `body.set_velocity(...)`, `body.move_to(...)`, `body.turn_to(...)`, `body.touching()` | Shoving, placing and contacts |
+| `world.raycast(origin, direction, max = 100, ignore = body)` | The first body along a line: `body`, `point`, `normal`, `distance`, or none |
+| `world.collisions()`, `world.remove(body)`, `world.bodies` | Pairs that started touching in the last step; removing bodies |
+
+`examples/physics.vyrn` is a room of crates to walk around and knock over.
+
+### `vyrn.html`: reading web pages
+
+`html.parse(text)` gives a page; `page.select(css)` and
+`page.select_one(css)` find elements by CSS selector (`"a[href]"`,
+`"div.price"`, `"#main > p"`). An element has `text`, `raw_text`, `tag`,
+`html`, `outer_html`, `id`, `classes`, `attrs`, `children`, `parent`,
+`attr(name)`, `has_class(name)` and its own `select`. `page.title`,
+`page.text`. `html.escape(text)` makes text safe for a page (`<` to
+`&lt;`), and `html.unescape(text)` turns entities back (`&quot;` to `"`,
+`&#39;` to `'`). Pages are read as browsers read them.
+
+### `vyrn.template`: pages made from data
+
+```vyrn
+use vyrn.template
+
+main:
+    let page = template.render(r"<h1>{{title}}</h1>{{#each items}}<li>{{name}}</li>{{/each}}",
+                               {"title": "Shop", "items": [{"name": "pen"}]})
+    print(page)
+end
+```
+
+`{{name}}` (HTML-escaped), `{{{raw}}}`, `{{a.b}}` (map keys and struct
+fields), `{{#each list}}` with `{{this}}` and `{{@index}}` (and `{{else}}` for an empty list), `{{#if x}}` /
+`{{else}}` / `{{/if}}`, `{{#unless x}}`, `{{! comment }}`.
+`template.render_file(path, data)` reads the template from a file. Write
+templates in raw strings `r"..."` or files: in ordinary strings `{...}`
+interpolates. A route returning text that starts with `<` is sent as a web
+page.
+
+### `vyrn.table`: data in rows and columns
+
+| API | Does |
+|---|---|
+| `table.read_csv(path)`, `table.from_csv(text)`, `table.from_rows(rows, columns)` | A table; numbers in CSV become numbers, empty cells `none` |
+| `t.head(n)`, `t.tail(n)`, `t.row(i)`, `t.column(name)`, `t.columns`, `t.rows`, `t.shape`, `len(t)` | Looking at it; `print(t)` shows an aligned table |
+| `t.where(column, op, value)` | Rows that match: `==`, `!=`, `<`, `<=`, `>`, `>=`, `contains`, `startswith`, `in` |
+| `t.sort(column, descending)`, `t.select(columns)`, `t.add_column(name, values)` | New tables |
+| `t.sum`, `t.mean`, `t.median`, `t.min`, `t.max`, `t.count`, `t.unique` | Of one column |
+| `t.group_by(column, value, how)` | One row per group: `how` is sum, mean, median, min, max or count |
+| `t.keep(mask)` | The rows where a list of true/false says true: `t.keep([r["age"] > 30 each r in t])` |
+| `t.drop_missing(columns)`, `t.fill_missing(column, value)` | Without rows that have empty cells (in those columns, or any); with empty cells filled |
+| `t.rename(old, new)`, `t.drop(column)` | New tables with a column renamed or removed |
+| `t.join(other, on, how = "inner")` | Each row with the other table's matching rows beside it; `how = "left"` keeps rows with no match |
+| `t.describe()` | A table of count, mean, min and max for each number column |
+| `t.to_csv(path)`, `each row in t` | Writing, and rows as maps |
+
+### `vyrn.chart`: charts
+
+`chart.line(xs, ys)`, `chart.scatter(xs, ys)`, `chart.bar(labels,
+values)`, `chart.hist(values, bins)`, `chart.pie(labels, values)`, each with
+`title`, `x_label`, `y_label`, `width`, `height`. A map of name to values
+draws several series with a legend. `c.save("chart.png")` or
+`c.save("chart.svg")`; `c.svg()` gives the SVG text.
+
+### `vyrn.crypto`: hashing, passwords and tokens
+
+| API | Does |
+|---|---|
+| `crypto.hash_password(pw)` | Text safe to store instead of a password: PBKDF2-HMAC-SHA256, 100,000 rounds, a random salt (`pbkdf2-sha256$rounds$salt$hash`) |
+| `crypto.check_password(pw, stored)` | Whether `pw` is the password `stored` was made from |
+| `crypto.token(bytes = 32)` | A secure random token in hex, for session ids, reset links and API keys |
+| `crypto.sha256(text)`, `crypto.hmac(key, text)` | A hash; a signature only the key's holder can make (hex) |
+| `crypto.same(a, b)` | Equality in constant time, for comparing tokens and signatures |
+
+### `vyrn.mail`: sending email
+
+`mail.send(to, subject, body, sender, server, port, user, password,
+security, html)`: `to` is an address or a list; `security` is
+`"starttls"` (port 587, the default), `"tls"` (465) or `"none"`. Keep
+passwords out of code: `password = os.env("MAIL_PASSWORD")`.
+
+## 6. Tensors: the Prelude and `vyrn.nn`
+
+The line is **math versus models**.
+
+**Prelude: tensor math.** The tensor type, constructors, element-wise
+arithmetic, `@`, reductions and the standard element-wise functions
+(`exp`, `tanh`, `relu`, `gelu`, `softmax`) are numeric primitives in the
+same sense as `+` on integers. They compile to the VM's tensor instructions
+(`MatMul`, `Place`, ...), which a `TensorBackend` executes per device. That
+is the CPU reference or the wgpu GPU backend (**runs today**,
+`cargo build --features gpu`). They have no state and no configuration, so
+`x @ w` means the same thing in every program. Placement is part of the
+language (`on gpu[0]:`, `x on gpu[1]`), not of a library.
+
+**`vyrn.nn`: model building blocks.** Layers carry parameters and state,
+model formats change, and sampling strategies are a matter of taste. These
+need versioning, so they live in a module:
+
+**Runs today:**
+
+| API | Purpose |
+|---|---|
+| `nn.load(path, dtype = "q4")` | The tensors of a safetensors file as a map of name to tensor, read one at a time (never the whole file twice) and converted on the way if asked; `fit` then spreads them over devices |
+| `nn.save(path, tensors)` | Writes a map of name to tensor |
+| `nn.tokenizer(path)` | A Hugging Face `tokenizer.json`: `tok.encode(text)`, `tok.decode(ids)` |
+| `nn.sample(logits, temperature = 1, top_k = 0, top_p = 1)` | The next token from logits (a list, or a tensor's last row). Temperature 0 picks the likeliest; `random.seed` makes runs repeat |
+| `nn.generate(step, tokens, max_new = 50, temperature, top_k, top_p, stop_at)` | A generator of new tokens: your `step(tokens)` runs the model and gives the logits, so any architecture written in Vyrn works. `each t in nn.generate(...)` streams them |
+
+```vyrn
+use vyrn.nn
+
+create reply(model, tok, prompt: str) -> str:
+    create step(tokens: list): return model.forward(tokens)
+    var out = []
+    each t in nn.generate(step, tok.encode(prompt), max_new = 100, temperature = 0.7, top_p = 0.9):
+        out.append(t)
+    end
+    return tok.decode(out)
+end
+```
+
+**Design, next:**
+
+| API | Purpose |
+|---|---|
+| `nn.Linear`, `nn.Embedding`, `nn.RMSNorm`, `nn.Attention`, `nn.MLP` | Layers as structs: weights are fields, `forward` is a `kernel` function |
+| `nn.KVCache(layers, max_tokens)` | Preallocated attention cache, placed with the layers |
+
+`load_weights`, `save_weights` and `load_tokenizer` remain in the Prelude
+as other names for `nn.load`, `nn.save` and `nn.tokenizer`.
+
+## 7. Two complete programs
+
+### 7.1 A first script: no `use` at all
+
+Everything here is Prelude: types, `open`, `using`, string methods, lists,
+maps, tensors.
+
+```vyrn
+# grades.vyrn: read "name,score" lines and summarize them.
+
+main:
+    scores = {}
+    using open("grades.csv") as f:
+        each line in f.lines():
+            let parts = line.split(",")
+            scores[parts[0]] = float(parts[1])
+        end
+    end
+
+    let values = tensor(scores.values())
+    print("students: {len(scores)}")
+    print("average:  {round(values.sum() / len(scores), 1)}")
+
+    each name, score in scores.items():
+        let grade = "A" if score >= 90 else "B" if score >= 80 else "C"
+        print("{name}: {score} ({grade})")
+    end
+end
+```
+
+### 7.2 An inference server: explicit dependencies
+
+The `use` lines name exactly what the program depends on beyond the
+Prelude. The model is memory-mapped and spread across GPUs, each request is
+a task, and generation streams over server-sent events.
+
+```vyrn
+use vyrn.http
+use vyrn.fs
+use vyrn.task
+use vyrn.nn
+use app.auth (require_key)
+
+struct Prompt:
+    text: str
+    max_tokens: int = 128
+end
+
+struct Health:
+    model: str
+    gpu_memory: str
+end
+
+const MODEL = "models/sml-14b-q4.safetensors"
+
+route GET "/health" (model) -> Health:
+    return Health(MODEL, format_bytes(memory_used(gpu[0])))
+end
+
+routes "/v1":
+    @require_key
+    route POST "/complete" (body: Prompt, model, tokenizer) -> str:
+        let tokens = tokenizer.encode(body.text)
+        let output = await task.timeout(30.0, model.complete(tokens, body.max_tokens))
+        return tokenizer.decode(output)
+    end
+
+    @require_key
+    route SSE "/stream" (body: Prompt, model, tokenizer, stream):
+        let tokens = tokenizer.encode(body.text)
+        async each token in nn.generate(model, tokens, body.max_tokens):
+            await stream.send(tokenizer.decode([token]))
+        end
+    end
+end
+
+main:
+    # Pages stream from disk to the GPUs; nothing is held twice in RAM.
+    let model = nn.load(MODEL, dtype = "q4", devices = gpu[0 to 1])
+    http.provide("model", model)
+    http.provide("tokenizer", nn.Tokenizer.load("models/tokenizer.json"))
+    http.serve(port = 8080)
+end
+```
+
+## 8. Implementation status
+
+| Piece | Where | Status |
+|---|---|---|
+| Prelude functions and types | `src/vm/builtins.rs`, `src/vm/stdlib.rs`, `src/prelude.vyrn` | runs |
+| Files, sets, format specs, methods (section 2) | `src/vm/stdlib.rs`, `src/vm/builtins.rs` | runs |
+| `vyrn.os`, `vyrn.path`, `vyrn.time`, `vyrn.random`, `vyrn.math`, `vyrn.json`, `vyrn.re`, `vyrn.csv`, HTTP client | `src/vm/stdlib.rs` | runs |
+| `vyrn.db`, `vyrn.draw`, `vyrn.html`, `vyrn.template`, `vyrn.table`, `vyrn.chart`, `vyrn.mail` | `src/vm/lib_*.rs` | runs |
+| `use vyrn.<module>` with module and name imports | `src/vm/compiler.rs` (`use_decl`, `module_member`) | runs |
+| `vyrn.http` routing, providers, server, requests, responses, middleware, SSE, WebSockets | `src/vm/machine.rs` (`resolve_route`, `service_servers`), `src/vm/web.rs`, `src/vm/web_live.rs` | runs; `Router` values and multi-threaded serving are design |
+| Green threads, channels, timers | `src/vm/machine.rs`, `src/vm/task.rs` | runs |
+| `vyrn.task` groups, timeouts, select, cancel, pools, bounded channels, `yield_now` | `src/vm/stdlib.rs`, `src/vm/parallel.rs`, `src/vm/machine.rs` (`await_race`, `apply_cancels`) | runs |
+| `vyrn.fs` files and directories | `src/vm/stdlib.rs` | runs |
+| `vyrn.fs` mapping (`fs.map`, `fs.tensor_view`) | `src/vm/lib_nn.rs` | runs; zero-copy views depend on borrow checking of slices (`src/check.rs`) |
+| Tensor math on CPU and GPU | `src/vm/tensor.rs`, `src/vm/gpu.rs` | runs |
+| `vyrn.nn` load, save, tokenizer, sample, generate | `src/vm/weights.rs`, `src/vm/tokenizer.rs`, `src/vm/lib_nn.rs`, `src/prelude.vyrn` (`__nn_generate`) | runs; layer structs and `KVCache` are design |
+
+Build order from here: zero-copy views of mapped files (borrowed slices),
+then `vyrn.nn` layer structs and the `KVCache`, then `http.Router` values
+and multi-threaded serving.

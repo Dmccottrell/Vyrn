@@ -1,0 +1,58 @@
+# physics.vyrn: points, movement and collisions in 2D.
+#
+# The small building blocks the game is made of. Nothing here knows about
+# ships or rocks; it's plain maths, the same in any 2D game.
+
+use vyrn.math
+
+const WIDTH = 800.0
+const HEIGHT = 600.0
+
+## A point or a direction on the screen. A struct (a value), so `a = b`
+## copies, just like numbers.
+struct Vec2:
+    x: float
+    y: float
+
+    # Operators, so vectors read like maths: `pos + vel * dt`.
+    create operator +(self, other: Vec2) -> Vec2: return Vec2(self.x + other.x, self.y + other.y)
+    create operator -(self, other: Vec2) -> Vec2: return Vec2(self.x - other.x, self.y - other.y)
+    create operator *(self, k: float) -> Vec2: return Vec2(self.x * k, self.y * k)
+
+    create length(self) -> float: return (self.x * self.x + self.y * self.y).sqrt()
+
+    create to_text(self) -> str: return "({self.x:.1f}, {self.y:.1f})"
+end
+
+## A direction of length 1, `degrees` clockwise from straight up (the
+## screen's y grows downwards).
+create heading(degrees: float) -> Vec2:
+    let r = math.radians(degrees)
+    return Vec2(math.sin(r), -math.cos(r))
+end
+
+## Going off one edge of the screen comes back on the opposite one, like
+## in the original arcade game.
+create wrap(p: Vec2) -> Vec2:
+    return Vec2(p.x % WIDTH, p.y % HEIGHT)
+end
+
+## Anything that moves: a position, a velocity (pixels per second) and a
+## size for collisions. An object: each one has its own identity and
+## changes every frame. Ships, bullets and rocks all build on it.
+object Body:
+    pos: Vec2
+    vel: Vec2
+    radius: float
+
+    ## Moves by `dt` seconds' worth of velocity, wrapping around the edges.
+    create update(self, dt: float):
+        self.pos = wrap(self.pos + self.vel * dt)
+    end
+
+    ## Two circles touch when the distance between their centres is less
+    ## than their radiuses added together.
+    create hits(self, other: Body) -> bool:
+        return (self.pos - other.pos).length() < self.radius + other.radius
+    end
+end

@@ -1,0 +1,46 @@
+# enemy.vyrn: an enemy that chases the player around the level and hits
+# them when close. It shows the deeper parts of the plugin: AI movement
+# on the navigation mesh, playing an Anim Montage, calling a Blueprint
+# event by name, reading a Blueprint variable, and multiplayer authority.
+#
+# Put it on a Character with an AI Controller (Pawn > Auto Possess AI:
+# "Placed in World or Spawned") in a level with a Nav Mesh Bounds Volume.
+# Variables: "attack_montage" (a montage's path), "damage" (default 10).
+# The player's Blueprint needs a custom event "TakeHit" taking a number,
+# and a number variable "Health".
+
+use unreal (Vec3, me, player, location, location_of, distance_to, get, call, get_var)
+use unreal (ai_move_to, ai_stop, play_montage, has_authority, time, event)
+
+object Brain:
+    next_attack: float = 0.0
+    chasing: bool = false
+end
+
+const BRAIN = Brain()
+const REACH = 150.0      # centimetres
+const COOLDOWN = 1.2     # seconds between hits
+
+create tick(dt: float):
+    # Only the server decides what enemies do; everyone else sees the result.
+    if not has_authority(): return
+    let target = player()
+    if target == none: return
+    if get(target, "Health") <= 0:
+        ai_stop(me())
+        return
+    end
+    if distance_to(target) > REACH:
+        BRAIN.chasing = ai_move_to(me(), location_of(target), REACH * 0.8)
+        return
+    end
+    # Close enough: stop, and hit on a cooldown.
+    ai_stop(me())
+    if time() >= BRAIN.next_attack:
+        let montage = get_var("attack_montage")
+        let wait = play_montage(me(), montage) if montage != none else 0.0
+        call(target, "TakeHit", float(get_var("damage", 10)))
+        event("enemy_attacked", {"target": target, "health": get(target, "Health")})
+        BRAIN.next_attack = time() + max(COOLDOWN, wait)
+    end
+end

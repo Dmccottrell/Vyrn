@@ -1,0 +1,104 @@
+[package]
+name = "vyrn"
+version = "0.4.0"
+edition = "2021"
+description = "Compiler front end for the Vyrn programming language"
+license = "MIT"
+
+[lib]
+name = "vyrn"
+path = "src/lib.rs"
+
+[[bin]]
+name = "vyrn"
+path = "src/main.rs"
+
+[dependencies]
+# The module resolver: archives, content hashes, HTTPS.
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
+sha2 = "0.10"
+# `use vyrn.re`: regular expressions.
+regex = { version = "1", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
+ureq = { version = "3", optional = true }
+wgpu = { version = "30", optional = true, default-features = false, features = ["vulkan", "metal", "dx12", "wgsl"] }
+pollster = { version = "0.4", optional = true }
+# `use python.x`: an embedded CPython.
+pyo3 = { version = "0.30", optional = true, features = ["auto-initialize"] }
+# `extern "c"`: loading C libraries and calling them by signature.
+libloading = { version = "0.9", optional = true }
+libffi = { version = "5", optional = true }
+# `use vyrn.db`: SQLite, compiled in (on WebAssembly too, with the
+# database in memory).
+rusqlite = { version = "0.42", optional = true, features = ["bundled"] }
+# `use vyrn.draw`: PNG images and a bitmap font (pure Rust; windows and
+# glTF models are below, not on WebAssembly).
+png = { version = "0.18", optional = true }
+font8x8 = { version = "0.3", optional = true }
+# `use vyrn.html`: HTML parsing with CSS selectors (pure Rust, so it also
+# works on WebAssembly).
+scraper = { version = "0.29", optional = true, default-features = false }
+ego-tree = { version = "0.11", optional = true }
+
+[features]
+default = ["net", "native", "db", "draw", "html", "mail", "sound", "gpu", "physics", "gamepad"]
+# Gamepads in `vyrn.draw` (not on WebAssembly). On Linux, building needs
+# the udev development files (`libudev-dev`).
+gamepad = ["draw", "dep:gilrs"]
+# `use vyrn.physics`: a physics engine (Rapier) for games (not on WebAssembly).
+physics = ["dep:rapier3d"]
+# `use vyrn.mail`: sending email.
+mail = ["dep:lettre"]
+# `use vyrn.html`: parsing web pages.
+html = ["dep:scraper", "dep:ego-tree"]
+# `use vyrn.draw`: 2D and 3D drawing, images, and windows with keyboard and
+# mouse input (not on WebAssembly).
+draw = ["dep:minifb", "dep:png", "dep:font8x8", "dep:gltf"]
+# `use vyrn.sound`: sound effects and music (not on WebAssembly). On Linux,
+# building needs the ALSA development files (`libasound2-dev`).
+sound = ["dep:rodio"]
+# `use vyrn.db`: SQLite databases.
+db = ["dep:rusqlite"]
+# Compiles typed functions to machine code with Cranelift (not on WebAssembly).
+native = ["dep:cranelift-codegen", "dep:cranelift-frontend", "dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-native"]
+# Fetching `use "host/owner/repo@version"` modules over HTTPS.
+net = ["dep:ureq"]
+# Runs tensor work on a real GPU through wgpu (Vulkan, Metal or DirectX 12).
+gpu = ["dep:wgpu", "dep:pollster"]
+# `use python.numpy`: Python libraries through an embedded CPython.
+python = ["dep:pyo3"]
+# `extern "c":` blocks: calling C and C++ libraries.
+ffi = ["dep:libloading", "dep:libffi"]
+
+# The interactive prompt: line editing and history. Not needed on the web.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rustyline = { version = "15", default-features = false, features = ["with-file-history"] }
+# `vyrn.time` with time zones: the system's zone database (bundled on Windows).
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo", "tzdb-bundle-platform"] }
+# `draw.load_model`: glTF models with skeletons and animations.
+gltf = { version = "1", optional = true, default-features = false, features = ["import", "utils", "names"] }
+# Gamepads for `vyrn.draw` windows (XInput on Windows, evdev on Linux).
+gilrs = { version = "0.11", optional = true }
+# `fs.map`: reading big files (model weights, logs) without copying them.
+memmap2 = "0.9"
+# `vyrn.crypto`: secure random salts and tokens from the operating system.
+getrandom = "0.2"
+# `use vyrn.physics`: rigid bodies, collisions and character movement.
+rapier3d = { version = "0.36", optional = true }
+# `use vyrn.sound`: playback and decoding of WAV, Ogg Vorbis and MP3.
+rodio = { version = "0.23", optional = true, default-features = false, features = ["playback", "wav", "vorbis", "mp3"] }
+# `use vyrn.draw`: windows (minifb).
+minifb = { version = "0.29", optional = true, default-features = false, features = ["x11"] }
+# `use vyrn.mail`: sending email over SMTP, with TLS by rustls.
+lettre = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "builder", "hostname", "rustls-tls", "ring"] }
+# The native tier: typed functions compiled to machine code at load time.
+cranelift-codegen = { version = "0.137.1", optional = true }
+cranelift-frontend = { version = "0.137.1", optional = true }
+cranelift-jit = { version = "0.137.1", optional = true }
+cranelift-module = { version = "0.137.1", optional = true }
+cranelift-native = { version = "0.137.1", optional = true }
+
+# On WebAssembly there is no zoneinfo folder: named time zones come from
+# a copy of the time-zone database built into Vyrn.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }

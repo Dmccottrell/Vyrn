@@ -1,0 +1,32 @@
+# settings.vyrn: a settings window laid out without a single coordinate.
+# Widgets given no x and y go one under another; between row() and
+# end_row() they go side by side.
+
+use vyrn.draw
+
+main:
+    let win = draw.window(420, 320, "Settings")
+    var volume = 70.0
+    var music = true
+    var saved = ""
+    loop win.open():
+        win.clear("#263238")
+        win.layout(24, 24, gap = 12)
+        win.label("Player name")
+        let name = win.input("name", hint = "Your name")
+        win.label("Volume: {volume.round()}")
+        volume = win.slider("volume", 0, 100, volume)
+        music = win.checkbox("Music", checked = music)
+        win.space(8)
+        win.row()
+        if win.button("Save"): saved = "Saved {name}, volume {volume.round()}"
+        if win.button("Reset"):
+            volume = 70.0
+            music = true
+            win.set_input("name", "")
+        end
+        win.end_row()
+        win.label(saved, color = "#a5d6a7")
+        win.show()
+    end
+end

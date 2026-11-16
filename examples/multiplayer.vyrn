@@ -1,0 +1,121 @@
+# Arena: a networked multiplayer game.
+#
+# Start the server, then any number of players (on this computer, or on
+# others in the same network, using the server's address):
+#
+#   vyrn run examples/multiplayer.vyrn server
+#   vyrn run examples/multiplayer.vyrn play 127.0.0.1 Ada
+#   vyrn run examples/multiplayer.vyrn play 127.0.0.1 Bo
+#
+# Arrow keys move; touching another player tags them (they get a point
+# against them and jump back to the middle).
+#
+# How it works, the way real online games do it:
+# - Each player sends its input (which keys are down) to the server over
+#   UDP, every frame. UDP is fast, and a lost message doesn't matter: the
+#   next one comes 16 ms later.
+# - The server is the one source of truth: it moves everyone, checks the
+#   tags, and sends the whole world state back to every player.
+# - Players draw what the server says. (Big games also predict their own
+#   movement so it feels instant, then correct it: a good next step.)
+use vyrn.draw
+use vyrn.net
+use vyrn.os
+use vyrn.time
+
+const PORT = 4747
+const SIZE = 600
+const SPEED = 220.0
+const RADIUS = 14
+
+object Player:
+    name: str
+    x: float = 300.0
+    y: float = 300.0
+    tagged: int = 0
+    last_seen: float = 0.0
+    keys: list = []
+end
+
+create step(p: Player, dt: float):
+    var dx = 0.0
+    var dy = 0.0
+    if "left" in p.keys: dx -= 1
+    if "right" in p.keys: dx += 1
+    if "up" in p.keys: dy -= 1
+    if "down" in p.keys: dy += 1
+    p.x = (p.x + dx * SPEED * dt).clamp(RADIUS, SIZE - RADIUS)
+    p.y = (p.y + dy * SPEED * dt).clamp(RADIUS, SIZE - RADIUS)
+end
+
+create serve():
+    let sock = net.udp(PORT)
+    print("Server on port {PORT}. Waiting for players...")
+    var players = {}
+    var last = time.monotonic()
+    loop:
+        let now = time.monotonic()
+        let dt = now - last
+        last = now
+        each msg in sock.receive_all():
+            let address = msg["from"]
+            let data = msg["data"]
+            if address not in players:
+                players[address] = Player(data["name"])
+                print("{data["name"]} joined from {address}")
+            end
+            players[address].keys = data["keys"]
+            players[address].last_seen = now
+        end
+        # Players silent for 3 seconds have left.
+        each address in list(players.keys()):
+            if now - players[address].last_seen > 3:
+                print("{players[address].name} left")
+                players.remove(address)
+            end
+        end
+        each p in players.values(): step(p, dt)
+        let everyone = list(players.values())
+        each a in everyone:
+            each b in everyone:
+                if a.name < b.name and ((a.x - b.x) ** 2 + (a.y - b.y) ** 2) ** 0.5 < RADIUS * 2:
+                    b.tagged += 1
+                    b.x = 300.0
+                    b.y = 300.0
+                end
+            end
+        end
+        let state = [{"name": p.name, "x": p.x, "y": p.y, "tagged": p.tagged} each p in everyone]
+        each address in players.keys(): sock.send(address, state)
+        time.sleep(1.0 / 60)
+    end
+end
+
+create play(host: str, name: str):
+    let sock = net.udp()
+    let server = "{host}:{PORT}"
+    let win = draw.window(SIZE, SIZE, "Arena: {name}")
+    var world = []
+    loop win.open():
+        let keys = [k each k in ["left", "right", "up", "down"] if win.key_down(k)]
+        sock.send(server, {"name": name, "keys": keys})
+        each msg in sock.receive_all(): world = msg["data"]
+        win.clear("#14213d")
+        each p in world:
+            let colour = "#fca311" if p["name"] == name else "#e5e5e5"
+            win.circle(p["x"], p["y"], RADIUS, colour)
+            win.text("{p["name"]} ({p["tagged"]})", p["x"] - 20, p["y"] - 28, "white")
+        end
+        if len(world) == 0: win.text("Connecting to {server}...", 20, 20, "white")
+        win.show()
+    end
+end
+
+main:
+    let args = os.args()
+    when args[0] if len(args) > 0 else "":
+        is "server": serve()
+        is "play": play(args[1] if len(args) > 1 else "127.0.0.1", args[2] if len(args) > 2 else "player")
+        else: print("run with `server`, or `play <server address> <your name>`")
+    end
+end

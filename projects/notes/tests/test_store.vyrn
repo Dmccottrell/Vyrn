@@ -1,0 +1,31 @@
+# Run with `vyrn test` inside projects/notes.
+#
+# ":memory:" is a database that lives only while the test runs, so tests
+# start empty and never touch notes.db.
+
+use store (NoteStore)
+
+create test_notes_come_back_newest_first():
+    let notes = NoteStore(":memory:")
+    notes.add("first", "a")
+    notes.add("second", "b")
+    assert([n.title each n in notes.all()] == ["second", "first"])
+end
+
+create test_search_looks_in_titles_and_text_ignoring_capitals():
+    let notes = NoteStore(":memory:")
+    notes.add("Shopping", "milk and eggs")
+    notes.add("Ideas", "a game about MILKMEN")
+    notes.add("Other", "nothing here")
+    assert(len(notes.search("milk")) == 2)
+    assert(len(notes.search("shop")) == 1)
+    assert(len(notes.search("zebra")) == 0)
+end
+
+create test_removing_a_note():
+    let notes = NoteStore(":memory:")
+    let note = notes.add("temp", "")
+    assert(notes.remove(note.id))
+    assert(not notes.remove(note.id))
+    assert(len(notes.all()) == 0)
+end

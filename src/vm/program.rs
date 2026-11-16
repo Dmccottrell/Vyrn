@@ -1,0 +1,195 @@
+//! Compiled programs: function prototypes, types, globals and routes.
+
+use std::collections::HashMap;
+use std::fmt::Write;
+use std::rc::Rc;
+
+use super::op::Op;
+use super::value::{Interner, Symbol, Value};
+use crate::ast::{HttpMethod, PathSegment};
+
+/// A compiled function.
+#[derive(Debug)]
+pub struct Proto {
+    pub name: String,
+    pub code: Vec<Op>,
+    /// Source line of each instruction, for error messages.
+    pub lines: Vec<u32>,
+    /// Which loaded file the function is in (its spans' `offset >> 24`).
+    pub file: u32,
+    /// The function compiled to machine code, when it could be (`src/native`).
+    pub native: std::cell::OnceCell<Rc<super::native_abi::NativeFn>>,
+    pub consts: Vec<Value>,
+    /// Names used by field, method and type instructions.
+    pub names: Vec<Symbol>,
+    pub params: Vec<Symbol>,
+    /// Parameters that must be passed; the rest have defaults.
+    pub required: usize,
+    /// Registers the frame needs.
+    pub num_regs: usize,
+    /// How to fill each captured variable when a closure is created.
+    pub captures: Vec<Capture>,
+    /// `async fn`: calling it starts a task and returns its handle.
+    pub is_async: bool,
+    /// The last parameter takes every remaining argument as a list.
+    pub variadic: bool,
+    /// The body has `yield`: calling it makes a generator.
+    pub is_generator: bool,
+    /// The type whose method (or constructor) this is, or a function
+    /// inside one: it may use that type's `private` members.
+    pub owner: Option<u16>,
+    /// `kernel fn`: its body lowered for running on tensors, or why it
+    /// could not be.
+    pub kernel: Option<Rc<Result<super::kernel::Kernel, String>>>,
+    /// Named variables and where each is in scope, for the debugger.
+    pub locals: Vec<LocalVar>,
+}
+
+/// A variable for the debugger: in register `reg` while the instruction
+/// pointer is in `from..to`.
+#[derive(Clone, Debug)]
+pub struct LocalVar {
+    pub name: String,
+    pub reg: u8,
+    pub from: u32,
+    pub to: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Capture {
+    /// A register of the frame creating the closure.
+    Local(u8),
+    /// A variable that frame itself captured.
+    Outer(u8),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypeKind {
+    Struct,
+    Class,
+    Enum,
+    Variant,
+}
+
+#[derive(Debug)]
+pub struct TypeDef {
+    /// For variants, the qualified name: `Shape.Circle`.
+    pub name: Symbol,
+    pub kind: TypeKind,
+    pub fields: Vec<Symbol>,
+    /// Whether fields are positional, as in `Rect(f32, f32)`.
+    pub positional: bool,
+    pub methods: HashMap<Symbol, usize>,
+    /// The base class, or a variant's enum.
+    pub parent: Option<u16>,
+    /// An enum's variants: short name and type index.
+    pub variants: Vec<(Symbol, u16)>,
+    /// The constructor's prototype, for structs, classes and variants with
+    /// fields.
+    pub ctor: Option<usize>,
+    /// Fields and methods only the type's own methods may use, including
+    /// those of its base classes.
+    pub private: Vec<Symbol>,
+    /// The traits it implements, by name: `x is Shape` checks them.
+    pub traits: Vec<Symbol>,
+}
+
+#[derive(Debug)]
+pub enum GlobalInit {
+    Function(usize),
+    Type(u16),
+    /// Set by the module initializer.
+    Const,
+}
+
+#[derive(Debug)]
+pub struct Global {
+    pub name: String,
+    pub init: GlobalInit,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ParamSource {
+    /// A `{name}` hole in the path.
+    Path,
+    /// Supplied by the host: a database pool, configuration and so on.
+    Provided,
+}
+
+#[derive(Debug)]
+pub struct RouteParam {
+    pub name: String,
+    pub source: ParamSource,
+    /// The declared type's name, used to convert path text.
+    pub ty: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct RouteDef {
+    pub method: HttpMethod,
+    pub segments: Vec<PathSegment>,
+    pub params: Vec<RouteParam>,
+    pub proto: usize,
+}
+
+#[derive(Debug)]
+pub struct Program {
+    pub protos: Vec<Rc<Proto>>,
+    pub types: Vec<TypeDef>,
+    pub globals: Vec<Global>,
+    pub symbols: Interner,
+    /// Evaluates the constants. Runs once before anything else.
+    pub init: usize,
+    pub main: Option<usize>,
+    pub routes: Vec<RouteDef>,
+}
+
+impl Program {
+    pub fn global(&self, name: &str) -> Option<usize> {
+        self.globals.iter().position(|g| g.name == name)
+    }
+
+    /// A readable listing of every function's bytecode.
+    pub fn disassemble(&self) -> String {
+        let mut out = String::new();
+        for (index, proto) in self.protos.iter().enumerate() {
+            let params: Vec<&str> = proto.params.iter().map(|p| self.symbols.name(*p)).collect();
+            let _ = writeln!(
+                out,
+                "fn #{index} {}({}) registers={}",
+                proto.name,
+                params.join(", "),
+                proto.num_regs
+            );
+            if proto.native.get().is_some() {
+                let _ = writeln!(
+                    out,
+                    "  native: runs as machine code when called with the declared types"
+                );
+            }
+            for (i, value) in proto.consts.iter().enumerate() {
+                let _ = writeln!(out, "    k{i} = {value:?}");
+            }
+            for (i, op) in proto.code.iter().enumerate() {
+                let _ = writeln!(out, "  {i:>4}  line {:<4} {op:?}", proto.lines[i]);
+            }
+            match proto.kernel.as_deref() {
+                Some(Ok(kernel)) => {
+                    let _ = writeln!(
+                        out,
+                        "  kernel: the WGSL compute shader when every argument is a tensor"
+                    );
+                    for line in kernel.wgsl(&vec![true; kernel.params.len()]).lines() {
+                        let _ = writeln!(out, "    | {line}");
+                    }
+                }
+                Some(Err(why)) => {
+                    let _ = writeln!(out, "  kernel: runs on numbers only, because {why}");
+                }
+                None => {}
+            }
+            out.push('\n');
+        }
+        out
+    }
+}

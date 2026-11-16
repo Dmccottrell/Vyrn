@@ -1,0 +1,488 @@
+(* ============================================================================
+   Vyrn Language Grammar -- v0.4
+   File extension: .vyrn
+
+   Notation
+     =      definition            ;      end of rule
+     |      alternative           ( )    grouping
+     [ ]    optional (0 or 1)     { }    repetition (0 or more)
+     "x"    terminal              UPPER  token produced by the lexer (section 9)
+
+   Layout
+     A compound statement starts with a header line ending in ":". After the
+     colon comes either
+       - a single simple statement on the same line, with no `end`:
+             if lives == 0: stop
+       - a line break, a block of statements, and a closing `end`.
+     Indentation is not significant; it is for readers and the formatter.
+     A statement ends at NEWLINE. The lexer emits at most one NEWLINE between
+     tokens and none at the start of a file. It emits no NEWLINE
+       - inside ( ), [ ] or { }
+       - after a token that cannot end a statement (a binary operator, an
+         assignment operator, `,` or `.`), so long expressions may wrap.
+   ============================================================================ *)
+
+
+(* ---- 1. Module ----------------------------------------------------------- *)
+
+(* The top level holds declarations only. Execution starts at `main`.
+   A program has exactly one `main`; a file without one is a library.          *)
+module        = { item } ;
+
+item          = use_decl
+              | main_decl
+              | { DOC_COMMENT } { decorator } [ "pub" ] declaration ;
+
+declaration   = const_decl
+              | type_alias
+              | fn_decl
+              | struct_decl
+              | object_decl
+              | enum_decl
+              | trait_decl
+              | impl_decl
+              | route_decl
+              | route_group
+              | extern_decl ;
+
+(* `use "github.com/ann/neural@v1"` fetches a module from any git host over
+   HTTPS; see docs/ffi.md. It is bound to the last path segment (`neural`). *)
+use_decl      = "use" ( dotted_name | STRING )
+                [ "as" IDENT | "(" use_name { "," use_name } [ "," ] ")" ] NEWLINE ;
+use_name      = IDENT [ "as" IDENT ] ;
+dotted_name   = IDENT { "." IDENT } ;
+
+main_decl     = "main" [ "(" [ params ] ")" ] suite ;
+
+const_decl    = "const" IDENT [ ":" type ] "=" expression NEWLINE ;
+type_alias    = "type" IDENT [ generic_params ] "=" type NEWLINE ;
+
+decorator     = "@" dotted_name [ "(" [ arguments ] ")" ] NEWLINE ;
+
+block         = { statement } ;
+
+(* The body of every compound statement and declaration that holds code. *)
+suite         = ":" ( simple_stmt NEWLINE
+                    | NEWLINE block "end" NEWLINE ) ;
+
+(* A clause body inside a chain (else if, else, is, catch, always). The chain
+   as a whole closes with one `end`, so a clause has no `end` of its own.     *)
+clause_body   = simple_stmt NEWLINE
+              | NEWLINE block ;
+
+
+(* ---- 2. Declarations ----------------------------------------------------- *)
+
+(* Functions.
+     async   returns a future; may use await
+     strict  every binding must be statically typed; no dynamic dispatch
+     kernel  strict + compiled for CPU SIMD / GPU execution
+     export  exposed to the host ABI, e.g. export "wasm" create render()      *)
+fn_decl       = fn_head suite ;
+fn_sig        = fn_head NEWLINE ;
+fn_head       = { fn_modifier } "create" IDENT [ generic_params ]
+                "(" [ params ] ")" [ result ] ;
+
+(* `-> T` is the return type. `fails E` names the error the function may
+   pass to its caller: create find(id: u64) -> User fails NotFound:          *)
+fn_modifier   = "async" | "strict" | "kernel" | "export" [ STRING ] ;
+result        = "->" type [ "fails" type ]
+              | "fails" type ;
+
+(* Parameter passing. No lifetime annotations exist in the language.
+     x: T        shared read-only borrow (the default)
+     mut x: T    exclusive mutable borrow
+     own x: T    ownership is moved into the callee
+   An omitted type means `any` (dynamically typed).                            *)
+params        = param { "," param } [ "," ] ;
+param         = [ pass_mode ] IDENT [ ":" type ] [ "=" expression ] ;
+pass_mode     = "mut" | "own" ;
+
+generic_params = "[" generic_param { "," generic_param } "]" ;
+generic_param  = IDENT [ ":" type { "+" type } ] ;
+
+(* struct: value type, statically sized, stored inline. No inheritance.
+   object: reference type, heap allocated, automatically reference counted.
+           May extend one base object: object Enemy(Actor):                  *)
+struct_decl   = "struct" IDENT [ generic_params ] ":" NEWLINE { member } "end" NEWLINE ;
+object_decl   = "object" IDENT [ generic_params ] [ "(" type ")" ] ":" NEWLINE
+                { member } "end" NEWLINE ;
+member        = field_decl
+              | method_decl ;
+field_decl    = [ "pub" ] IDENT ( ":" type [ "=" expression ]
+                                | "=" expression ) NEWLINE ;
+method_decl   = { DOC_COMMENT } { decorator } [ "pub" ] fn_decl ;
+
+enum_decl     = "enum" IDENT [ generic_params ] ":" NEWLINE
+                { variant | method_decl } "end" NEWLINE ;
+variant       = IDENT [ "(" variant_field { "," variant_field } ")"
+                      | "=" expression ] NEWLINE ;
+variant_field = [ IDENT ":" ] type ;
+
+(* Trait members are signatures only in v0.4. *)
+trait_decl    = "trait" IDENT [ generic_params ] [ "(" type { "," type } ")" ] ":" NEWLINE
+                { fn_sig } "end" NEWLINE ;
+
+impl_decl     = "impl" [ generic_params ] type [ "for" type ] ":" NEWLINE
+                { method_decl } "end" NEWLINE ;
+
+(* HTTP routing. The path is an ordinary string token. Each {name} in it is a
+   path parameter and must match a parameter of the same name. Other
+   parameters are the request body (struct types) or registered providers.
+   A route body is implicitly async; its result is serialized (JSON by
+   default). The HTTP method names are contextual: they are keywords only
+   directly after `route`.                                                     *)
+route_decl    = "route" http_method STRING [ "(" [ params ] ")" ] [ result ] suite ;
+route_group   = "routes" STRING ":" NEWLINE { route_item } "end" NEWLINE ;
+route_item    = { DOC_COMMENT } { decorator } ( route_decl | route_group ) ;
+http_method   = "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+              | "HEAD" | "OPTIONS" | "WS" | "SSE" ;
+
+(* Foreign functions: extern "c", extern "js" (WebAssembly host imports). *)
+extern_decl   = "extern" STRING ( fn_sig
+                                | ":" NEWLINE { fn_sig } "end" NEWLINE ) ;
+
+
+(* ---- 3. Statements ------------------------------------------------------- *)
+
+statement     = simple_stmt NEWLINE
+              | compound_stmt ;
+
+simple_stmt   = binding_stmt
+              | expr_stmt
+              | return_stmt
+              | fail_stmt
+              | defer_stmt
+              | "stop"
+              | "skip" ;
+
+(* As in Python, assigning to a new name declares a variable: total = 0.
+   let = fixed (cannot be reassigned), var = explicitly mutable, const =
+   evaluated at compile time. Inside `strict` and `kernel` functions every
+   new name must be declared with let, var or const, so a typo cannot
+   silently create a variable. This is a semantic rule, checked after
+   parsing.                                                                    *)
+binding_stmt  = ( "let" | "var" | "const" ) bind_target
+                [ ":" type ] [ "=" expression_list ] ;
+bind_target   = bind_name { "," bind_name } ;
+bind_name     = IDENT | "_" | "(" bind_target ")" ;
+
+(* The left side of an assignment must be an assignable place (name, field,
+   subscript, or a tuple of those); this is checked after parsing.             *)
+expr_stmt     = expression_list [ ( "=" | assign_op ) expression_list ] ;
+assign_op     = "+=" | "-=" | "*=" | "/=" | "//=" | "%=" | "@=" | "**="
+              | "&=" | "|=" | "^=" | "<<=" | ">>=" | "??=" ;
+
+return_stmt   = "return" [ expression_list ] ;
+fail_stmt     = "fail" expression ;
+defer_stmt    = "defer" expression ;
+
+compound_stmt = if_stmt
+              | loop_stmt
+              | each_stmt
+              | when_stmt
+              | attempt_stmt
+              | using_stmt
+              | on_stmt
+              | region_stmt
+              | unsafe_stmt
+              | { decorator } fn_decl ;
+
+(* Two forms.
+     One line, no `end`, no else:           if lives == 0: stop
+     A chain closed by a single `end`:      if a:
+                                                ...
+                                            else if b: return 2
+                                            else:
+                                                ...
+                                            end
+   The first branch of a chain must be in block form. This removes the
+   "dangling else" ambiguity without relying on indentation. For a one-line
+   choice between two values use the expression form `a if cond else b`.    *)
+if_stmt       = "if" condition ":"
+                ( simple_stmt NEWLINE
+                | NEWLINE block
+                  { "else" "if" condition ":" clause_body }
+                  [ "else" ":" clause_body ]
+                  "end" NEWLINE ) ;
+condition     = expression
+              | "let" pattern "=" expression ;
+
+(* `loop cond:` repeats while the condition holds; `loop:` repeats until
+   `stop` or `return`.                                                         *)
+loop_stmt     = "loop" [ condition ] suite ;
+
+(* `in` is used for iteration and membership only.
+   `each mut e in xs` borrows each element mutably; `each own e in xs`
+   consumes the collection. `par each` runs iterations in parallel;
+   `async each` awaits an async stream.                                        *)
+each_stmt     = [ "async" | "par" ] "each" [ pass_mode ] bind_target
+                "in" expression suite ;
+
+(* Arms run until the next `is`, `else` or `end`. No arm falls through. *)
+when_stmt     = "when" expression ":" NEWLINE
+                { when_arm }
+                [ "else" ":" clause_body ]
+                "end" NEWLINE ;
+when_arm      = "is" pattern [ "if" expression ] ":" clause_body ;
+
+(* `always` runs on every way out: normal end, `return`, `stop`, failure. *)
+attempt_stmt  = "attempt" ":" NEWLINE block
+                { "catch" [ type [ "as" IDENT ] ] ":" clause_body }
+                [ "always" ":" clause_body ]
+                "end" NEWLINE ;
+
+using_stmt    = [ "async" ] "using" using_item { "," using_item } suite ;
+using_item    = expression [ "as" IDENT ] ;
+
+(* `on` is the single placement keyword. Its target is either a device
+   (cpu, gpu[0], gpu[0 to 3]) or a memory region (frame). Inside the block,
+   allocations and tensor kernels use that target.                             *)
+on_stmt       = "on" coalesce suite ;
+
+(* Declares a memory arena named IDENT. Everything placed `on` it is released
+   in one step when the block ends.                                            *)
+region_stmt   = "region" IDENT suite ;
+
+unsafe_stmt   = "unsafe" suite ;
+
+
+(* ---- 4. Types ------------------------------------------------------------ *)
+
+(* A trailing `on <target>` pins storage to a device or a region:
+     w: tensor[f16; V, D] on gpu[0]        contacts: [Contact] on frame        *)
+type          = union_type [ "on" coalesce ] ;
+union_type    = optional_type { "|" optional_type } ;
+optional_type = primary_type { "?" } ;
+
+primary_type  = "any"
+              | named_type
+              | tensor_type
+              | "[" type [ ";" expression ] "]"
+              | "{" type ":" type "}"
+              | "(" [ type { "," type } ] ")"
+              | "(" [ type { "," type } ] ")" "->" type
+              | ownership primary_type ;
+
+(* [T]      growable list          [T; N]   fixed array, stored inline
+   {K: V}   map                    (A, B)   tuple
+   T?       optional               A | B    union                              *)
+
+named_type    = dotted_name [ "[" generic_arg { "," generic_arg } "]" ] ;
+generic_arg   = type | INT ;
+
+(* tensor[dtype; d0, d1, ...]. A dimension is a constant expression, a shape
+   variable (any free identifier, implicitly generic over the function), `_`
+   for "unchecked", or `...` for "any number of leading dimensions".           *)
+tensor_type   = "tensor" "[" type [ ";" dim { "," dim } ] "]" ;
+dim           = "_" | "..." | sum ;
+
+(* ref T      borrowed view, lifetime inferred (never written by the user)
+   ref mut T  exclusive borrowed view
+   shared T   reference-counted shared ownership
+   weak T     non-owning reference to a shared value
+   ptr T      raw pointer, usable only inside `unsafe`                         *)
+ownership     = "ref" [ "mut" ] | "shared" | "weak" | "ptr" ;
+
+
+(* ---- 5. Expressions (lowest to highest precedence) ----------------------- *)
+
+expression_list = expression { "," expression } [ "," ] ;
+
+expression    = lambda
+              | conditional ;
+(* `x => x * 2`, `(a, b) => a + b`, `async (url) => await get(url)`. A
+   `(` starts a lambda when the matching `)` is followed by `=>`.            *)
+lambda        = [ "async" ] ( IDENT | "(" [ params ] ")" ) "=>" expression ;
+
+(* Python's conditional expression: "big" if size > 3 else "small" *)
+conditional   = pipeline [ "if" pipeline "else" expression ] ;
+pipeline      = placement { "|>" placement } ;
+
+(* `x on gpu[1]` yields x placed on that device; `x on frame` allocates the
+   result in that region.                                                      *)
+placement     = coalesce [ "on" coalesce ] ;
+coalesce      = or_expr { "??" or_expr } ;
+or_expr       = and_expr { "or" and_expr } ;
+and_expr      = not_expr { "and" not_expr } ;
+not_expr      = "not" not_expr
+              | comparison ;
+comparison    = range_expr { comp_op range_expr } ;
+comp_op       = "==" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "not" "in" ;
+
+(* `a to b` includes b; `a until b` excludes it; `by` sets the step. *)
+range_expr    = bit_or [ ( "to" | "until" ) bit_or [ "by" bit_or ] ] ;
+bit_or        = bit_xor { "|" bit_xor } ;
+bit_xor       = bit_and { "^" bit_and } ;
+bit_and       = shift { "&" shift } ;
+shift         = sum { ( "<<" | ">>" ) sum } ;
+sum           = term { ( "+" | "-" ) term } ;
+
+(* Arithmetic follows Python, and tensor arithmetic follows NumPy/PyTorch:
+     *   element-wise product (with broadcasting)
+     @   matrix product, batched over leading dimensions
+     /   true division     //  floor division     %   remainder               *)
+term          = unary { ( "*" | "/" | "//" | "%" | "@" ) unary } ;
+unary         = ( "-" | "+" | "~" ) unary
+              | "await" unary
+              | "spawn" unary
+              | "move" unary
+              | power ;
+power         = postfix [ "**" unary ] ;
+
+(*  await e   suspend until the future e completes
+    spawn e   start e as a concurrent task and return its handle
+    try e     unwrap a result, passing a failure up to the caller
+    move e    give up ownership of e                                           *)
+
+(* Transpose is an ordinary property, as in PyTorch: w.T, batch.mT *)
+postfix       = atom { trailer } ;
+trailer       = "." IDENT
+              | "?." IDENT
+              | "(" [ arguments ] ")"
+              | "[" subscripts "]" ;
+
+(* `mut` at the call site makes mutation visible: step(mut world, dt) *)
+arguments     = argument { "," argument } [ "," ] ;
+argument      = [ "mut" ] expression
+              | IDENT "=" expression ;
+
+(* Python / NumPy indexing and slicing for lists, arrays and tensors:
+     t[i, j]        element           t[:, 0]           first column
+     t[1:9:2]       strided slice     t[:, -1]          last column
+     t[..., none]   add a new axis    t[mask]  t[idx]   mask / gather       *)
+subscripts    = subscript { "," subscript } [ "," ] ;
+subscript     = expression
+              | [ expression ] ":" [ expression ] [ ":" [ expression ] ]
+              | "..." ;
+
+(* In an expression `tensor` is the builtin that builds a tensor:
+   tensor([[1, 2], [3, 4]]). In a type it starts a tensor type.               *)
+atom          = IDENT
+              | "tensor"
+              | literal
+              | "(" [ expression_list ] ")"
+              | "[" [ expression_list | expression comp_clauses ] "]"
+              | "{" [ map_items | map_item comp_clauses ] "}" ;
+
+map_items     = map_item { "," map_item } [ "," ] ;
+map_item      = expression ":" expression ;
+
+comp_clauses  = comp_each { comp_each | comp_if } ;
+comp_each     = "each" bind_target "in" pipeline ;
+comp_if       = "if" pipeline ;
+
+literal       = INT | FLOAT | STRING | "true" | "false" | "none" ;
+
+
+(* ---- 6. Patterns --------------------------------------------------------- *)
+
+(* A bare identifier binds a new name; a dotted name is compared by value;
+   `Name(...)` destructures a struct or enum variant.                          *)
+pattern       = or_pattern [ "as" IDENT ] ;
+or_pattern    = primary_pat { "or" primary_pat } ;
+primary_pat   = "_"
+              | literal_pat [ ( "to" | "until" ) literal_pat ]
+              | IDENT
+              | IDENT "." dotted_name
+              | dotted_name "(" [ pattern_arg { "," pattern_arg } ] ")"
+              | "(" [ seq_pat { "," seq_pat } [ "," ] ] ")"
+              | "[" [ seq_pat { "," seq_pat } [ "," ] ] "]" ;
+literal_pat   = [ "-" ] ( INT | FLOAT )
+              | STRING | "true" | "false" | "none" ;
+pattern_arg   = [ IDENT "=" ] pattern ;
+seq_pat       = pattern
+              | "..." [ IDENT ] ;
+
+
+(* ---- 7. Reserved words --------------------------------------------------- *)
+
+(* Hard keywords:
+     always and any as async attempt await by catch const defer each else end
+     enum export extern fail fails false for if impl in is kernel let loop
+     main move mut none not object on or own par ptr pub ref region return
+     route routes shared skip spawn stop strict struct tensor to trait true
+     type unsafe until use using var weak when
+
+   `create` is a keyword only when a function name and `(` or `[` follow
+   it on the same line (`create greet(name):`); elsewhere it is a name.
+   `for` appears only in `impl Trait for Type`. Python's words (def, fn, elif,
+   while, match, class, with, try, finally, pass, ...) are ordinary names;
+   used as statement headers, the parser names the Vyrn word instead.
+
+   A word directly after `.` or `?.` is always an identifier, so fields and
+   methods may use these names (range.end, player.move).
+
+   Contextual keywords:
+     GET POST PUT PATCH DELETE HEAD OPTIONS WS SSE     directly after `route`
+     create                                            before a function name and `(`/`[`
+
+   Ordinary predeclared names (not keywords): self, cpu, gpu, int, float, str,
+   bool, i8..i64, u8..u64, f16, f32, f64, bf16, vec2, vec3, vec4, mat4, ...    *)
+
+
+(* ---- 8. Changes from v0.3 ------------------------------------------------ *)
+
+(* Python's shape, Vyrn's words.
+   1. Headers end with ":" (create, if, each, struct, route, main, ...). A body is
+      either one statement on the same line, or a block closed by `end`.
+   2. `then` is removed. `else if` continues an if chain. The conditional
+      expression is Python's `a if cond else b`.
+   3. `returns T` becomes `-> T`; `fails E` follows it with no comma.
+   4. `div` and `mod` become `//` and `%`.
+   5. Slicing is Python/NumPy: t[:, -1], t[1:9:2], t[..., none]. The
+      contextual words `all` and `last` and the `_` new-axis marker are gone.
+   6. The postfix `'` transpose is removed in favour of `.T` / `.mT`, which
+      frees `'` for single-quoted strings.
+   7. The `f(x) = expr` form is removed; write `create f(x): return expr`.
+   8. An object may extend one base object: object Enemy(Actor):
+   9. Vyrn's own words: create (fn/def), each (for), loop (while), when (match),
+      using (with), attempt/always (try/finally), object (class),
+      else if (elif). The `try` expression prefix is removed: a failure
+      passes up to the caller by itself. Lambdas drop `fn`: `(x) => x * 2`,
+      and function types are written `(int) -> str`.                      *)
+
+
+(* ---- 9. Lexical grammar -------------------------------------------------- *)
+(* LEXICAL-SECTION *)
+
+IDENT         = ( LETTER | "_" ) { LETTER | DIGIT | "_" } ;
+                (* excluding hard keywords and the lone underscore "_" *)
+
+INT           = ( DEC_DIGITS
+                | "0x" HEX_DIGIT { HEX_DIGIT | "_" }
+                | "0b" BIN_DIGIT { BIN_DIGIT | "_" }
+                | "0o" OCT_DIGIT { OCT_DIGIT | "_" } ) [ INT_SUFFIX ] ;
+FLOAT         = DEC_DIGITS "." DEC_DIGITS [ EXPONENT ] [ FLOAT_SUFFIX ]
+              | DEC_DIGITS EXPONENT [ FLOAT_SUFFIX ]
+              | DEC_DIGITS FLOAT_SUFFIX ;
+DEC_DIGITS    = DIGIT { DIGIT | "_" } ;
+EXPONENT      = ( "e" | "E" ) [ "+" | "-" ] DEC_DIGITS ;
+INT_SUFFIX    = "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" ;
+FLOAT_SUFFIX  = "f16" | "f32" | "f64" | "bf16" ;
+
+(* Every string interpolates, like a Python f-string without the f:
+   "{expr}" evaluates expr. Write \{ for a literal brace. Single and double
+   quotes are equivalent. The r prefix makes a raw string: no escapes, no
+   interpolation. A route path is a STRING whose {name} holes name path
+   parameters.                                                                 *)
+STRING        = [ "r" ] ( SHORT_STRING | LONG_STRING ) ;
+SHORT_STRING  = '"' { STRING_CHAR | ESCAPE | INTERPOLATION } '"'
+              | "'" { STRING_CHAR | ESCAPE | INTERPOLATION } "'" ;
+LONG_STRING   = '"""' { ANY_CHAR | ESCAPE | INTERPOLATION } '"""'
+              | "'''" { ANY_CHAR | ESCAPE | INTERPOLATION } "'''" ;
+INTERPOLATION = "{" source text of one expression "}" ;
+ESCAPE        = "\" ( "n" | "t" | "r" | "0" | "\" | '"' | "'" | "{" | "}"
+                    | "x" HEX_DIGIT HEX_DIGIT
+                    | "u{" HEX_DIGIT { HEX_DIGIT } "}" ) ;
+
+COMMENT       = "#" { any character except newline } ;      (* discarded *)
+DOC_COMMENT   = "##" { any character except newline } ;     (* kept; the following NEWLINE is not emitted *)
+
+NEWLINE       = end of a line, subject to the layout rules at the top of this file ;
+
+LETTER        = "a".."z" | "A".."Z" | any Unicode XID_Start character ;
+DIGIT         = "0".."9" ;
+HEX_DIGIT     = DIGIT | "a".."f" | "A".."F" ;
+BIN_DIGIT     = "0" | "1" ;
+OCT_DIGIT     = "0".."7" ;

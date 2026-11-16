@@ -1,0 +1,39 @@
+# check.vyrn: checks index.json before a pull request is merged.
+#
+#   vyrn run check.vyrn
+#
+# Every package needs a unique lower-case name, a description, a module URL
+# (host/owner/repo) and versions written as tags (v1.2.3). Problems are
+# listed with the package they belong to, and the run fails.
+
+use vyrn.json
+use vyrn.os
+use vyrn.re
+
+main:
+    let index = json.load("index.json")
+    var problems = []
+    var seen = set()
+    each p in index["packages"]:
+        let name = p.get("name", "")
+        let where = "`{name}`" if name != "" else "a package"
+        if not re.test("^[a-z][a-z0-9-]*$", name):
+            problems.append("{where}: names are lower-case letters, digits and dashes, starting with a letter")
+        end
+        if name in seen: problems.append("{where}: the name is listed twice")
+        seen.add(name)
+        if p.get("description", "").strip() == "": problems.append("{where}: needs a description")
+        if not re.test("^[a-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[A-Za-z0-9_./-]+)?$", p.get("url", "")):
+            problems.append("{where}: `url` is host/owner/repo, such as github.com/ann/neural")
+        end
+        each v in p.get("versions", []):
+            if not re.test("^v[0-9]+[.][0-9]+[.][0-9]+$", v): problems.append("{where}: version {v} is not a tag like v1.2.3")
+        end
+    end
+    each problem in problems: print(problem)
+    if len(problems) > 0:
+        print("{len(problems)} problem(s)")
+        os.exit(1)
+    end
+    print("{len(index["packages"])} package(s), all fine")
+end

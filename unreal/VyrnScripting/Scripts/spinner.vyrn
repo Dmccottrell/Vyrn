@@ -1,0 +1,35 @@
+# spinner.vyrn: the smallest useful script. It turns its actor and bobs it
+# up and down. Put a VyrnScript component on any actor and set its Script to
+# "spinner.vyrn".
+#
+# The plugin calls three functions if a script has them:
+#   begin_play()     once, when the game starts
+#   tick(dt)         every frame; dt is the seconds since the last frame
+#   end_play()       once, when the actor is removed or the game stops
+
+use unreal (Vec3, rotate, location, set_location, get_var, log)
+
+# The spin speed can be set per actor: add "speed" to the component's
+# Variables in the editor (for example 180). This is the fallback.
+const DEFAULT_SPEED = 90.0
+
+object State:
+    start: Vec3 = Vec3()
+    age: float = 0.0
+end
+
+# A const object lives as long as the script, so it keeps values from one
+# frame to the next.
+const STATE = State()
+
+create begin_play():
+    STATE.start = location()
+    log("spinner ready at {STATE.start}")
+end
+
+create tick(dt: float):
+    STATE.age += dt
+    rotate(yaw = float(get_var("speed", DEFAULT_SPEED)) * dt)
+    # Bob 20 cm up and down, once every two seconds.
+    set_location(STATE.start + Vec3(0.0, 0.0, 20.0 * (STATE.age * 3.14159).sin()))
+end

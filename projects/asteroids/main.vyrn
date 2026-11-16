@@ -1,0 +1,51 @@
+# Asteroids: shoot the rocks, don't get hit.
+#
+#   vyrn run
+#
+#   left / right    turn
+#   up              thrust
+#   space           fire
+#   enter           play again after game over
+#
+# What this project shows: a game loop with frame time, a small physics
+# module with a vector type that has its own + - * operators, inheritance
+# (Ship, Bullet and Rock all build on Body, using `super` and `init`),
+# lists of objects that come and go, circle collisions, sound effects
+# made from tones, and game rules kept apart from the window so they can
+# be tested.
+
+use vyrn.draw
+use vyrn.sound
+use physics (WIDTH, HEIGHT)
+use game (Game, render)
+
+main:
+    let win = draw.window(WIDTH, HEIGHT, "Asteroids")
+    # Sounds made from waves: no files needed. Each is made once and
+    # played whenever its event happens.
+    let sounds = {
+        "shot": sound.tone(880, 0.06, wave = "square", volume = 0.15),
+        "boom": sound.tone(90, 0.25, wave = "noise", volume = 0.35),
+        "crash": sound.tone(60, 0.6, wave = "noise", volume = 0.5),
+        "level": sound.tone(660, 0.15, wave = "triangle", volume = 0.3),
+    }
+    var game = Game()
+    var dt = 1.0 / 60
+    # The game loop: read the keys, update, play sounds, draw, show.
+    loop win.open():
+        let controls = {
+            "left": win.key_down("left"),
+            "right": win.key_down("right"),
+            "thrust": win.key_down("up"),
+            "fire": win.key_down("space"),
+        }
+        each event in game.update(dt, controls):
+            sounds[event].play()
+        end
+        if game.over and win.key_pressed("enter"): game = Game()
+        render(win, game)
+        # `show` puts the frame on screen and gives the seconds since the
+        # last one, so movement is the same speed on any computer.
+        dt = win.show()
+    end
+end

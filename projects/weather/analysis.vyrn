@@ -1,0 +1,68 @@
+# analysis.vyrn: questions asked of the weather table.
+#
+# Each function takes the whole table and answers one question. They only
+# read the table, so they are easy to test with a few hand-made rows.
+
+use vyrn.table
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+## One city's year in numbers.
+struct CitySummary:
+    city: str
+    average_high: float
+    hottest_day: str
+    hottest: float
+    coldest_day: str
+    coldest: float
+    rain_total: float
+    rainy_days: int
+end
+
+## The cities in the table, in the order they first appear.
+create cities(t: any) -> list:
+    var seen = []
+    each c in t.column("city"):
+        if c not in seen: seen.append(c)
+    end
+    return seen
+end
+
+## A summary of one city.
+create summarize(t: any, city: str) -> CitySummary:
+    # `where` keeps the rows matching a condition.
+    let rows = t.where("city", "==", city)
+    # `sort` with descending = true puts the biggest first; row(0) is it.
+    let hottest = rows.sort("high", true).row(0)
+    let coldest = rows.sort("low").row(0)
+    # A day counts as rainy from 1 mm.
+    let rainy = rows.where("rain", ">=", 1.0)
+    return CitySummary(
+        city,
+        round(rows.mean("high"), 1),
+        hottest["date"],
+        hottest["high"],
+        coldest["date"],
+        coldest["low"],
+        round(rows.sum("rain"), 1),
+        len(rainy),
+    )
+end
+
+## Each city's average high in each month: {"Oslo": [12 numbers], ...}.
+create monthly_highs(t: any) -> map:
+    var result = {}
+    each city in cities(t):
+        let rows = t.where("city", "==", city)
+        # `group_by` makes one row per month, with that month's mean high.
+        let by_month = rows.group_by("month", "high", "mean").sort("month")
+        result[city] = [round(v, 1) each v in by_month.column("high_mean")]
+    end
+    return result
+end
+
+## Total rain per city, wettest first, as (city, mm) pairs.
+create rain_totals(t: any) -> list:
+    let totals = t.group_by("city", "rain", "sum").sort("rain_sum", true)
+    return [(r["city"], round(r["rain_sum"], 1)) each r in totals]
+end

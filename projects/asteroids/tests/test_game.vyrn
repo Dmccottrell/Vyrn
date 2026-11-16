@@ -1,0 +1,64 @@
+# Run with `vyrn test` inside projects/asteroids.
+#
+# The rules are tested by building small situations by hand: a rock right
+# in front of a bullet, a ship touching a rock, and so on.
+
+use vyrn.random
+use physics (Vec2, Body, wrap, heading)
+use entities (Ship, Bullet, Rock)
+use game (Game)
+
+create test_vectors_add_and_scale():
+    let v = Vec2(1.0, 2.0) + Vec2(3.0, 4.0) * 2.0
+    assert(v.x == 7.0 and v.y == 10.0)
+    assert(Vec2(3.0, 4.0).length() == 5.0)
+end
+
+create test_leaving_the_screen_comes_back_on_the_other_side():
+    let p = wrap(Vec2(-10.0, 610.0))
+    assert(p.x == 790.0 and p.y == 10.0)
+end
+
+create test_up_is_minus_y():
+    let up = heading(0.0)
+    assert(up.x.abs() < 0.0001 and (up.y + 1).abs() < 0.0001)
+end
+
+create test_big_rocks_split_into_two_smaller_ones():
+    random.seed(1)
+    let rock = Rock(Vec2(100.0, 100.0), Vec2(10.0, 0.0), 0.0, 3)
+    assert(rock.radius == 46)
+    let pieces = rock.split()
+    assert(len(pieces) == 2 and pieces[0].size == 2)
+    assert(len(Rock(Vec2(0.0, 0.0), Vec2(0.0, 0.0), 0.0, 1).split()) == 0)
+end
+
+create test_the_gun_reloads_between_shots():
+    let ship = Ship(Vec2(400.0, 300.0), Vec2(0.0, 0.0), 14.0)
+    assert(ship.fire() != none)
+    assert(ship.fire() == none)
+    ship.update(0.5)
+    assert(ship.fire() != none)
+end
+
+create test_shooting_a_rock_scores_and_splits_it():
+    random.seed(2)
+    let g = Game()
+    g.level = 1
+    # A big rock sitting just in front of the ship's nose.
+    g.rocks = [Rock(Vec2(400.0, 230.0), Vec2(0.0, 0.0), 0.0, 3)]
+    var events = []
+    each _ in 1 to 10: events.extend(g.update(1.0 / 60, {"fire": true}))
+    assert("boom" in events)
+    assert(g.score == 20)
+    assert(len(g.rocks) == 2)
+end
+
+create test_a_rock_hitting_the_ship_costs_a_life():
+    let g = Game()
+    g.level = 1
+    g.ship.invulnerable = 0.0
+    g.rocks = [Rock(g.ship.pos, Vec2(0.0, 0.0), 0.0, 2)]
+    let events = g.update(1.0 / 60, {})
+    assert("crash" in events and g.lives == 2)
+end

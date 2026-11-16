@@ -1,0 +1,24 @@
+# Example A (beginner): a grade calculator.
+
+create letter_for(score):
+    if score >= 90: return "A"
+    if score >= 80: return "B"
+    if score >= 70: return "C"
+    return "F"
+end
+
+main:
+    scores = [92, 78, 85, 61]
+    total = 0
+
+    each score in scores:
+        total += score
+    end
+
+    average = total / len(scores)
+    print("Average: {average}, grade {letter_for(average)}")
+
+    each score in scores:
+        if score < 70: print("{score} needs another try")
+    end
+end

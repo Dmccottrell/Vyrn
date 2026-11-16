@@ -1,0 +1,44 @@
+# Example C (web dev): async routes returning JSON.
+
+use vyrn.web
+use app.storage (Db, NotFound)
+
+struct User:
+    id: u64
+    name: str
+    email: str?
+end
+
+# `id` comes from the URL, `db` from a registered provider.
+route GET "/users/{id}" (id: u64, db: Db) -> User fails NotFound:
+    return await db.users.find(id)
+end
+
+route GET "/users/{id}/summary" (id: u64, db: Db):
+    # Both queries run concurrently.
+    let user, orders = await join(
+        db.users.find(id),
+        db.orders.count(user_id = id),
+    )
+    return {
+        "id": user.id,
+        "name": user.name,
+        "orders": orders,
+        "vip": orders > 100,
+    }
+end
+
+routes "/admin":
+    @require(role = "admin")
+    route POST "/users" (body: User, db: Db) -> (int, User):
+        let created = await db.users.insert(body)
+        return 201, created
+    end
+end
+
+main:
+    let db = Db()
+    await db.users.insert(User(1, "Ada", "ada@example.com"))
+    web.provide("db", db)
+    web.serve(port = 8080)
+end

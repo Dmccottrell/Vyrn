@@ -1,0 +1,26 @@
+{
+  "name": "vyrn-lang",
+  "version": "0.4.0",
+  "description": "The Vyrn programming language: `npx vyrn-lang run hello.vyrn`, or install it to get the `vyrn` command",
+  "license": "MIT",
+  "homepage": "https://github.com/dmccottrell/vyrn",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dmccottrell/vyrn",
+    "directory": "npm/vyrn"
+  },
+  "keywords": ["vyrn", "programming-language", "compiler", "interpreter", "cli"],
+  "bin": {
+    "vyrn": "bin/vyrn.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js",
+    "test": "node test.js"
+  },
+  "files": ["bin/vyrn.js", "install.js", "README.md"],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": ["darwin", "linux", "win32"],
+  "cpu": ["x64", "arm64"]
+}

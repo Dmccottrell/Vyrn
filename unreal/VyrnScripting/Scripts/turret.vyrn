@@ -1,0 +1,54 @@
+# turret.vyrn: an FPS-style turret. It turns to face the player, checks it
+# can see them with a trace, and fires on a cooldown by spawning a
+# projectile Blueprint.
+#
+# Variables on the component: "projectile" = the class path of your
+# projectile Blueprint, such as "/Game/FPS/BP_Projectile.BP_Projectile_C".
+# Optional: "range" (cm, default 2500), "fire_rate" (shots a second, 2).
+
+use unreal (Vec3, Rotator, location, rotation, set_rotation, forward, player)
+use unreal (location_of, trace, spawn_actor, get_var, event, warn)
+use vyrn.math
+
+object Turret:
+    cooldown: float = 0.0
+end
+
+const TURRET = Turret()
+
+## The yaw (left-right angle, in degrees) that faces from `a` towards `b`.
+create yaw_towards(a: Vec3, b: Vec3) -> float:
+    return math.degrees(math.atan2(b.y - a.y, b.x - a.x))
+end
+
+create begin_play():
+    if get_var("projectile") == none:
+        warn("turret: set the 'projectile' variable to a projectile class")
+    end
+end
+
+create tick(dt: float):
+    TURRET.cooldown = max(0.0, TURRET.cooldown - dt)
+    let target = player()
+    if target == none: return
+    let me = location()
+    let them = location_of(target)
+    if (them - me).length() > float(get_var("range", 2500)): return
+
+    # Turn to face the player, at most 120 degrees a second.
+    let r = rotation()
+    var turn = (yaw_towards(me, them) - r.yaw + 540) % 360 - 180
+    turn = turn.clamp(-120 * dt, 120 * dt)
+    set_rotation(Rotator(r.pitch, r.yaw + turn, r.roll))
+
+    # Fire only when nearly facing them, with nothing in the way.
+    if turn.abs() > 2 or TURRET.cooldown > 0: return
+    let muzzle = me + forward() * 100.0
+    let hit = trace(muzzle, them)
+    if hit != none and hit.actor != target: return
+    let projectile = get_var("projectile")
+    if projectile == none: return
+    spawn_actor(projectile, muzzle, rotation())
+    event("turret_fired", {"target": target})
+    TURRET.cooldown = 1.0 / float(get_var("fire_rate", 2))
+end

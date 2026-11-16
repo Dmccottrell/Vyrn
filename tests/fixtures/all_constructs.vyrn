@@ -1,0 +1,119 @@
+# Exercises every construct in the v0.4 grammar. Not meant to be meaningful.
+
+use vyrn.io as io
+use vyrn.math (sqrt, pow as power)
+
+pub type Id = u64
+pub const LIMIT: u32 = 0xFF_FFu32
+
+## A shape with a few variants.
+enum Shape:
+    Circle(radius: f32)
+    Rect(f32, f32)
+    Empty
+
+    create area(self) -> f32:
+        when self:
+            is Shape.Circle(r): return 3.14 * r ** 2
+            is Shape.Rect(w, h) if w > 0.0:
+                return w * h
+            else: return 0.0
+        end
+    end
+end
+
+trait Drawable(Sized):
+    create draw(self, mut frame: Frame)
+end
+
+impl Drawable for Shape:
+    create draw(self, mut frame: Frame):
+    end
+end
+
+object Actor:
+    name = "actor"
+end
+
+object Node[T: Ord + Hash](Actor):
+    value: T
+    next: shared Node[T]?
+    parent: weak Node[T]
+    count = 0
+end
+
+extern "js":
+    create log(msg: str)
+end
+
+extern "c" create puts(s: ptr u8) -> i32
+
+create square(x): return x * x
+
+export "wasm" create render(own scene: Scene, canvas: ref mut Canvas) -> int fails RenderError:
+    let xs = [x * 2 each x in 0 until 10 if x % 2 == 0]
+    let m = {k: v each k, v in pairs}
+    let f = (a, b = 1) => a + b
+    var y = xs |> sum
+    let name = user?.name ?? 'anon'
+    let size = "big" if y > 3 else "small"
+    let half = range.end // 2
+    if let Shape.Circle(r) = shape:
+        log("r={r} \{literal\}")
+    else if y in 0 to 5:
+        y -= 1
+    else if y > 100: y = 100
+    else:
+        fail Bad(r"raw {text}")
+    end
+    attempt:
+        using open(p) as fh, lock:
+            defer fh.close()
+        end
+    catch IoError as e:
+        return -1
+    catch: return -2
+    always:
+        y = 0
+    end
+    when command:
+        is "n" or "north": y += 1
+        is 1 to 9 as digit: y = digit
+        is [first, ...rest]: y = first
+        is (a, _): y = a
+        is Point(x = 0, y = py):
+            y = py
+        else: stop
+    end
+    loop:
+        if y > 10: stop
+        y //= 2
+        y %= 7
+        skip
+    end
+    return 0
+end
+
+async create train(model, data, w: tensor[f32; ..., _, 3] on gpu[0 to 3]):
+    par each dev, batch in zip(gpu[0 until 4], data):
+        on dev:
+            let t = spawn step(mut model, move batch)
+            var loss = await t
+            loss **= 2
+        end
+    end
+    async each ev in stream: x[1:9:2, ..., none] @= w[mask].mT
+    let total = 1.5e-3f32 +
+        2f64 +
+        0b1010 + 0o17 + 1_000_000
+    let tail = xs[-3:] + xs[::2] + xs[:]
+    unsafe:
+        var p: ptr u8 = raw
+    end
+end
+
+main(args):
+    print("""multi
+line {args.count}""")
+    print('''single 'quoted' "block"''')
+end

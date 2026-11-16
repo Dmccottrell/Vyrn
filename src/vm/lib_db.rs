@@ -1,0 +1,513 @@
+//! `use vyrn.db`: SQLite databases, built into `vyrn`.
+//!
+//! ```vyrn
+//! use vyrn.db
+//!
+//! main:
+//!     using db.open("shop.db") as conn:
+//!         conn.execute("create table if not exists items (name text, price real)")
+//!         conn.execute("insert into items values (?, ?)", ["pen", 1.5])
+//!         each row in conn.query("select * from items where price < ?", [10]):
+//!             print(row["name"], row["price"])
+//!         end
+//!     end
+//! end
+//! ```
+//!
+//! Rows come back as maps from column name to value. `?` in the SQL takes
+//! the values of a list in order; `:name` takes them from a map. Values
+//! are always passed separately from the SQL, so text from users cannot
+//! change what a statement does.
+
+#[cfg_attr(not(feature = "db"), allow(unused_imports))]
+use super::builtins::opt;
+#[cfg_attr(not(feature = "db"), allow(unused_imports))]
+use super::foreign::Foreign;
+#[cfg_attr(not(feature = "db"), allow(unused_imports))]
+use super::ops::{self, err, type_error, Ctx, VmResult};
+#[cfg_attr(not(feature = "db"), allow(unused_imports))]
+use super::value::{Key, Map, Value};
+
+fn text_arg<'a>(args: &'a [Value], i: usize, what: &str) -> VmResult<&'a str> {
+    match args.get(i) {
+        Some(Value::Str(s)) => Ok(s.as_str()),
+        Some(other) => Err(type_error(format!(
+            "{what} must be a string, not {}",
+            other.type_name()
+        ))),
+        None => Err(err("CallError", format!("{what} is missing"))),
+    }
+}
+
+#[cfg(feature = "db")]
+mod imp {
+    use super::*;
+    use rusqlite::types::{Value as Sql, ValueRef};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    pub struct Database {
+        pub path: String,
+        pub conn: RefCell<Option<rusqlite::Connection>>,
+    }
+
+    fn db_error(e: rusqlite::Error) -> Value {
+        err("DatabaseError", e.to_string())
+    }
+
+    fn to_sql(v: &Value) -> VmResult<Sql> {
+        Ok(match v {
+            Value::None => Sql::Null,
+            Value::Bool(b) => Sql::Integer(i64::from(*b)),
+            Value::Int(i) => Sql::Integer(*i),
+            Value::Float(f) => Sql::Real(*f),
+            Value::Str(s) => Sql::Text(s.to_string()),
+            other => {
+                return Err(type_error(format!(
+                    "a database value must be a number, a string, a bool or none, not {}",
+                    other.type_name()
+                )))
+            }
+        })
+    }
+
+    fn from_sql(v: ValueRef) -> Value {
+        match v {
+            ValueRef::Null => Value::None,
+            ValueRef::Integer(i) => Value::Int(i),
+            ValueRef::Real(f) => Value::Float(f),
+            ValueRef::Text(t) => Value::str(String::from_utf8_lossy(t).into_owned()),
+            ValueRef::Blob(b) => Value::list(b.iter().map(|x| Value::Int(i64::from(*x))).collect()),
+        }
+    }
+
+    /// Prepares `sql` and binds the parameters: a list for `?`, a map for
+    /// `:name`. Then runs `f` on the bound statement.
+    fn run<T>(
+        conn: &rusqlite::Connection,
+        sql: &str,
+        params: Option<&Value>,
+        f: impl FnOnce(&mut rusqlite::Statement) -> rusqlite::Result<T>,
+    ) -> VmResult<T> {
+        let mut stmt = conn.prepare(sql).map_err(db_error)?;
+        let expected = stmt.parameter_count();
+        match params {
+            None | Some(Value::None) => {}
+            Some(Value::Map(m)) => {
+                for (k, v) in m.borrow().entries() {
+                    let Value::Str(k) = k else {
+                        return Err(type_error("named parameters need string keys"));
+                    };
+                    let name = if k.starts_with([':', '@', '$']) {
+                        k.to_string()
+                    } else {
+                        format!(":{k}")
+                    };
+                    let i = stmt
+                        .parameter_index(&name)
+                        .map_err(db_error)?
+                        .ok_or_else(|| {
+                            err(
+                                "DatabaseError",
+                                format!("the SQL has no parameter `{name}`"),
+                            )
+                        })?;
+                    stmt.raw_bind_parameter(i, to_sql(v)?).map_err(db_error)?;
+                }
+            }
+            Some(other) => {
+                let values = ops::collect(other)?;
+                if values.len() != expected {
+                    return Err(err(
+                        "DatabaseError",
+                        format!(
+                            "the SQL takes {expected} values, but {} were given",
+                            values.len()
+                        ),
+                    ));
+                }
+                for (i, v) in values.iter().enumerate() {
+                    stmt.raw_bind_parameter(i + 1, to_sql(v)?)
+                        .map_err(db_error)?;
+                }
+            }
+        }
+        f(&mut stmt).map_err(db_error)
+    }
+
+    fn rows(
+        conn: &rusqlite::Connection,
+        sql: &str,
+        params: Option<&Value>,
+        limit: Option<usize>,
+    ) -> VmResult<Vec<Value>> {
+        run(conn, sql, params, |stmt| {
+            let names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
+            let mut out = Vec::new();
+            let mut rows = stmt.raw_query();
+            while let Some(row) = rows.next()? {
+                let mut map = Map::default();
+                for (i, name) in names.iter().enumerate() {
+                    let key = Value::str(name.clone());
+                    if let Some(h) = Key::from_value(&key) {
+                        map.insert(h, key, from_sql(row.get_ref(i)?));
+                    }
+                }
+                out.push(Value::Map(Rc::new(RefCell::new(map))));
+                if limit.is_some_and(|l| out.len() >= l) {
+                    break;
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    impl Database {
+        fn with<T>(&self, f: impl FnOnce(&rusqlite::Connection) -> VmResult<T>) -> VmResult<T> {
+            match &*self.conn.borrow() {
+                Some(c) => f(c),
+                None => Err(err(
+                    "DatabaseError",
+                    format!("the database {} is closed", self.path),
+                )),
+            }
+        }
+    }
+
+    /// A table or column name: letters, digits and `_`, so it can go in
+    /// SQL safely.
+    fn ident(name: &str, what: &str) -> VmResult<String> {
+        let ok = name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !ok {
+            return Err(err(
+                "ValueError",
+                format!("{what} {name:?} must be letters, digits and `_`"),
+            ));
+        }
+        Ok(format!("\"{name}\""))
+    }
+
+    /// A record's columns and values: a map, or a struct or object.
+    fn fields_of(ctx: &Ctx, record: &Value) -> VmResult<Vec<(String, Value)>> {
+        let named = |ty: u16, values: &[Value]| -> Vec<(String, Value)> {
+            ctx.program.types[ty as usize]
+                .fields
+                .iter()
+                .zip(values)
+                .map(|(f, v)| (ctx.program.symbols.name(*f).to_string(), v.clone()))
+                .collect()
+        };
+        match record {
+            Value::Map(m) => m
+                .borrow()
+                .entries()
+                .iter()
+                .map(|(k, v)| match k {
+                    Value::Str(k) => Ok((k.to_string(), v.clone())),
+                    other => Err(type_error(format!(
+                        "column names are strings, not {}",
+                        other.type_name()
+                    ))),
+                })
+                .collect(),
+            Value::Struct(inst) => Ok(named(inst.ty, &inst.fields)),
+            Value::Object(o) => {
+                let o = o.borrow();
+                Ok(named(o.ty, &o.fields))
+            }
+            other => Err(type_error(format!(
+                "a record is a map or a struct, not {}",
+                other.type_name()
+            ))),
+        }
+    }
+
+    /// `where a = ? and b = ?` for a map of conditions, and its values.
+    fn condition(ctx: &Ctx, filter: Option<&Value>) -> VmResult<(String, Vec<Value>)> {
+        let Some(filter) = filter.filter(|f| !matches!(f, Value::None | Value::Missing)) else {
+            return Ok((String::new(), Vec::new()));
+        };
+        let fields = fields_of(ctx, filter)?;
+        if fields.is_empty() {
+            return Ok((String::new(), Vec::new()));
+        }
+        let mut parts = Vec::new();
+        let mut values = Vec::new();
+        for (k, v) in fields {
+            parts.push(format!("{} = ?", ident(&k, "a column name")?));
+            values.push(v);
+        }
+        Ok((format!(" where {}", parts.join(" and ")), values))
+    }
+
+    fn sql_type(v: &Value) -> &'static str {
+        match v {
+            Value::Int(_) | Value::Bool(_) => "integer",
+            Value::Float(_) => "real",
+            Value::Str(s) => match s.as_str() {
+                "int" | "integer" | "bool" => "integer",
+                "float" | "real" => "real",
+                _ => "text",
+            },
+            _ => "text",
+        }
+    }
+
+    impl Database {
+        /// Records without SQL: `create_table`, `insert`, `all`, `find`,
+        /// `find_one`, `update`, `delete`. `None` for other methods.
+        fn records(&self, ctx: &Ctx, name: &str, args: &[Value]) -> Option<VmResult<Value>> {
+            if !matches!(
+                name,
+                "create_table" | "insert" | "all" | "find" | "find_one" | "update" | "delete"
+            ) {
+                return None;
+            }
+            Some((|| {
+                let table = ident(text_arg(args, 0, "the table name")?, "the table name")?;
+                match name {
+                    // `conn.create_table("pets", {"name": "text", "age": "int"})`,
+                    // or an example record. Each row also gets an `id`.
+                    "create_table" => {
+                        let columns = fields_of(ctx, args.get(1).unwrap_or(&Value::None))?;
+                        let mut cols = vec!["\"id\" integer primary key autoincrement".to_string()];
+                        for (k, v) in &columns {
+                            if k == "id" {
+                                continue;
+                            }
+                            cols.push(format!("{} {}", ident(k, "a column name")?, sql_type(v)));
+                        }
+                        let sql =
+                            format!("create table if not exists {table} ({})", cols.join(", "));
+                        self.with(|c| c.execute_batch(&sql).map(|_| Value::None).map_err(db_error))
+                    }
+                    // `conn.insert("pets", {"name": "Rex"})`: the new row's id.
+                    "insert" => {
+                        let fields = fields_of(ctx, args.get(1).unwrap_or(&Value::None))?;
+                        let names: Vec<String> = fields
+                            .iter()
+                            .map(|(k, _)| ident(k, "a column name"))
+                            .collect::<VmResult<_>>()?;
+                        let marks = vec!["?"; fields.len()].join(", ");
+                        let sql = format!(
+                            "insert into {table} ({}) values ({marks})",
+                            names.join(", ")
+                        );
+                        let params = Value::list(fields.into_iter().map(|(_, v)| v).collect());
+                        self.with(|c| {
+                            run(c, &sql, Some(&params), |stmt| stmt.raw_execute())?;
+                            Ok(Value::Int(c.last_insert_rowid()))
+                        })
+                    }
+                    // `conn.all("pets")` and `conn.find("pets", {"age": 3})`.
+                    "all" | "find" | "find_one" => {
+                        let (filter, values) = condition(ctx, args.get(1))?;
+                        let limit = if name == "find_one" { " limit 1" } else { "" };
+                        let sql = format!("select * from {table}{filter}{limit}");
+                        let params = Value::list(values);
+                        self.with(|c| {
+                            let found = rows(c, &sql, Some(&params), None)?;
+                            Ok(if name == "find_one" {
+                                found.into_iter().next().unwrap_or(Value::None)
+                            } else {
+                                Value::list(found)
+                            })
+                        })
+                    }
+                    // `conn.update("pets", {"id": 1}, {"age": 4})`: which rows,
+                    // then what changes. Gives how many changed.
+                    "update" => {
+                        let (filter, mut values) = condition(ctx, args.get(1))?;
+                        let changes = fields_of(ctx, args.get(2).unwrap_or(&Value::None))?;
+                        let mut sets = Vec::new();
+                        let mut params = Vec::new();
+                        for (k, v) in changes {
+                            sets.push(format!("{} = ?", ident(&k, "a column name")?));
+                            params.push(v);
+                        }
+                        if sets.is_empty() {
+                            return Ok(Value::Int(0));
+                        }
+                        params.append(&mut values);
+                        let sql = format!("update {table} set {}{filter}", sets.join(", "));
+                        let params = Value::list(params);
+                        self.with(|c| {
+                            run(c, &sql, Some(&params), |stmt| stmt.raw_execute())
+                                .map(|n| Value::Int(n as i64))
+                        })
+                    }
+                    // `conn.delete("pets", {"id": 1})`. Without a filter, it
+                    // refuses rather than empty the table.
+                    _ => {
+                        let (filter, values) = condition(ctx, args.get(1))?;
+                        if filter.is_empty() {
+                            return Err(err(
+                                "ValueError",
+                                "say which rows to delete, as in `conn.delete(\"pets\", {\"id\": 1})`; to empty a table use `conn.execute(\"delete from pets\")`",
+                            ));
+                        }
+                        let sql = format!("delete from {table}{filter}");
+                        let params = Value::list(values);
+                        self.with(|c| {
+                            run(c, &sql, Some(&params), |stmt| stmt.raw_execute())
+                                .map(|n| Value::Int(n as i64))
+                        })
+                    }
+                }
+            })())
+        }
+    }
+
+    impl Foreign for Database {
+        fn type_name(&self) -> &'static str {
+            "Database"
+        }
+
+        fn display(&self) -> String {
+            format!("Database({})", super::super::stdlib::quote(&self.path))
+        }
+
+        fn call_method(
+            &self,
+            ctx: &mut Ctx,
+            name: &str,
+            args: &[Value],
+            _: &[(String, Value)],
+        ) -> VmResult<Value> {
+            if let Some(result) = self.records(ctx, name, args) {
+                return result;
+            }
+            match name {
+                // `conn.execute(sql, params)`: how many rows changed.
+                "execute" => {
+                    let sql = text_arg(args, 0, "the SQL")?;
+                    self.with(|c| {
+                        // Several statements without parameters run as a
+                        // script, as `executescript` would.
+                        if opt(args, 1).is_none() && sql.trim_end().trim_end_matches(';').contains(';') {
+                            c.execute_batch(sql).map_err(db_error)?;
+                            return Ok(Value::Int(0));
+                        }
+                        run(c, sql, opt(args, 1), |stmt| stmt.raw_execute())
+                            .map(|n| Value::Int(n as i64))
+                    })
+                }
+                // `conn.execute_many(sql, rows)`: one statement per row.
+                "execute_many" => {
+                    let sql = text_arg(args, 0, "the SQL")?;
+                    let rows = ops::collect(args.get(1).unwrap_or(&Value::None))?;
+                    self.with(|c| {
+                        let mut total = 0i64;
+                        for row in &rows {
+                            total += run(c, sql, Some(row), |stmt| stmt.raw_execute())? as i64;
+                        }
+                        Ok(Value::Int(total))
+                    })
+                }
+                // `conn.query(sql, params)`: every row, as maps.
+                "query" => {
+                    let sql = text_arg(args, 0, "the SQL")?;
+                    self.with(|c| rows(c, sql, opt(args, 1), None).map(Value::list))
+                }
+                // `conn.query_one(sql, params)`: the first row, or none.
+                "query_one" => {
+                    let sql = text_arg(args, 0, "the SQL")?;
+                    self.with(|c| {
+                        Ok(rows(c, sql, opt(args, 1), Some(1))?
+                            .into_iter()
+                            .next()
+                            .unwrap_or(Value::None))
+                    })
+                }
+                // `conn.value(sql, params)`: the first column of the first
+                // row, or none: `conn.value("select count(*) from items")`.
+                "value" => {
+                    let sql = text_arg(args, 0, "the SQL")?;
+                    self.with(|c| {
+                        run(c, sql, opt(args, 1), |stmt| {
+                            let mut rows = stmt.raw_query();
+                            Ok(match rows.next()? {
+                                Some(row) => from_sql(row.get_ref(0)?),
+                                None => Value::None,
+                            })
+                        })
+                    })
+                }
+                "last_id" => self.with(|c| Ok(Value::Int(c.last_insert_rowid()))),
+                "tables" => self.with(|c| {
+                    let names = rows(
+                        c,
+                        "select name from sqlite_master where type = 'table' and name not like 'sqlite_%' order by name",
+                        None,
+                        None,
+                    )?;
+                    Ok(Value::list(
+                        names
+                            .iter()
+                            .filter_map(|m| match m {
+                                Value::Map(m) => m.borrow().entries().first().map(|(_, v)| v.clone()),
+                                _ => None,
+                            })
+                            .collect(),
+                    ))
+                }),
+                "begin" => self.with(|c| c.execute_batch("begin").map(|_| Value::None).map_err(db_error)),
+                "commit" => self.with(|c| c.execute_batch("commit").map(|_| Value::None).map_err(db_error)),
+                "rollback" => self.with(|c| c.execute_batch("rollback").map(|_| Value::None).map_err(db_error)),
+                "close" => {
+                    self.conn.borrow_mut().take();
+                    Ok(Value::None)
+                }
+                _ => Err(err("FieldError", format!("a Database has no method `{name}`"))),
+            }
+        }
+
+        fn get_attr(&self, name: &str) -> VmResult<Value> {
+            match name {
+                "path" => Ok(Value::str(self.path.clone())),
+                _ => Err(err(
+                    "FieldError",
+                    format!("a Database has no field `{name}`"),
+                )),
+            }
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    pub fn open(path: &str) -> VmResult<Value> {
+        let conn = if path == ":memory:" {
+            rusqlite::Connection::open_in_memory()
+        } else {
+            rusqlite::Connection::open(path)
+        }
+        .map_err(|e| err("DatabaseError", format!("cannot open {path}: {e}")))?;
+        Ok(Value::Foreign(Rc::new(Box::new(Database {
+            path: path.to_string(),
+            conn: RefCell::new(Some(conn)),
+        }))))
+    }
+}
+
+/// `db.open(path)`: a SQLite database file, made if it is not there.
+/// `":memory:"` is a database that lives only while the program runs.
+pub fn db_open(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
+    let path = text_arg(args, 0, "the database path")?;
+    #[cfg(feature = "db")]
+    {
+        imp::open(path)
+    }
+    #[cfg(not(feature = "db"))]
+    {
+        Err(err(
+            "Unavailable",
+            format!("`db.open({path:?})` needs a build with databases (the `db` feature)"),
+        ))
+    }
+}

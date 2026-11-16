@@ -1,0 +1,42 @@
+# Run with `vyrn test` inside projects/adventure.
+#
+# The game's logic lives in `Game.handle`, which takes a typed line and
+# gives back the answer, so it can be tested without anyone typing.
+
+use world (make_world)
+use game (Game, Player)
+
+create new_game() -> Game:
+    return Game(make_world(), Player())
+end
+
+create test_the_keep_is_locked_until_you_have_the_key():
+    let game = new_game()
+    game.handle("n")
+    assert(game.handle("n").startswith("The way north is locked"))
+    game.handle("e")
+    game.handle("take key")
+    game.handle("w")
+    assert(game.handle("n").startswith("== The Keep =="))
+end
+
+create test_taking_the_crown_wins():
+    let game = new_game()
+    each command in ["n", "e", "take key", "w", "n"]: game.handle(command)
+    assert(game.handle("take crown").startswith("You lift the Crown"))
+    assert(game.over)
+end
+
+create test_items_move_between_room_and_inventory():
+    let game = new_game()
+    game.handle("n")
+    assert(game.handle("take rope") == "Taken: rope.")
+    assert(game.handle("take rope") == "There is no rope here.")
+    assert(game.handle("i") == "You carry: rope.")
+    assert(game.handle("drop rope") == "Dropped: rope.")
+    assert(game.handle("i") == "You carry nothing.")
+end
+
+create test_unknown_commands_get_a_hint():
+    assert(new_game().handle("dance") == "I don't understand \"dance\". Type help.")
+end
