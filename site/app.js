@@ -14,7 +14,10 @@
   // ==== saved progress =====================================================
 
   const STORE = "learn-vyrn-v1";
-  let saved = { done: {}, code: {}, last: null, hints: {} };
+  // done: finished lessons; code (and codeAt, when it changed): each
+  // editor; days: what was done each day; goal: lessons a day.
+  const fresh = () => ({ done: {}, code: {}, codeAt: {}, last: null, hints: {}, days: {}, goal: 3 });
+  let saved = fresh();
   try {
     const raw = localStorage.getItem(STORE);
     if (raw) saved = Object.assign(saved, JSON.parse(raw));
@@ -320,8 +323,11 @@ end`;
           <div class="out">Ada: A\nAlan: B</div>
         </div>
       </section>
+      <div class="home-tools">${todayCard()}${searchBox()}</div>
       ${units}
     </div>`;
+    wireGoal();
+    wireSearch();
   }
 
   // ==== a lesson ===========================================================
@@ -472,7 +478,9 @@ end`;
       sync();
       if (store) {
         saved.code[id] = source.value;
+        saved.codeAt[id] = Date.now();
         save();
+        account.saveCode(id, source.value);
       }
     }
     function sync() {
@@ -546,6 +554,8 @@ end`;
       if (!saved.done[id]) {
         saved.done[id] = true;
         save();
+        account.markDone(id);
+        track("lessons");
         renderOverall();
         const tag = document.querySelector(`.lesson-list a[href="#/lesson/${id}"]`);
         if (tag) tag.classList.add("finished");
@@ -569,6 +579,7 @@ end`;
       const keep = stdinEl ? stdinEl.value : "";
       const open = stdinEl ? stdinEl.closest("details").open : false;
       busy(true);
+      track("runs");
       show('<div class="label">Output</div><pre class="dim">Running…</pre>');
       const r = await runner.run(source.value, input && !input.endsWith("\n") ? input + "\n" : input);
       busy(false);
@@ -586,7 +597,10 @@ end`;
       show('<div class="label">Checking</div><pre class="dim">Running your code…</pre>');
       const r = await runner.run(source.value, ex.input || "");
       busy(false);
-      if (r.ok && sameOutput(r.output, ex.expect)) {
+      const passed = r.ok && sameOutput(r.output, ex.expect);
+      track("checks");
+      account.attempt(id, passed);
+      if (passed) {
         complete();
         show(`<div class="verdict good">✓ Correct! ${next ? `<a class="btn small primary" href="#/lesson/${next.id}">Next: ${esc(next.id + " " + next.title)} →</a>` : ""}</div>
           <div class="label">Your output</div><pre>${outputHtml(r.output.replace(/\n$/, ""))}</pre>`);
@@ -651,6 +665,529 @@ end`;
     return b ? b.code : null;
   }
 
+  // ==== daily tracking =====================================================
+  //
+  // Each day (the learner's own calendar day) counts lessons finished,
+  // answers checked and programs run. The daily goal, the streak and the
+  // activity calendar come from these counts. Kept in the browser, and in
+  // the account when signed in.
+
+  const dayKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const todayKey = () => dayKey(new Date());
+  const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+  const parseDay = (k) => { const [y, m, d] = k.split("-").map(Number); return new Date(y, m - 1, d); };
+  const lessonsOn = (k) => (saved.days[k] ? saved.days[k].lessons : 0);
+
+  function track(kind, n = 1) {
+    const k = todayKey();
+    const d = saved.days[k] || (saved.days[k] = { lessons: 0, checks: 0, runs: 0 });
+    d[kind] = (d[kind] || 0) + n;
+    save();
+    account.bump(k, kind, n);
+    renderStreak();
+  }
+
+  // Days in a row with at least one lesson finished. Today counts once
+  // something is done; until then yesterday's streak is still alive.
+  function streaks(days = saved.days) {
+    const on = (k) => days[k] && days[k].lessons > 0;
+    let d = new Date();
+    if (!on(dayKey(d))) d = addDays(d, -1);
+    let current = 0;
+    while (on(dayKey(d))) { current++; d = addDays(d, -1); }
+    let longest = 0, run = 0, prev = null;
+    for (const k of Object.keys(days).filter(on).sort()) {
+      const day = parseDay(k);
+      run = prev && dayKey(addDays(prev, 1)) === k ? run + 1 : 1;
+      longest = Math.max(longest, run);
+      prev = day;
+    }
+    return { current, longest, activeDays: Object.keys(days).filter(on).length };
+  }
+
+  function renderStreak() {
+    const chip = $("streak-chip");
+    if (!chip) return;
+    const { current } = streaks();
+    const today = lessonsOn(todayKey());
+    const met = today >= saved.goal;
+    chip.innerHTML = `<span class="flame ${current ? "lit" : ""}" aria-hidden="true">🔥</span><b>${current}</b><span class="goal-mini ${met ? "met" : ""}">${Math.min(today, saved.goal)}/${saved.goal} today</span>`;
+    chip.setAttribute("aria-label", `${current} day streak, ${today} of ${saved.goal} lessons today`);
+  }
+
+  // A calendar of the last `weeks` weeks, one square per day, darker for
+  // more lessons (one hue, light to dark).
+  function heatmap(days, weeks) {
+    const end = new Date();
+    const start = addDays(end, -(weeks * 7 - 1) - end.getDay()); // starts on a Sunday
+    const level = (n) => (n <= 0 ? 0 : n === 1 ? 1 : n <= 3 ? 2 : n <= 5 ? 3 : 4);
+    let cols = "", months = "";
+    let lastMonth = -1;
+    for (let w = 0; w < weeks + 1; w++) {
+      let cells = "";
+      const weekStart = addDays(start, w * 7);
+      if (weekStart > end) break;
+      if (weekStart.getMonth() !== lastMonth) {
+        months += `<span style="grid-column:${w + 1}">${weekStart.toLocaleString(undefined, { month: "short" })}</span>`;
+        lastMonth = weekStart.getMonth();
+      }
+      for (let i = 0; i < 7; i++) {
+        const d = addDays(weekStart, i);
+        if (d > end) { cells += '<i class="future"></i>'; continue; }
+        const k = dayKey(d);
+        const n = days[k] ? days[k].lessons : 0;
+        const label = `${d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}: ${n} lesson${n === 1 ? "" : "s"}`;
+        cells += `<i class="l${level(n)}${k === todayKey() ? " today" : ""}" title="${label}" aria-label="${label}"></i>`;
+      }
+      cols += `<div class="hm-col">${cells}</div>`;
+    }
+    return `<div class="heatmap" role="img" aria-label="Lessons finished each day, last ${weeks} weeks">
+      <div class="hm-months">${months}</div><div class="hm-grid">${cols}</div>
+      <div class="hm-legend"><span>Less</span><i class="l0"></i><i class="l1"></i><i class="l2"></i><i class="l3"></i><i class="l4"></i><span>More</span></div>
+    </div>`;
+  }
+
+  function goalRing(done, goal) {
+    const r = 26, c = 2 * Math.PI * r, f = Math.min(done / goal, 1);
+    return `<svg class="ring" viewBox="0 0 64 64" aria-hidden="true">
+      <circle cx="32" cy="32" r="${r}" class="ring-bg"/>
+      <circle cx="32" cy="32" r="${r}" class="ring-fg ${f >= 1 ? "met" : ""}" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - f)}"/>
+    </svg>`;
+  }
+
+  function todayCard(onMe = false) {
+    const today = lessonsOn(todayKey());
+    const s = streaks();
+    const met = today >= saved.goal;
+    return `<section class="today-card" aria-label="Today">
+      <div class="today-goal">
+        <div class="ring-wrap">${goalRing(today, saved.goal)}<span class="ring-num">${today}<small>/${saved.goal}</small></span></div>
+        <div>
+          <div class="label">Today's goal</div>
+          <div class="today-msg">${met ? "Goal reached. Nice work! 🎉" : today ? `${saved.goal - today} more lesson${saved.goal - today === 1 ? "" : "s"} to go` : "Finish a lesson to start today"}</div>
+          <label class="goal-pick">Lessons a day
+            <select id="goal">${[1, 2, 3, 5, 8].map((n) => `<option ${n === saved.goal ? "selected" : ""}>${n}</option>`).join("")}</select>
+          </label>
+        </div>
+      </div>
+      <div class="today-stats">
+        <span><b>🔥 ${s.current}</b>day streak</span>
+        <span><b>${s.longest}</b>best streak</span>
+        <span><b>${s.activeDays}</b>days learning</span>
+      </div>
+      ${heatmap(saved.days, 17)}
+      ${onMe ? "" : '<a class="see-more" href="#/me">Your progress →</a>'}
+    </section>`;
+  }
+
+  function wireGoal() {
+    const g = $("goal");
+    if (g) g.addEventListener("change", () => {
+      saved.goal = Number(g.value);
+      save();
+      account.setGoal(saved.goal);
+      route();
+    });
+  }
+
+  // ==== your progress ======================================================
+
+  function mePage() {
+    crumbs([{ text: "Your progress" }]);
+    const s = streaks();
+    const done = doneCount(lessons);
+    const solved = lessons.filter((l) => l.exercise && saved.done[l.id]).length;
+    const exercises = lessons.filter((l) => l.exercise).length;
+    const total = (k) => Object.values(saved.days).reduce((a, d) => a + (d[k] || 0), 0);
+    const units = course.units.map((u) => {
+      const all = course.days.filter((d) => d.number >= u.first && d.number <= u.last).flatMap((d) => d.lessons);
+      const n = doneCount(all);
+      return `<div class="unit-row"><span>${esc(u.title)}</span><div class="bar"><i style="width:${(100 * n) / all.length}%"></i></div><span class="num">${n}/${all.length}</span></div>`;
+    }).join("");
+    view.innerHTML = `<div class="home narrow">
+      <h1 class="page-title">Your progress</h1>
+      ${account.user ? `<p class="muted">Signed in as ${esc(account.user.email)}. Your progress is saved to your account.</p>` :
+        account.ready ? '<p class="muted"><button class="btn small primary" id="me-signin">Create a free account</button> to keep your progress on every device.</p>' : ""}
+      <div class="stat-grid">
+        <div class="stat"><b>🔥 ${s.current}</b><span>day streak</span></div>
+        <div class="stat"><b>${s.longest}</b><span>longest streak</span></div>
+        <div class="stat"><b>${done}</b><span>of ${lessons.length} lessons</span></div>
+        <div class="stat"><b>${solved}</b><span>of ${exercises} exercises solved</span></div>
+        <div class="stat"><b>${s.activeDays}</b><span>days learning</span></div>
+        <div class="stat"><b>${total("runs")}</b><span>programs run</span></div>
+      </div>
+      ${todayCard(true)}
+      <h2 class="section-title">The last year</h2>
+      <div class="card">${heatmap(saved.days, 52)}</div>
+      <h2 class="section-title">Units</h2>
+      <div class="card">${units}</div>
+      <p><a class="btn primary" href="#/lesson/${(saved.last && byId.has(saved.last) ? byId.get(saved.last) : nextUnfinished(lessons)).id}">Continue learning →</a></p>
+    </div>`;
+    wireGoal();
+    const b = $("me-signin");
+    if (b) b.addEventListener("click", () => authDialog("signup"));
+  }
+
+  // ==== search =============================================================
+
+  function searchBox() {
+    return `<div class="search" role="search">
+      <input id="search" type="search" placeholder="Search lessons: loops, SQL, files…" aria-label="Search lessons" autocomplete="off">
+      <ul id="search-results" class="search-results" hidden></ul>
+    </div>`;
+  }
+
+  function wireSearch() {
+    const input = $("search"), list = $("search-results");
+    if (!input) return;
+    const index = lessons.map((l) => ({ l, hay: `${l.id} ${l.title} ${dayTitle(dayOf.get(l.id))} ${l.text}`.toLowerCase() }));
+    input.addEventListener("input", () => {
+      const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+      if (!words.length) { list.hidden = true; return; }
+      const hits = index
+        .map(({ l, hay }) => {
+          if (!words.every((w) => hay.includes(w))) return null;
+          const title = `${l.id} ${l.title}`.toLowerCase();
+          return { l, score: words.filter((w) => title.includes(w)).length };
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 8);
+      list.innerHTML = hits.length
+        ? hits.map(({ l }) => `<li><a href="#/lesson/${l.id}">${saved.done[l.id] ? '<span class="tick">✓</span>' : ""}<b>${esc(l.id)}</b> ${esc(l.title)}<span class="muted"> · Day ${dayOf.get(l.id).number}</span></a></li>`).join("")
+        : '<li class="muted none">No lessons match.</li>';
+      list.hidden = false;
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { const a = list.querySelector("a"); if (a) location.hash = a.getAttribute("href"); }
+      if (e.key === "Escape") { input.value = ""; list.hidden = true; }
+    });
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "/" && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) {
+      const s = $("search");
+      if (s) { e.preventDefault(); s.focus(); }
+    }
+  });
+
+  // ==== accounts ===========================================================
+  //
+  // Optional: with a Supabase project in config.js, learners can sign up and
+  // their progress, code and daily activity follow them to any device.
+  // Without one, everything still works and stays in this browser.
+
+  const SUPABASE_JS = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js";
+  const account = {
+    client: null,
+    user: null,
+    admin: false,
+    ready: false,
+    codeTimers: {},
+    async init() {
+      const cfg = window.LEARN_VYRN_CONFIG || {};
+      if (!cfg.supabaseUrl || !cfg.supabaseKey) { renderAccount(); return; }
+      try {
+        await new Promise((ok, fail) => {
+          const s = document.createElement("script");
+          s.src = SUPABASE_JS;
+          s.onload = ok;
+          s.onerror = () => fail(new Error("could not load the sign-in library"));
+          document.head.appendChild(s);
+        });
+        this.client = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseKey);
+        this.ready = true;
+        this.client.auth.onAuthStateChange((event, session) => {
+          if (event === "PASSWORD_RECOVERY") authDialog("newpass");
+          if (event === "SIGNED_IN" && session && (!this.user || this.user.id !== session.user.id)) this.signedIn(session.user);
+        });
+        const { data } = await this.client.auth.getSession();
+        if (data.session) await this.signedIn(data.session.user);
+      } catch (e) {
+        console.warn("accounts unavailable:", e.message);
+      }
+      renderAccount();
+    },
+    async signedIn(user) {
+      this.user = user;
+      try {
+        await this.pull();
+        const { data } = await this.client.rpc("is_admin");
+        this.admin = !!data;
+        await this.client.from("profiles").update({ last_seen: new Date().toISOString() }).eq("id", user.id);
+      } catch (e) {
+        console.warn("sync failed:", e.message);
+      }
+      renderAccount();
+      route();
+    },
+    // Brings the account and this browser together: lessons finished on
+    // either count, and each lesson keeps the newest code.
+    async pull() {
+      const c = this.client, uid = this.user.id;
+      const [prog, code, act, prof] = await Promise.all([
+        c.from("progress").select("lesson_id").eq("user_id", uid),
+        c.from("saved_code").select("lesson_id, code, updated_at").eq("user_id", uid),
+        c.from("activity").select("day, lessons, checks, runs").eq("user_id", uid),
+        c.from("profiles").select("daily_goal, name").eq("id", uid).single(),
+      ]);
+      const remoteDone = new Set((prog.data || []).map((r) => r.lesson_id));
+      const upload = Object.keys(saved.done).filter((id) => !remoteDone.has(id)).map((lesson_id) => ({ user_id: uid, lesson_id }));
+      if (upload.length) await c.from("progress").upsert(upload);
+      for (const id of remoteDone) saved.done[id] = true;
+
+      const remoteCode = new Map((code.data || []).map((r) => [r.lesson_id, r]));
+      const codeUp = [];
+      for (const [id, text] of Object.entries(saved.code)) {
+        const r = remoteCode.get(id);
+        if (!r || (saved.codeAt[id] || 0) > Date.parse(r.updated_at)) codeUp.push({ user_id: uid, lesson_id: id, code: text, updated_at: new Date(saved.codeAt[id] || Date.now()).toISOString() });
+      }
+      for (const [id, r] of remoteCode) {
+        if (!saved.code[id] || (saved.codeAt[id] || 0) < Date.parse(r.updated_at)) { saved.code[id] = r.code; saved.codeAt[id] = Date.parse(r.updated_at); }
+      }
+      if (codeUp.length) await c.from("saved_code").upsert(codeUp);
+
+      // Activity: the larger count wins for each day; what only this
+      // browser has is added to the account.
+      const remoteDays = new Map((act.data || []).map((r) => [r.day, r]));
+      for (const [day, d] of Object.entries(saved.days)) {
+        const r = remoteDays.get(day) || { lessons: 0, checks: 0, runs: 0 };
+        const diff = { p_lessons: Math.max(0, d.lessons - r.lessons), p_checks: Math.max(0, (d.checks || 0) - r.checks), p_runs: Math.max(0, (d.runs || 0) - r.runs) };
+        if (diff.p_lessons || diff.p_checks || diff.p_runs) await c.rpc("bump_activity", { p_day: day, ...diff });
+      }
+      for (const [day, r] of remoteDays) {
+        const d = saved.days[day] || (saved.days[day] = { lessons: 0, checks: 0, runs: 0 });
+        d.lessons = Math.max(d.lessons, r.lessons); d.checks = Math.max(d.checks || 0, r.checks); d.runs = Math.max(d.runs || 0, r.runs);
+      }
+      if (prof.data) {
+        if (prof.data.daily_goal) saved.goal = prof.data.daily_goal;
+        this.name = prof.data.name;
+      }
+      save();
+    },
+    markDone(id) {
+      if (this.user) this.client.from("progress").upsert({ user_id: this.user.id, lesson_id: id }).then(() => {});
+    },
+    bump(day, kind, n) {
+      if (!this.user) return;
+      const args = { p_day: day, p_lessons: 0, p_checks: 0, p_runs: 0 };
+      args["p_" + kind] = n;
+      this.client.rpc("bump_activity", args).then(() => {});
+    },
+    attempt(id, passed) {
+      if (this.user) this.client.from("attempts").insert({ user_id: this.user.id, lesson_id: id, passed }).then(() => {});
+    },
+    saveCode(id, code) {
+      if (!this.user) return;
+      clearTimeout(this.codeTimers[id]);
+      this.codeTimers[id] = setTimeout(() => {
+        this.client.from("saved_code").upsert({ user_id: this.user.id, lesson_id: id, code, updated_at: new Date().toISOString() }).then(() => {});
+      }, 1500);
+    },
+    setGoal(n) {
+      if (this.user) this.client.from("profiles").update({ daily_goal: n }).eq("id", this.user.id).then(() => {});
+    },
+    async signOut() {
+      await this.client.auth.signOut();
+      this.user = null;
+      this.admin = false;
+      // The progress is in the account; the next person on this computer
+      // starts fresh.
+      saved = fresh();
+      save();
+      renderAccount();
+      location.hash = "#/";
+      route();
+    },
+  };
+
+  function renderAccount() {
+    const el = $("account");
+    if (!el) return;
+    renderStreak();
+    if (!account.ready) { el.innerHTML = ""; return; }
+    if (!account.user) {
+      el.innerHTML = '<button class="btn small" id="signin" type="button">Log in</button><button class="btn small primary" id="signup" type="button">Sign up</button>';
+      $("signin").addEventListener("click", () => authDialog("signin"));
+      $("signup").addEventListener("click", () => authDialog("signup"));
+      return;
+    }
+    const who = account.name || account.user.email;
+    el.innerHTML = `<details class="menu"><summary class="avatar" title="${esc(account.user.email)}" aria-label="Your account">${esc(who.trim()[0].toUpperCase())}</summary>
+      <div class="menu-list">
+        <div class="menu-who">${esc(account.user.email)}${account.admin ? ' <span class="badge">admin</span>' : ""}</div>
+        <a href="#/me">Your progress</a>
+        ${account.admin ? '<a href="#/admin">Admin dashboard</a>' : ""}
+        <button type="button" id="signout">Log out</button>
+      </div></details>`;
+    $("signout").addEventListener("click", () => account.signOut());
+    el.querySelectorAll(".menu-list a").forEach((a) => a.addEventListener("click", () => el.querySelector("details").removeAttribute("open")));
+  }
+
+  function authDialog(mode) {
+    let dlg = $("auth");
+    if (!dlg) {
+      dlg = document.createElement("dialog");
+      dlg.id = "auth";
+      document.body.appendChild(dlg);
+    }
+    const titles = { signin: "Log in", signup: "Create your account", reset: "Reset your password", newpass: "Choose a new password" };
+    dlg.innerHTML = `<form method="dialog" class="auth-form" novalidate>
+      <button class="icon-btn close" value="cancel" aria-label="Close" formnovalidate>✕</button>
+      <h2>${titles[mode]}</h2>
+      ${mode === "signup" ? '<p class="muted">Free. Your progress, code and streak follow you to any device.</p>' : ""}
+      ${mode === "signup" ? '<label>Name <input name="name" autocomplete="name" maxlength="80"></label>' : ""}
+      ${mode !== "newpass" ? '<label>Email <input name="email" type="email" autocomplete="email" required></label>' : ""}
+      ${mode !== "reset" ? `<label>Password <input name="password" type="password" minlength="8" required autocomplete="${mode === "signin" ? "current-password" : "new-password"}"></label>` : ""}
+      ${mode === "signup" || mode === "newpass" ? '<p class="hint-small">At least 8 characters.</p>' : ""}
+      <p class="auth-msg" role="status"></p>
+      <button class="btn primary wide" type="submit">${{ signin: "Log in", signup: "Sign up", reset: "Send the reset link", newpass: "Save password" }[mode]}</button>
+      <div class="auth-links">
+        ${mode === "signin" ? '<a href="#" data-mode="reset">Forgot your password?</a><a href="#" data-mode="signup">New here? Sign up</a>' : ""}
+        ${mode === "signup" ? '<a href="#" data-mode="signin">Already have an account? Log in</a>' : ""}
+        ${mode === "reset" ? '<a href="#" data-mode="signin">Back to log in</a>' : ""}
+      </div>
+    </form>`;
+    const form = dlg.querySelector("form"), msg = dlg.querySelector(".auth-msg");
+    dlg.querySelectorAll("[data-mode]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); authDialog(a.dataset.mode); }));
+    form.addEventListener("submit", async (e) => {
+      if (e.submitter && e.submitter.value === "cancel") return;
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(form));
+      if (f.email !== undefined && !/^\S+@\S+\.\S+$/.test(f.email)) { msg.textContent = "Please enter your email address."; return; }
+      if (f.password !== undefined && f.password.length < 8) { msg.textContent = "The password needs at least 8 characters."; return; }
+      const btn = form.querySelector('[type="submit"]');
+      btn.disabled = true;
+      msg.className = "auth-msg";
+      msg.textContent = "One moment…";
+      const back = location.origin + location.pathname;
+      const auth = account.client.auth;
+      let res;
+      try {
+        if (mode === "signin") res = await auth.signInWithPassword({ email: f.email, password: f.password });
+        if (mode === "signup") res = await auth.signUp({ email: f.email, password: f.password, options: { data: { name: f.name }, emailRedirectTo: back } });
+        if (mode === "reset") res = await auth.resetPasswordForEmail(f.email, { redirectTo: back });
+        if (mode === "newpass") res = await auth.updateUser({ password: f.password });
+      } catch (err) {
+        res = { error: err };
+      }
+      btn.disabled = false;
+      if (res.error) { msg.className = "auth-msg bad"; msg.textContent = res.error.message; return; }
+      if (mode === "signup" && !res.data.session) {
+        msg.className = "auth-msg good";
+        msg.textContent = `Almost there: we sent a link to ${f.email}. Open it to confirm your email, then log in.`;
+        return;
+      }
+      if (mode === "reset") { msg.className = "auth-msg good"; msg.textContent = "If that email has an account, a reset link is on its way."; return; }
+      dlg.close();
+      if (mode === "newpass") alert("Your password is changed.");
+    });
+    if (!dlg.open) dlg.showModal();
+    const firstInput = dlg.querySelector("input");
+    if (firstInput) firstInput.focus();
+  }
+
+  // ==== admin ==============================================================
+
+  async function adminPage() {
+    crumbs([{ text: "Admin" }]);
+    if (!account.admin) {
+      view.innerHTML = `<div class="home narrow"><h1 class="page-title">Admin</h1><p class="muted">${account.user ? "This account isn't an admin." : "Log in with an admin account to see this page."}</p></div>`;
+      return;
+    }
+    view.innerHTML = '<div class="home narrow"><h1 class="page-title">Admin</h1><p class="muted">Loading…</p></div>';
+    const c = account.client;
+    const since = dayKey(addDays(new Date(), -89));
+    const [profiles, progress, activity, attempts] = await Promise.all([
+      c.from("profiles").select("id, email, name, created_at, last_seen").order("created_at", { ascending: false }).limit(5000),
+      c.from("progress").select("user_id, lesson_id").limit(100000),
+      c.from("activity").select("user_id, day, lessons, checks, runs").gte("day", since).limit(100000),
+      c.from("attempts").select("user_id, lesson_id, passed").gte("at", parseDay(since).toISOString()).limit(100000),
+    ]);
+    const failed = [profiles, progress, activity, attempts].find((r) => r.error);
+    if (failed) { view.innerHTML = `<div class="home narrow"><h1 class="page-title">Admin</h1><p class="auth-msg bad">${esc(failed.error.message)}</p></div>`; return; }
+    const users = profiles.data, prog = progress.data, act = activity.data, att = attempts.data;
+    const today = todayKey(), weekAgo = dayKey(addDays(new Date(), -6));
+    const doneBy = new Map(), daysBy = new Map();
+    for (const p of prog) doneBy.set(p.user_id, (doneBy.get(p.user_id) || 0) + 1);
+    for (const a of act) {
+      if (!daysBy.has(a.user_id)) daysBy.set(a.user_id, {});
+      daysBy.get(a.user_id)[a.day] = a;
+    }
+    const activeOn = (k) => new Set(act.filter((a) => a.day === k).map((a) => a.user_id)).size;
+    const activeWeek = new Set(act.filter((a) => a.day >= weekAgo).map((a) => a.user_id)).size;
+    const newWeek = users.filter((u) => dayKey(new Date(u.created_at)) >= weekAgo).length;
+
+    // The last 30 days, one bar per day.
+    const last30 = Array.from({ length: 30 }, (_, i) => dayKey(addDays(new Date(), i - 29)));
+    function bars(title, values, unit) {
+      const max = Math.max(1, ...values);
+      return `<div class="card"><div class="label">${title}</div>
+        <div class="bars" role="img" aria-label="${title}, last 30 days">${values.map((v, i) => {
+          const label = `${parseDay(last30[i]).toLocaleDateString(undefined, { month: "short", day: "numeric" })}: ${v} ${unit}`;
+          return `<div class="bar-col" title="${label}"><i style="height:${(100 * v) / max}%"></i></div>`;
+        }).join("")}</div>
+        <div class="bars-axis"><span>${parseDay(last30[0]).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span><span>max ${max}</span><span>today</span></div></div>`;
+    }
+    const signups = last30.map((k) => users.filter((u) => dayKey(new Date(u.created_at)) === k).length);
+    const actives = last30.map(activeOn);
+    const finished = last30.map((k) => act.filter((a) => a.day === k).reduce((s, a) => s + a.lessons, 0));
+
+    // Exercises people get stuck on: most attempts per learner who solved it.
+    const byLesson = new Map();
+    for (const a of att) {
+      const s = byLesson.get(a.lesson_id) || { tries: 0, passes: 0, tried: new Set(), solved: new Set() };
+      s.tries++;
+      s.tried.add(a.user_id);
+      if (a.passed) { s.passes++; s.solved.add(a.user_id); }
+      byLesson.set(a.lesson_id, s);
+    }
+    const hard = [...byLesson.entries()]
+      .filter(([, s]) => s.tried.size >= 1 && s.tries >= 3)
+      .map(([id, s]) => ({ id, ...s, rate: s.passes / s.tries, stuck: s.tried.size - s.solved.size }))
+      .sort((a, b) => a.rate - b.rate)
+      .slice(0, 12);
+
+    const rows = users.map((u) => {
+      const days = daysBy.get(u.id) || {};
+      const lastDay = Object.keys(days).sort().pop();
+      return `<tr data-q="${esc((u.email + " " + (u.name || "")).toLowerCase())}">
+        <td>${esc(u.name || "")}<div class="muted small">${esc(u.email)}</div></td>
+        <td>${new Date(u.created_at).toLocaleDateString()}</td>
+        <td>${lastDay ? parseDay(lastDay).toLocaleDateString() : "–"}</td>
+        <td class="num">${doneBy.get(u.id) || 0}</td>
+        <td class="num">${streaks(days).current}</td></tr>`;
+    }).join("");
+
+    view.innerHTML = `<div class="home narrow wide-ish">
+      <h1 class="page-title">Admin</h1>
+      <div class="stat-grid">
+        <div class="stat"><b>${users.length}</b><span>learners</span></div>
+        <div class="stat"><b>${newWeek}</b><span>joined this week</span></div>
+        <div class="stat"><b>${activeOn(today)}</b><span>active today</span></div>
+        <div class="stat"><b>${activeWeek}</b><span>active this week</span></div>
+        <div class="stat"><b>${prog.length}</b><span>lessons finished</span></div>
+        <div class="stat"><b>${att.length ? Math.round((100 * att.filter((a) => a.passed).length) / att.length) : 0}%</b><span>of checks pass (90 days)</span></div>
+      </div>
+      <div class="chart-grid">
+        ${bars("Sign-ups", signups, "sign-ups")}
+        ${bars("Active learners", actives, "learners")}
+        ${bars("Lessons finished", finished, "lessons")}
+      </div>
+      <h2 class="section-title">Exercises people find hardest <span class="muted small">(last 90 days, 3+ checks)</span></h2>
+      <div class="card table-wrap">${hard.length ? `<table class="data"><thead><tr><th>Lesson</th><th class="num">Checks</th><th class="num">Pass rate</th><th class="num">Tried</th><th class="num">Still stuck</th></tr></thead><tbody>
+        ${hard.map((h) => `<tr><td><a href="#/lesson/${h.id}">${esc(h.id)} ${esc(byId.has(h.id) ? byId.get(h.id).title : "")}</a></td><td class="num">${h.tries}</td><td class="num">${Math.round(h.rate * 100)}%</td><td class="num">${h.tried.size}</td><td class="num">${h.stuck}</td></tr>`).join("")}
+        </tbody></table>` : '<p class="muted">Not enough checks yet.</p>'}</div>
+      <h2 class="section-title">Learners</h2>
+      <input id="user-filter" type="search" class="filter" placeholder="Filter by name or email" aria-label="Filter learners">
+      <div class="card table-wrap"><table class="data"><thead><tr><th>Learner</th><th>Joined</th><th>Last active</th><th class="num">Lessons</th><th class="num">Streak</th></tr></thead>
+        <tbody id="user-rows">${rows || '<tr><td colspan="5" class="muted">Nobody yet.</td></tr>'}</tbody></table></div>
+    </div>`;
+    $("user-filter").addEventListener("input", (e) => {
+      const q = e.target.value.toLowerCase();
+      document.querySelectorAll("#user-rows tr[data-q]").forEach((tr) => { tr.hidden = !tr.dataset.q.includes(q); });
+    });
+  }
+
   // ==== routing ============================================================
 
   function route() {
@@ -658,6 +1195,8 @@ end`;
     const hash = location.hash.replace(/^#\/?/, "");
     let m;
     if ((m = hash.match(/^lesson\/([\d.]+)$/))) lessonPage(m[1]);
+    else if (hash === "me") mePage();
+    else if (hash === "admin") adminPage();
     else if ((m = hash.match(/^day\/(\d+)$/))) {
       const day = course.days.find((d) => d.number === Number(m[1]));
       if (day) { location.replace(`#/lesson/${nextUnfinished(day.lessons).id}`); return; }
@@ -700,5 +1239,6 @@ end`;
       });
     window.addEventListener("hashchange", route);
     route();
+    account.init();
   })();
 })();

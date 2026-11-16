@@ -97,7 +97,7 @@ mkdirSync(out, { recursive: true });
 const json = JSON.stringify(course);
 writeFileSync(join(out, "course.json"), json);
 copyFileSync(wasmPath, join(out, "vyrn.wasm"));
-for (const f of ["index.html", "style.css", "app.js"]) copyFileSync(join(here, f), join(out, f));
+for (const f of ["index.html", "style.css", "app.js", "config.js"]) copyFileSync(join(here, f), join(out, f));
 console.log(`wrote ${out}`);
 
 if (single) {
@@ -107,6 +107,7 @@ if (single) {
     .replace('<link rel="stylesheet" href="style.css">', () => `<style>\n${readFileSync(join(here, "style.css"), "utf8")}</style>`)
     .replace('<script type="application/json" id="course-data"></script>', () => `<script type="application/json" id="course-data">${json.replace(/<\//g, "<\\/")}</script>`)
     .replace('<script type="application/octet-stream" id="vyrn-wasm"></script>', () => `<script type="application/octet-stream" id="vyrn-wasm">${wasm.toString("base64")}</script>`)
+    .replace('<script src="config.js"></script>', () => `<script>\n${readFileSync(join(here, "config.js"), "utf8")}</script>`)
     .replace('<script src="app.js"></script>', () => `<script>\n${readFileSync(join(here, "app.js"), "utf8")}</script>`);
   writeFileSync(single, page);
   console.log(`wrote ${single} (${(page.length / 1e6).toFixed(1)} MB)`);

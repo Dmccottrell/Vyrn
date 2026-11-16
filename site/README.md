@@ -13,6 +13,20 @@ editor and console on the right, like an online coding school.
 - Code and progress are saved in the browser (`localStorage`), so a
   visitor can close the tab and carry on later. The home page shows
   progress by unit and day, and *Continue* returns to the last lesson.
+- **Daily tracking:** a daily goal (lessons a day) with a progress ring,
+  a streak (days in a row with a lesson finished), and an activity
+  calendar. The 🔥 chip at the top shows both on every page; *Your
+  progress* (`#/me`) has lessons, exercises, best streak, a year of
+  activity, and progress by unit.
+- **Search:** type a topic ("loops", "SQL join") to jump to a lesson;
+  `/` focuses the search box.
+- **Accounts** (optional): sign up, log in, reset a password. Signed in,
+  progress, code, streaks and the daily goal are saved to the account and
+  follow the learner to any device; what was done before signing up is
+  kept. Without accounts configured, everything stays in the browser.
+- **Admin dashboard** (`#/admin`, admins only): learners, sign-ups and
+  active learners over 30 days, lessons finished, the exercises people get
+  stuck on most, and every learner with their last activity and streak.
 - Light and dark themes; one column on phones.
 
 Vyrn itself runs in the page: `vyrn.wasm`, the whole toolchain compiled
@@ -24,13 +38,30 @@ clock forward at once. Lessons that open windows (`vyrn.draw`), save PNG
 charts or use several cores are marked "runs on your computer" and give
 the `vyrn learn` commands instead.
 
+## Accounts
+
+Accounts live in a Supabase project. `site/supabase/schema.sql` creates
+its tables and rules: each learner can only read and write their own
+rows; admins (the emails in `admin_emails`, once confirmed) can read
+everyone's progress and activity for the dashboard, but not their code.
+`config.js` holds the project's URL and publishable key, which are meant
+to be public. Admins are added in the SQL editor (see the schema).
+
+In the Supabase dashboard, under Authentication → URL Configuration, the
+Site URL must be the website's address, so the links in confirmation and
+password emails come back to it. Supabase's built-in email service only
+sends to the project's own team; for other learners to get confirmation
+emails, set up an SMTP provider under Authentication → Emails.
+
 ## Files
 
 | File | Is |
 |---|---|
 | `index.html` | the page |
 | `style.css` | the look |
-| `app.js` | everything else: the course, a small Markdown renderer, the editor, running and checking |
+| `app.js` | everything else: the course, a small Markdown renderer, the editor, running and checking, daily tracking, accounts, the admin dashboard |
+| `config.js` | where accounts are kept (Supabase URL and publishable key) |
+| `supabase/schema.sql` | the accounts database |
 | `build.mjs` | builds the site (Node 18 or later) |
 
 ## Building
