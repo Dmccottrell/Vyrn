@@ -1,22 +1,21 @@
-# Publishes the Learn Vyrn website (site/) to GitHub Pages: the course from
-# docs/course, with every exercise written and checked in the browser by
-# Vyrn compiled to WebAssembly. In the repository's settings, Pages must
-# use "GitHub Actions" as its source.
+# Keeps the Learn Vyrn website up to date. On every push to main that
+# changes the course, the site or Vyrn, it rebuilds the site (Vyrn compiled
+# to WebAssembly, every lesson checked in it) into site/public and commits
+# the result. Vercel, connected to this repository with site/public as the
+# root directory, publishes each such commit.
 name: Website
 
 on:
   push:
     branches: [main]
-    paths: ["docs/course/**", "site/**", "src/**", "runtime/wasm/**", "Cargo.toml", ".github/workflows/site.yml"]
+    paths: ["docs/**", "site/**", "!site/public/**", "src/**", "runtime/wasm/**", "registry/**", "unreal/README.md", "Cargo.toml", ".github/workflows/site.yml"]
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
-  group: pages
+  group: website
   cancel-in-progress: true
 
 jobs:
@@ -40,18 +39,16 @@ jobs:
         run: cargo build --release --target wasm32-unknown-unknown
       - name: Export the course
         run: cargo run --release --no-default-features -- learn export build/course
-      - name: Build the website
-        run: node site/build.mjs build/course/course.json runtime/wasm/target/wasm32-unknown-unknown/release/vyrn_wasm.wasm build/site
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: build/site
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Build the website into site/public
+        run: node site/build.mjs build/course/course.json runtime/wasm/target/wasm32-unknown-unknown/release/vyrn_wasm.wasm site/public
+      - name: Commit it if it changed
+        run: |
+          git add site/public
+          if git diff --cached --quiet; then
+            echo "The website is already up to date."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "Rebuild the website"
+            git push
+          fi

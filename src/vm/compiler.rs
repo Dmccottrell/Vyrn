@@ -1965,13 +1965,17 @@ impl Compiler {
                 let _ = self.try_finally(&stmts[i + 1..], &[], Some(finally));
                 return;
             }
+            let depth = self.fns.len();
             let (before, scopes, loops, cleanups) = {
                 let f = self.f();
                 (f.next_reg, f.scopes.len(), f.loops.len(), f.cleanups.len())
             };
             if self.stmt(stmt).is_err() {
                 // Undo whatever the failed statement left half done, so the
-                // rest of the function compiles normally.
+                // rest of the function compiles normally. That includes a
+                // function it had started inside (a lambda or an `each`
+                // expression) and never finished.
+                self.fns.truncate(depth);
                 let f = self.f();
                 f.scopes.truncate(scopes);
                 f.scope_starts.truncate(scopes);

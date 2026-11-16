@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 path = "src/lib.rs"
 
 [dependencies]
-vyrn = { path = "../..", default-features = false, features = ["html", "db"] }
+vyrn = { path = "../..", default-features = false, features = ["html", "db", "draw"] }
 # The in-memory files SQLite keeps databases in, emptied before each run.
 sqlite-wasm-rs = { version = "0.6", default-features = false }
 

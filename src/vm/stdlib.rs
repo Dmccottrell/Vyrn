@@ -1189,6 +1189,14 @@ pub fn os_exit(ctx: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         None => 0,
     };
     let _ = ctx.out.flush();
+    // WebAssembly has no process to end: the program stops with this
+    // error, and the host treats it as the program finishing.
+    #[cfg(target_arch = "wasm32")]
+    return Err(err(
+        "SystemExit",
+        format!("the program ended with code {code}"),
+    ));
+    #[cfg(not(target_arch = "wasm32"))]
     std::process::exit(code as i32)
 }
 

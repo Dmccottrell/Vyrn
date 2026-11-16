@@ -5,6 +5,7 @@
 //
 //   const vyrn = await loadVyrn(wasmBytesOrModule);
 //   vyrn.run(source, input?)            -> { ok, output }        (the playground; input feeds input())
+//   vyrn.files()                        -> [{ name, data }]      (what the last run wrote: pictures, data)
 //   const handle = vyrn.serve(bundle)   -> (request) => Response (an edge API)
 
 const encoder = new TextEncoder();
@@ -49,6 +50,26 @@ export async function loadVyrn(wasm) {
       now();
       if (input === undefined) return status(call("vyrn_run", encoder.encode(source)));
       return status(call("vyrn_run_input", encoder.encode(source + "\0" + input)));
+    },
+
+    /** The files the last run wrote: [{ name, data: Uint8Array }]. */
+    files() {
+      if (!x.vyrn_files) return [];
+      const bytes = (() => {
+        const reply = x.vyrn_files();
+        const len = new DataView(x.memory.buffer).getUint32(reply, true);
+        const out = new Uint8Array(x.memory.buffer, reply + 4, len).slice();
+        x.vyrn_free(reply, len + 4);
+        return out;
+      })();
+      const view = new DataView(bytes.buffer), list = [];
+      for (let i = 0; i + 4 <= bytes.length;) {
+        const n = view.getUint32(i, true); i += 4;
+        const name = decoder.decode(bytes.subarray(i, i + n)); i += n;
+        const size = view.getUint32(i, true); i += 4;
+        list.push({ name, data: bytes.slice(i, i + size) }); i += size;
+      }
+      return list;
     },
 
     /**

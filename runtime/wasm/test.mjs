@@ -40,6 +40,18 @@ assert.deepEqual(r, { ok: true, output: "true\n" });
 r = vyrn.run('main:\n    let name = input("Name: ")\n    print("Hi, {name}")\nend\n', "Ada\n");
 assert.deepEqual(r, { ok: true, output: "Name: Hi, Ada\n" });
 
+// Canvases work, and the pictures come back as files.
+r = vyrn.run('use vyrn.draw\nmain:\n    let pic = draw.canvas(20, 10)\n    pic.clear("white")\n    pic.rect(0, 0, 5, 5, "blue")\n    print(pic.get_pixel(1, 1))\nend\n');
+assert.deepEqual(r, { ok: true, output: "#1e88e5\n" });
+const written = vyrn.files();
+assert.equal(written.length, 1);
+assert.equal(written[0].name, "canvas-1.png");
+assert.deepEqual([...written[0].data.subarray(1, 4)], [80, 78, 71]); // "PNG"
+
+// `os.exit(0)` ends the program normally; another code is a failure.
+assert.deepEqual(vyrn.run("use vyrn.os\nmain:\n    print(1)\n    os.exit(0)\n    print(2)\nend\n"), { ok: true, output: "1\n" });
+assert.equal(vyrn.run("use vyrn.os\nmain:\n    os.exit(3)\nend\n").ok, false);
+
 if (process.env.VYRN_EDGE_DIR) {
   const dir = process.env.VYRN_EDGE_DIR;
   const program = (await import(join(dir, "program.mjs"))).default;

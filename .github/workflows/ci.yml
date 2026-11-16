@@ -98,6 +98,8 @@ jobs:
       - name: Run it under Node
         working-directory: runtime/wasm
         run: node test.mjs
+      - name: Check the package registry's index
+        run: cargo run --release --no-default-features -- run registry/check.vyrn
       - name: Build the course website (runs every solution in the browser runtime)
         run: |
           cargo run --release --no-default-features -- learn export build/course

@@ -3,10 +3,11 @@
 //! (`vyrn add neural`).
 //!
 //! The index is one JSON file in a git repository, as Homebrew's and
-//! crates.io's are. Packages are still fetched from their own repositories
-//! by URL, so the registry only maps names to those URLs; it stores no
-//! code and needs no server. Publishing is a pull request adding an entry,
-//! which `vyrn publish` writes.
+//! crates.io's are: `registry/index.json` in Vyrn's own repository, served
+//! by the Learn Vyrn website. Packages are still fetched from their own
+//! repositories by URL, so the registry only maps names to those URLs; it
+//! stores no code and needs no server. Publishing is a pull request adding
+//! an entry, which `vyrn publish` writes.
 //!
 //! ```json
 //! {"packages": [
@@ -24,11 +25,10 @@ use std::path::PathBuf;
 use crate::vm::json::{self, Json};
 
 /// The public index.
-pub const DEFAULT_REGISTRY: &str =
-    "https://raw.githubusercontent.com/dmccottrell/vyrn-registry/main/index.json";
+pub const DEFAULT_REGISTRY: &str = "https://learn-vyrn.vercel.app/registry/index.json";
 
-/// The index's repository, where entries are added.
-pub const DEFAULT_REGISTRY_REPO: &str = "https://github.com/dmccottrell/vyrn-registry";
+/// The index's repository, where entries are added (to `registry/index.json`).
+pub const DEFAULT_REGISTRY_REPO: &str = "https://github.com/Dmccottrell/Vyrn";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {

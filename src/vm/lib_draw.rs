@@ -680,10 +680,9 @@ impl Pixels {
     }
 
     fn save_png(&self, path: &str) -> VmResult<()> {
-        let file = std::fs::File::create(path)
+        let file = super::sys::open_write(path, false)
             .map_err(|e| err("IoError", format!("cannot write {path}: {e}")))?;
-        let mut enc =
-            png::Encoder::new(std::io::BufWriter::new(file), self.w as u32, self.h as u32);
+        let mut enc = png::Encoder::new(file, self.w as u32, self.h as u32);
         enc.set_color(png::ColorType::Rgb);
         enc.set_depth(png::BitDepth::Eight);
         let mut writer = enc
@@ -770,7 +769,7 @@ impl Image {
 }
 
 fn load_png(path: &str) -> VmResult<Image> {
-    let bytes = std::fs::read(path).map_err(|e| {
+    let bytes = super::sys::read(path).map_err(|e| {
         err(
             if e.kind() == std::io::ErrorKind::NotFound {
                 "NotFound"
@@ -2100,8 +2099,10 @@ impl Ui {
 }
 
 /// Collects typed characters from the window.
+#[cfg(not(target_arch = "wasm32"))]
 struct Typed(Rc<RefCell<String>>);
 
+#[cfg(not(target_arch = "wasm32"))]
 impl minifb::InputCallback for Typed {
     fn add_char(&mut self, c: u32) {
         if let Some(ch) = char::from_u32(c) {
@@ -2111,6 +2112,7 @@ impl minifb::InputCallback for Typed {
 }
 
 /// A window on the screen, with keyboard, mouse and widgets.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Window {
     px: Rc<RefCell<Pixels>>,
     win: RefCell<minifb::Window>,
@@ -2122,6 +2124,7 @@ pub struct Window {
     mouse_delta: Cell<(f64, f64)>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Window {
     /// Reads the mouse and what was typed, for the frame about to start.
     /// A widget's position: x and y if given (at `i` and `i + 1`),
@@ -2164,6 +2167,7 @@ impl Window {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn key(name: &str) -> Option<minifb::Key> {
     use minifb::Key as K;
     let lower = name.to_lowercase();
@@ -2226,6 +2230,7 @@ fn key(name: &str) -> Option<minifb::Key> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Foreign for Window {
     fn type_name(&self) -> &'static str {
         "Window"
@@ -2651,12 +2656,31 @@ fn wrap(f: impl Foreign) -> Value {
 /// `draw.canvas(width, height)`: a picture to draw on and `save`.
 pub fn canvas(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let (w, h) = size_args(args)?;
-    Ok(wrap(Canvas {
-        px: Rc::new(RefCell::new(Pixels::new(w, h))),
-    }))
+    let px = Rc::new(RefCell::new(Pixels::new(w, h)));
+    #[cfg(target_arch = "wasm32")]
+    SHOWN.with(|c| c.borrow_mut().push(px.clone()));
+    Ok(wrap(Canvas { px }))
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// The canvases a run made, to show in the browser when it ends.
+    static SHOWN: RefCell<Vec<Rc<RefCell<Pixels>>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// In the browser, a program's canvases are shown when it ends: each is
+/// written as `canvas-1.png`, `canvas-2.png`, ... for the page to display.
+/// The first eight, at most.
+#[cfg(target_arch = "wasm32")]
+pub fn show_canvases() {
+    let all = SHOWN.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    for (i, px) in all.iter().take(8).enumerate() {
+        let _ = px.borrow().save_png(&format!("canvas-{}.png", i + 1));
+    }
 }
 
 /// `draw.window(width, height, title)`: a window on the screen.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn window(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     let (w, h) = size_args(args)?;
     let title = match args.get(2) {
@@ -2685,12 +2709,24 @@ pub fn window(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
     Ok(wrap(window))
 }
 
+/// In a browser there is no window to open; canvases work.
+#[cfg(target_arch = "wasm32")]
+pub fn window(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
+    Err(err(
+        "Unavailable",
+        "`draw.window` opens a window on a computer; in the browser, draw on `draw.canvas(w, h)`",
+    ))
+}
+
 fn pixels_of(v: &Value) -> Option<Rc<RefCell<Pixels>>> {
     let Value::Foreign(f) = v else { return None };
     if let Some(c) = f.as_any().downcast_ref::<Canvas>() {
         return Some(c.px.clone());
     }
-    f.as_any().downcast_ref::<Window>().map(|w| w.px.clone())
+    #[cfg(not(target_arch = "wasm32"))]
+    return f.as_any().downcast_ref::<Window>().map(|w| w.px.clone());
+    #[cfg(target_arch = "wasm32")]
+    None
 }
 
 /// `draw.turtle(surface)`: a turtle drawing on a canvas or window.
@@ -2891,7 +2927,7 @@ pub fn load_obj(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         Some(Value::Str(s)) => s.to_string(),
         _ => return Err(type_error("`draw.load_obj` takes the file's path")),
     };
-    let text = std::fs::read_to_string(&path)
+    let text = super::sys::read_to_string(&path)
         .map_err(|e| err("IoError", format!("cannot read {path}: {e}")))?;
     let (mut mesh, library) = parse_obj(&text).map_err(|why| {
         err(
@@ -2904,7 +2940,7 @@ pub fn load_obj(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
         .parent()
         .unwrap_or(std::path::Path::new(""));
     if let Some(library) = library {
-        if let Ok(mtl) = std::fs::read_to_string(dir.join(&library)) {
+        if let Ok(mtl) = super::sys::read_to_string(&dir.join(&library).to_string_lossy()) {
             let map = mtl
                 .lines()
                 .filter_map(|l| l.trim().strip_prefix("map_Kd"))

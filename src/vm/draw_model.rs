@@ -8,6 +8,9 @@
 //! blend skinning, done on the CPU). The result is an ordinary `Mesh`, so
 //! it is lit, textured and drawn like any other: `win.model(...)` does both.
 
+// On WebAssembly only the drawing half is used: models load from files.
+#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
+
 use std::rc::Rc;
 
 use super::{normalize, wrap, Image, Mesh};
@@ -436,6 +439,7 @@ impl Foreign for Model {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// `draw.load_model(path)`: a glTF model (`.gltf` with its files, or
 /// one `.glb`), with its skeleton, animations and first texture.
 pub fn load_model(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
@@ -606,6 +610,7 @@ pub fn load_model(_: &mut Ctx, args: &[Value]) -> VmResult<Value> {
 }
 
 /// A decoded glTF picture as an `Image`.
+#[cfg(not(target_arch = "wasm32"))]
 fn image_of(data: &gltf::image::Data) -> Option<Image> {
     use gltf::image::Format;
     let (w, h) = (data.width as usize, data.height as usize);
@@ -671,4 +676,13 @@ mod tests {
         assert_eq!(ch.sample(1.5)[1], 2.0);
         assert_eq!(ch.sample(9.0)[1], 4.0);
     }
+}
+
+/// WebAssembly has no files to read a model from.
+#[cfg(target_arch = "wasm32")]
+pub fn load_model(_: &mut Ctx, _: &[Value]) -> VmResult<Value> {
+    Err(err(
+        "Unavailable",
+        "`draw.load_model` needs Vyrn on a computer",
+    ))
 }

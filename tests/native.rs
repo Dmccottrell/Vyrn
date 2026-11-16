@@ -177,6 +177,17 @@ fn calls_recursion_and_builtins() {
 }
 
 #[test]
+fn number_constants_are_compiled_in() {
+    let src = "const GRAVITY = 9.81\nconst STEPS = 1000\nconst FLOOR = -1.0\nconst LIMIT = -3\nconst SLOW = false\n\
+create fall(steps: int) -> float:\n    var y = 10.0\n    var v = 0.0\n    each i in 0 until steps:\n        v -= GRAVITY * 0.01\n        y += v * 0.01\n\
+        if y < FLOOR and not SLOW:\n            y = FLOOR\n            v = -v * 0.5\n        end\n    end\n    return y\nend\n\
+create clamp(n: int) -> int:\n    let GRAVITY = 2\n    return max(n * GRAVITY, LIMIT)\nend\n\
+main:\n    print(fall(STEPS), clamp(-9), clamp(4))\nend\n";
+    // A local of the same name wins over the constant.
+    assert_eq!(both(src, &["fall", "clamp"]), "-1.0 -3 8\n");
+}
+
+#[test]
 fn unsupported_functions_stay_interpreted() {
     // Prints, changes a variable's type, and is called with an int where a
     // float is declared: all still run, on the interpreter.

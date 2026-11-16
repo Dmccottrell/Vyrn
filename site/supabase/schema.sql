@@ -146,3 +146,47 @@ grant execute on function public.bump_activity(date, int, int, int) to authentic
 revoke all on function public.is_admin() from anon, public;
 grant execute on function public.is_admin() to authenticated;
 revoke all on function public.handle_new_user() from anon, authenticated, public;
+
+-- ---- questions under each lesson ---------------------------------------------
+
+create table public.questions (
+  id bigint generated always as identity primary key,
+  lesson_id text not null check (char_length(lesson_id) <= 10),
+  user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  author text not null check (char_length(author) between 1 and 80),
+  body text not null check (char_length(body) between 1 and 4000),
+  created_at timestamptz not null default now()
+);
+create index questions_lesson_idx on public.questions (lesson_id, created_at);
+create index questions_user_idx on public.questions (user_id);
+
+create table public.answers (
+  id bigint generated always as identity primary key,
+  question_id bigint not null references public.questions (id) on delete cascade,
+  user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  author text not null check (char_length(author) between 1 and 80),
+  body text not null check (char_length(body) between 1 and 4000),
+  created_at timestamptz not null default now()
+);
+create index answers_question_idx on public.answers (question_id);
+create index answers_user_idx on public.answers (user_id);
+
+alter table public.questions enable row level security;
+alter table public.answers enable row level security;
+
+-- Everyone, signed in or not, can read the questions and answers.
+create policy "anyone reads questions" on public.questions for select to anon, authenticated using (true);
+create policy "anyone reads answers" on public.answers for select to anon, authenticated using (true);
+-- Signed-in learners post as themselves.
+create policy "post own question" on public.questions for insert to authenticated
+  with check ((select auth.uid()) = user_id);
+create policy "post own answer" on public.answers for insert to authenticated
+  with check ((select auth.uid()) = user_id);
+-- Authors remove their own; admins remove anything.
+create policy "delete own question, or admin" on public.questions for delete to authenticated
+  using ((select auth.uid()) = user_id or (select public.is_admin()));
+create policy "delete own answer, or admin" on public.answers for delete to authenticated
+  using ((select auth.uid()) = user_id or (select public.is_admin()));
+
+grant select on public.questions, public.answers to anon;
+revoke insert, update, delete on public.questions, public.answers from anon;

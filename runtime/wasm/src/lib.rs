@@ -18,6 +18,7 @@
 //! | `vyrn_handle(ptr, len) -> reply` | answers one HTTP request with the loaded program's routes |
 //! | `vyrn_set_time(seconds)` | the time now (seconds since 1970), for `time.now()`; `sleep` moves a virtual clock on from there |
 //! | `vyrn_seed(ptr, len)` | fresh random bytes from the host, for `vyrn.crypto` |
+//! | `vyrn_files() -> reply` | the files the last run wrote: `[u32 name length][name][u32 size][bytes]`, repeated |
 //!
 //! A reply is a pointer to `[u32 length][bytes]`; the host reads it and
 //! frees `length + 4` bytes. `vyrn_run` and `vyrn_load` reply with one
@@ -80,6 +81,20 @@ fn status_reply(ok: bool, text: String) -> *mut u8 {
     let mut bytes = vec![u8::from(!ok)];
     bytes.extend_from_slice(text.as_bytes());
     reply(bytes)
+}
+
+/// The files the last run wrote (pictures, charts, data), for the host to
+/// show: each is `[u32 name length][name][u32 size][bytes]`.
+#[no_mangle]
+pub extern "C" fn vyrn_files() -> *mut u8 {
+    let mut out = Vec::new();
+    for (name, data) in vyrn::vm::sys::files() {
+        out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&data);
+    }
+    reply(out)
 }
 
 /// The host says what time it is: the module has no clock of its own.
@@ -152,11 +167,23 @@ fn run_with(src: &str, stdin: Option<&str>) -> *mut u8 {
         vm.set_input(stdin);
     }
     let result = vm.run_main(&[]);
+    // Pictures the program drew become files the page shows.
+    vyrn::vm::lib_draw::show_canvases();
     let mut text = out.text();
     match result {
         Ok(_) => status_reply(true, text),
         Err(e) => {
-            text.push_str(&format!("error: {e}\n"));
+            let message = e.to_string();
+            // `os.exit(code)`: the program finished; 0 is success.
+            if let Some(rest) = message.strip_prefix("SystemExit: the program ended with code ") {
+                let code = rest.lines().next().unwrap_or("").trim();
+                if code == "0" {
+                    return status_reply(true, text);
+                }
+                text.push_str(&format!("(the program ended with code {code})\n"));
+                return status_reply(false, text);
+            }
+            text.push_str(&format!("error: {message}\n"));
             status_reply(false, text)
         }
     }

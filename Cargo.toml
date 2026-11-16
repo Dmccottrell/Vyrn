@@ -31,6 +31,10 @@ libffi = { version = "5", optional = true }
 # `use vyrn.db`: SQLite, compiled in (on WebAssembly too, with the
 # database in memory).
 rusqlite = { version = "0.42", optional = true, features = ["bundled"] }
+# `use vyrn.draw`: PNG images and a bitmap font (pure Rust; windows and
+# glTF models are below, not on WebAssembly).
+png = { version = "0.18", optional = true }
+font8x8 = { version = "0.3", optional = true }
 # `use vyrn.html`: HTML parsing with CSS selectors (pure Rust, so it also
 # works on WebAssembly).
 scraper = { version = "0.29", optional = true, default-features = false }
@@ -83,10 +87,8 @@ getrandom = "0.2"
 rapier3d = { version = "0.36", optional = true }
 # `use vyrn.sound`: playback and decoding of WAV, Ogg Vorbis and MP3.
 rodio = { version = "0.23", optional = true, default-features = false, features = ["playback", "wav", "vorbis", "mp3"] }
-# `use vyrn.draw`: windows (minifb), PNG images, and a bitmap font.
+# `use vyrn.draw`: windows (minifb).
 minifb = { version = "0.29", optional = true, default-features = false, features = ["x11"] }
-png = { version = "0.18", optional = true }
-font8x8 = { version = "0.3", optional = true }
 # `use vyrn.mail`: sending email over SMTP, with TLS by rustls.
 lettre = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "builder", "hostname", "rustls-tls", "ring"] }
 # The native tier: typed functions compiled to machine code at load time.

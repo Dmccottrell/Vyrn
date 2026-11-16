@@ -3,7 +3,9 @@
 //! When a program is compiled, every top-level function whose parameters
 //! are all `int`, `float` or `bool` is also translated to machine code
 //! with Cranelift, if its body stays within what the native tier handles:
-//! numbers and booleans, arithmetic, comparisons, `if`/`else if`/`else`,
+//! numbers and booleans (and top-level constants that are numbers or
+//! booleans, such as `const GRAVITY = 9.81`), arithmetic, comparisons,
+//! `if`/`else if`/`else`,
 //! `loop`, `each i in a until b`, `stop`, `skip`, `return`, calls to other
 //! such functions (recursion included) and math builtins (`abs`, `sqrt`,
 //! `min`, `max`, `vyrn.math`, ...). The interpreter then calls the machine
@@ -941,6 +943,7 @@ pub fn attach(module: &Module, program: &Program) {
     // `use vyrn.math` (or `as m`): the local name of the math module.
     let mut math_names: Vec<String> = Vec::new();
     let mut all_names: Vec<String> = Vec::new();
+    let mut consts: HashMap<String, ConstNum> = HashMap::new();
     let mut candidates: Vec<Candidate> = Vec::new();
     let structs = Structs::of(module, program);
     for item in &module.items {
@@ -1015,7 +1018,12 @@ pub fn attach(module: &Module, program: &Program) {
                 }
             }
             ItemKind::Enum(e) => all_names.push(e.name.name.clone()),
-            ItemKind::Const(c) => all_names.push(c.name.name.clone()),
+            ItemKind::Const(c) => {
+                all_names.push(c.name.name.clone());
+                if let Some(v) = const_number(&c.value) {
+                    consts.insert(c.name.name.clone(), v);
+                }
+            }
             _ => {}
         }
     }
@@ -1026,6 +1034,7 @@ pub fn attach(module: &Module, program: &Program) {
     let env = Env {
         math: math_names,
         globals: all_names,
+        consts,
         structs,
     };
 
@@ -1115,7 +1124,42 @@ struct Env {
     /// Every top-level function, type and constant: a call to one that is
     /// not a candidate cannot be compiled.
     globals: Vec<String>,
+    /// Top-level constants that are plain numbers or booleans
+    /// (`const GRAVITY = 9.81`): machine code uses their values directly.
+    consts: HashMap<String, ConstNum>,
     structs: Structs,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ConstNum {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+}
+
+/// The value of a constant written as a number or boolean literal, or a
+/// negated number.
+fn const_number(e: &Expr) -> Option<ConstNum> {
+    match &e.kind {
+        ExprKind::Int {
+            value,
+            suffix: None,
+        } => i64::try_from(*value).ok().map(ConstNum::Int),
+        ExprKind::Float {
+            value,
+            suffix: None,
+        } => Some(ConstNum::Float(*value)),
+        ExprKind::Bool(b) => Some(ConstNum::Bool(*b)),
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            operand,
+        } => match const_number(operand)? {
+            ConstNum::Int(i) => i.checked_neg().map(ConstNum::Int),
+            ConstNum::Float(f) => Some(ConstNum::Float(-f)),
+            ConstNum::Bool(_) => None,
+        },
+        _ => None,
+    }
 }
 
 // ==== the code generator ====================================================
@@ -2667,12 +2711,17 @@ impl Lower<'_, '_> {
                 suffix: None,
             } => (self.b.ins().f64const(*value), NTy::Float),
             ExprKind::Bool(v) => (self.b.ins().iconst(types::I8, i64::from(*v)), NTy::Bool),
-            ExprKind::Name(n) => {
-                let (var, t) = self
-                    .lookup(&n.name)
-                    .ok_or_else(|| format!("`{}` is not a local number", n.name))?;
-                (self.b.use_var(var), t)
-            }
+            ExprKind::Name(n) => match self.lookup(&n.name) {
+                Some((var, t)) => (self.b.use_var(var), t),
+                None => match self.env.consts.get(&n.name).copied() {
+                    Some(ConstNum::Int(v)) => (self.b.ins().iconst(types::I64, v), NTy::Int),
+                    Some(ConstNum::Float(v)) => (self.b.ins().f64const(v), NTy::Float),
+                    Some(ConstNum::Bool(v)) => {
+                        (self.b.ins().iconst(types::I8, i64::from(v)), NTy::Bool)
+                    }
+                    None => return Err(format!("`{}` is not a local number", n.name)),
+                },
+            },
             ExprKind::Unary { op, operand } => {
                 let (v, t) = self.expr(operand)?;
                 match (op, t) {

@@ -16,7 +16,7 @@
   const STORE = "learn-vyrn-v1";
   // done: finished lessons; code (and codeAt, when it changed): each
   // editor; days: what was done each day; goal: lessons a day.
-  const fresh = () => ({ done: {}, code: {}, codeAt: {}, last: null, hints: {}, days: {}, goal: 3 });
+  const fresh = () => ({ done: {}, code: {}, codeAt: {}, last: null, hints: {}, days: {}, goal: 3, review: {}, play: "", name: "" });
   let saved = fresh();
   try {
     const raw = localStorage.getItem(STORE);
@@ -71,16 +71,19 @@
   // ==== markdown ===========================================================
 
   function inline(text) {
-    // Code spans first, so nothing inside them is touched.
-    return text.split(/(`+[^`]*?`+)/).map((part, i) => {
-      if (i % 2 === 1) return `<code>${esc(part.replace(/^`+|`+$/g, ""))}</code>`;
-      let s = esc(part);
-      s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) =>
-        /^(https?:|#)/.test(u) ? `<a href="${u}" target="_blank" rel="noopener">${t}</a>` : t);
-      s = s.replace(/\*\*(\S(?:[^*]*?\S)?)\*\*/g, "<strong>$1</strong>");
-      s = s.replace(/(^|[\s(])\*(\S(?:[^*]*?\S)?)\*(?=[\s.,;:!?)]|$)/g, "$1<em>$2</em>");
-      return s;
-    }).join("");
+    // Code spans become placeholders first, so nothing inside them is
+    // touched, while bold and links can still wrap around them.
+    const codes = [];
+    let s = esc(text.replace(/(`+)([^`]*?)\1/g, (_, ticks, code) => `\u0000${codes.push(code) - 1}\u0000`));
+    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) => {
+      if (/^https?:/.test(u)) return `<a href="${u}" target="_blank" rel="noopener">${t}</a>`;
+      const doc = u.match(/(?:^|\/)([\w-]+)\.md(?:#[\w-]*)?$/);
+      if (doc) return `<a href="#/docs/${doc[1].toLowerCase()}">${t}</a>`;
+      return t;
+    });
+    s = s.replace(/\*\*(\S(?:[^*]*?\S)?)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/(^|[\s(])\*(\S(?:[^*]*?\S)?)\*(?=[\s.,;:!?)]|$)/g, "$1<em>$2</em>");
+    return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${esc(codes[Number(i)])}</code>`);
   }
 
   // Turns a lesson's markdown into HTML. Code blocks become placeholders
@@ -107,7 +110,8 @@
       if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
         const level = Math.min(m[1].length + 1, 4);
         const exercise = /^exercise$/i.test(m[2].trim());
-        html += `<h${level}${exercise ? ' class="exercise-head"' : ""}>${inline(m[2])}</h${level}>`;
+        const hid = blocks.ids ? ` id="h-${m[2].toLowerCase().replace(/[^\w]+/g, "-").replace(/^-|-$/g, "")}"` : "";
+        html += `<h${level}${hid}${exercise ? ' class="exercise-head"' : ""}>${inline(m[2])}</h${level}>`;
         i++;
         continue;
       }
@@ -177,7 +181,22 @@ onmessage = async (event) => {
     const len = new DataView(x.memory.buffer).getUint32(reply, true);
     const out = new Uint8Array(x.memory.buffer, reply + 4, len).slice();
     x.vyrn_free(reply, len + 4);
-    postMessage({ ok: out[0] === 0, output: dec.decode(out.subarray(1)), ms });
+    // Files the program wrote (pictures, charts, data), to show.
+    const files = [];
+    if (x.vyrn_files) {
+      const fr = x.vyrn_files();
+      const flen = new DataView(x.memory.buffer).getUint32(fr, true);
+      const bytes = new Uint8Array(x.memory.buffer, fr + 4, flen).slice();
+      x.vyrn_free(fr, flen + 4);
+      const view = new DataView(bytes.buffer);
+      for (let i = 0; i + 4 <= bytes.length && files.length < 20;) {
+        const n = view.getUint32(i, true); i += 4;
+        const name = dec.decode(bytes.subarray(i, i + n)); i += n;
+        const size = view.getUint32(i, true); i += 4;
+        files.push({ name, data: bytes.slice(i, i + size) }); i += size;
+      }
+    }
+    postMessage({ ok: out[0] === 0, output: dec.decode(out.subarray(1)), ms, files });
   } catch (e) {
     instance = null;
     postMessage({ ok: false, output: "error: the program crashed Vyrn in the browser (" + e.message + ")\\n", ms: 0 });
@@ -227,6 +246,27 @@ onmessage = async (event) => {
       if (/^\s*(-->|\d*\s*\|)/.test(line)) return `<span class="dim">${safe}</span>`;
       return safe;
     }).join("\n");
+  }
+
+  // Files a run wrote: pictures are shown, text can be opened, anything
+  // can be downloaded.
+  const fileUrls = [];
+  function filesHtml(files) {
+    if (!files || !files.length) return "";
+    while (fileUrls.length) URL.revokeObjectURL(fileUrls.pop());
+    const types = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", svg: "image/svg+xml", csv: "text/csv", json: "application/json", html: "text/html" };
+    const items = files.map(({ name, data }) => {
+      const ext = (name.split(".").pop() || "").toLowerCase();
+      const url = URL.createObjectURL(new Blob([data], { type: types[ext] || "application/octet-stream" }));
+      fileUrls.push(url);
+      const base = name.split("/").pop();
+      const head = `<div class="file-head"><code>${esc(name)}</code><span class="muted small">${data.length < 1024 ? data.length + " bytes" : (data.length / 1024).toFixed(1) + " KB"}</span><a class="small" href="${url}" download="${esc(base)}">Download</a></div>`;
+      if (/^(png|jpe?g|gif|svg)$/.test(ext)) return `<div class="file">${head}<img src="${url}" alt="${esc(base)}, drawn by the program"></div>`;
+      const text = new TextDecoder().decode(data.subarray(0, 4000));
+      if (!/[\u0000-\u0008]/.test(text)) return `<details class="file">${`<summary>${head}</summary>`}<pre>${esc(text)}${data.length > 4000 ? "\n…" : ""}</pre></details>`;
+      return `<div class="file">${head}</div>`;
+    }).join("");
+    return `<div class="label">Files the program wrote</div><div class="files">${items}</div>`;
   }
 
   // The same rule as `vyrn learn check`: trailing spaces and blank lines don't count.
@@ -342,7 +382,7 @@ end`;
   }
 
   function mountBlocks(root, blocks, lesson) {
-    let vyrnIndex = 0;
+    let vyrnIndex = 0, programIndex = 0;
     const desktop = new Set(lesson.desktop || []);
     blocks.forEach((b, n) => {
       const slot = root.querySelector(`[data-block="${n}"]`);
@@ -361,10 +401,12 @@ end`;
       } else if (info.startsWith("vyrn starter")) {
         html = lesson.exercise ? "" : codeBlock("Start with", b.code, { vyrn: true });
       } else if (info.startsWith("vyrn")) {
+        const runs = (lesson.runnable || []).includes(programIndex++);
         html = codeBlock("Program", b.code, {
           vyrn: true,
-          badge: '<span class="badge" title="This one needs Vyrn on your computer: a window, a database, the network or a file">runs on your computer</span>',
-          buttons: '<button class="btn small ghost" data-act="edit">Edit</button>',
+          badge: runs ? "" : '<span class="badge" title="This one needs Vyrn on your computer: a window, the network, or a server">runs on your computer</span>',
+          buttons: `<button class="btn small ghost" data-act="edit">Edit</button>${runs ? '<button class="btn small" data-act="run">▶ Run</button>' : ""}`,
+          after: runs ? '<div class="run-out" hidden><pre></pre></div>' : "",
         });
       } else if (info === "text expect") {
         html = codeBlock("Expected output", b.code, { cls: "output" });
@@ -386,7 +428,8 @@ end`;
       const code = el.querySelector("pre").textContent + "\n";
       const run = el.querySelector('[data-act="run"]');
       const edit = el.querySelector('[data-act="edit"]');
-      if (edit) edit.addEventListener("click", () => {
+      if (edit) edit.addEventListener("click", async () => {
+        if (!current || !document.getElementById("source")) { location.hash = "#/play/" + (await pack(code)); return; }
         if (current && current.lesson.exercise && !confirm("Replace the code in the editor with this example? Your exercise code is saved; Reset brings back the starting code.")) return;
         current.setCode(code, true);
         current.editor.focus();
@@ -399,19 +442,24 @@ end`;
         const r = await runner.run(code, "");
         run.disabled = false;
         out.querySelector("pre").innerHTML = r.output ? outputHtml(r.output.replace(/\n$/, "")) : '<span class="dim">(printed nothing)</span>';
+        out.querySelectorAll(".files, .label").forEach((e) => e.remove());
+        out.insertAdjacentHTML("beforeend", filesHtml(r.files));
       });
     });
   }
 
-  function lessonPage(id) {
+  function lessonPage(id, reviewing = false) {
     const lesson = byId.get(id);
     if (!lesson) { location.hash = "#/"; return; }
     const day = dayOf.get(id);
     const unit = unitOf(day.number);
     const index = lessons.indexOf(lesson);
     const prev = lessons[index - 1], next = lessons[index + 1];
-    saved.last = id;
-    save();
+    const review = reviewing && !!lesson.exercise;
+    if (!review) {
+      saved.last = id;
+      save();
+    }
     crumbs([
       { text: unit ? unit.title.replace(/^Unit \d+:\s*/, "") : "Course", href: "#/" },
       { text: `Day ${day.number}`, href: `#/day/${day.number}` },
@@ -426,6 +474,7 @@ end`;
       <p class="kicker">Day ${day.number} · ${esc(dayTitle(day))}</p>
       <nav class="lesson-list" aria-label="Lessons today">${day.lessons.map((l) =>
         `<a href="#/lesson/${l.id}" class="${l === lesson ? "here" : ""} ${saved.done[l.id] ? "finished" : ""}" title="${esc(l.title)}">${l.id}</a>`).join("")}</nav>
+      ${review ? `<div class="verdict note review-banner">Review: solve this exercise again from the start. ${dueReviews().length > 1 ? `${dueReviews().length - 1} more due after this.` : ""}</div>` : ""}
       <h1>${esc(lesson.id)} ${inline(lesson.title)}</h1>
       ${ex ? '<button class="btn small to-editor" type="button" id="to-editor">The exercise is in the editor below ↓</button>' : ""}
       ${first && day.intro ? `<div class="intro">${markdown(day.intro, [])}</div>` : ""}
@@ -437,7 +486,7 @@ end`;
 
     view.innerHTML = `<div class="lesson">
       <section class="prose-pane" id="prose-pane">
-        <article class="prose" id="prose">${prose}</article>
+        <article class="prose" id="prose">${prose}<section class="questions" id="questions"></section></article>
         <nav class="lesson-nav" aria-label="Previous and next lesson">
           ${prev ? `<a class="btn" href="#/lesson/${prev.id}">← ${esc(prev.id)}</a>` : "<span></span>"}
           <span class="where">${saved.done[id] ? '<span class="done-mark">✓ Finished</span>' : `Lesson ${index + 1} of ${lessons.length}`}</span>
@@ -447,6 +496,7 @@ end`;
       <section class="bench" aria-label="Code editor">
         <div class="bench-head">
           <span class="file">${fileName}</span>
+          <button class="btn small ghost" id="share" type="button" title="Get a link to this code">Share</button>
           <button class="btn small ghost" id="reset" type="button" title="Go back to the starting code">Reset</button>
         </div>
         <div class="editor">
@@ -476,7 +526,7 @@ end`;
       hl.innerHTML = highlight(source.value) + "\n";
       gutter.textContent = Array.from({ length: source.value.split("\n").length }, (_, i) => i + 1).join("\n");
       sync();
-      if (store) {
+      if (store && !review) {
         saved.code[id] = source.value;
         saved.codeAt[id] = Date.now();
         save();
@@ -491,7 +541,7 @@ end`;
       editor: source,
       setCode(code, store) { source.value = code; refresh(store); },
     };
-    source.value = saved.code[id] ?? starter;
+    source.value = review ? starter : saved.code[id] ?? starter;
     refresh(false);
     source.addEventListener("input", () => refresh());
     source.addEventListener("scroll", sync);
@@ -585,12 +635,15 @@ end`;
       busy(false);
       show(`<div class="label">Output${r.ms ? ` <span class="dim">· ${r.ms.toFixed(0)} ms</span>` : ""}</div>
         <pre>${r.output ? outputHtml(r.output.replace(/\n$/, "")) : '<span class="placeholder">The program printed nothing.</span>'}</pre>
+        ${filesHtml(r.files)}
         ${ex ? `<div class="task"><div class="label">Expected output</div><pre>${esc(ex.expect.replace(/\n$/, ""))}</pre></div>` : ""}
         ${inputBox()}${hintsHtml()}`);
+      if (!r.ok && !r.stopped) explainOffer(consoleEl, source.value, r.output, lesson);
       const again = $("stdin");
       if (again) { again.value = keep; again.closest("details").open = open || !!keep; }
     }
 
+    let graded = false;
     async function check() {
       if (!ex) return run();
       busy(true);
@@ -600,10 +653,18 @@ end`;
       const passed = r.ok && sameOutput(r.output, ex.expect);
       track("checks");
       account.attempt(id, passed);
+      if (review && !graded) { graded = true; schedule(id, passed); }
+      else if (passed && !saved.review[id]) schedule(id, true);
+      if (passed && review) {
+        const more = dueReviews();
+        show(`<div class="verdict good">✓ Still got it! It comes back in ${REVIEW_DAYS[saved.review[id].box - 1]} days. ${more.length ? `<a class="btn small primary" href="#/review/${more[0]}">Next review (${more.length} left) →</a>` : '<a class="btn small primary" href="#/review">All reviewed 🎉</a>'}</div>
+          <div class="label">Your output</div><pre>${outputHtml(r.output.replace(/\n$/, ""))}</pre>`);
+        return;
+      }
       if (passed) {
         complete();
         show(`<div class="verdict good">✓ Correct! ${next ? `<a class="btn small primary" href="#/lesson/${next.id}">Next: ${esc(next.id + " " + next.title)} →</a>` : ""}</div>
-          <div class="label">Your output</div><pre>${outputHtml(r.output.replace(/\n$/, ""))}</pre>`);
+          <div class="label">Your output</div><pre>${outputHtml(r.output.replace(/\n$/, ""))}</pre>${filesHtml(r.files)}`);
         return;
       }
       const got = clean(r.output), want = clean(ex.expect);
@@ -620,10 +681,13 @@ end`;
           <div><div class="label">Your output</div><pre>${got.length ? mark(got, first) : '<span class="placeholder">(nothing)</span>'}</pre></div>
           <div><div class="label">Expected</div><pre>${mark(want, first)}</pre></div></div>`}
         ${inputBox()}${hintsHtml()}`);
+      if (!r.stopped) explainOffer(consoleEl.querySelector(".verdict.bad"), source.value, r.output, lesson);
     }
 
     runBtn.addEventListener("click", run);
     if (checkBtn) checkBtn.addEventListener("click", check);
+    $("share").addEventListener("click", () => shareCode(source.value));
+    loadQuestions(id);
     $("reset").addEventListener("click", () => {
       if (source.value !== starter && !confirm("Go back to the starting code? Your changes will be lost.")) return;
       current.setCode(starter, true);
@@ -706,6 +770,8 @@ end`;
   }
 
   function renderStreak() {
+    const nav = $("nav-review");
+    if (nav) { const n = course ? dueReviews().length : 0; nav.innerHTML = `Review${n ? ` <span class="count-pill">${n}</span>` : ""}`; }
     const chip = $("streak-chip");
     if (!chip) return;
     const { current } = streaks();
@@ -776,6 +842,7 @@ end`;
         <span><b>${s.activeDays}</b>days learning</span>
       </div>
       ${heatmap(saved.days, 17)}
+      ${dueReviews().length ? `<a class="btn small review-due" href="#/review">🔁 ${dueReviews().length} exercise${dueReviews().length === 1 ? "" : "s"} to review</a>` : ""}
       ${onMe ? "" : '<a class="see-more" href="#/me">Your progress →</a>'}
     </section>`;
   }
@@ -802,7 +869,8 @@ end`;
     const units = course.units.map((u) => {
       const all = course.days.filter((d) => d.number >= u.first && d.number <= u.last).flatMap((d) => d.lessons);
       const n = doneCount(all);
-      return `<div class="unit-row"><span>${esc(u.title)}</span><div class="bar"><i style="width:${(100 * n) / all.length}%"></i></div><span class="num">${n}/${all.length}</span></div>`;
+      const i = course.units.indexOf(u) + 1;
+      return `<div class="unit-row"><span>${esc(u.title)}${n === all.length ? ` <a class="cert-link" href="#/certificate/${i}">🎓 Certificate</a>` : ""}</span><div class="bar"><i style="width:${(100 * n) / all.length}%"></i></div><span class="num">${n}/${all.length}</span></div>`;
     }).join("");
     view.innerHTML = `<div class="home narrow">
       <h1 class="page-title">Your progress</h1>
@@ -820,10 +888,13 @@ end`;
       <h2 class="section-title">The last year</h2>
       <div class="card">${heatmap(saved.days, 52)}</div>
       <h2 class="section-title">Units</h2>
-      <div class="card">${units}</div>
+      <div class="card">${units}${done === lessons.length ? '<p><a class="btn primary" href="#/certificate/course">🎓 Your course certificate</a></p>' : ""}</div>
+      ${account.user ? `<h2 class="section-title">Reminders</h2><div class="card"><label class="check"><input type="checkbox" id="reminders" ${account.reminders ? "checked" : ""}> Email me in the evening if I haven't kept my streak going that day</label></div>` : ""}
       <p><a class="btn primary" href="#/lesson/${(saved.last && byId.has(saved.last) ? byId.get(saved.last) : nextUnfinished(lessons)).id}">Continue learning →</a></p>
     </div>`;
     wireGoal();
+    const rem = $("reminders");
+    if (rem) rem.addEventListener("change", () => account.setReminders(rem.checked));
     const b = $("me-signin");
     if (b) b.addEventListener("click", () => authDialog("signup"));
   }
@@ -902,6 +973,7 @@ end`;
         });
         const { data } = await this.client.auth.getSession();
         if (data.session) await this.signedIn(data.session.user);
+        else if ($("questions") && current) loadQuestions(current.lesson.id);
       } catch (e) {
         console.warn("accounts unavailable:", e.message);
       }
@@ -928,7 +1000,7 @@ end`;
         c.from("progress").select("lesson_id").eq("user_id", uid),
         c.from("saved_code").select("lesson_id, code, updated_at").eq("user_id", uid),
         c.from("activity").select("day, lessons, checks, runs").eq("user_id", uid),
-        c.from("profiles").select("daily_goal, name").eq("id", uid).single(),
+        c.from("profiles").select("daily_goal, name, review, reminders").eq("id", uid).single(),
       ]);
       const remoteDone = new Set((prog.data || []).map((r) => r.lesson_id));
       const upload = Object.keys(saved.done).filter((id) => !remoteDone.has(id)).map((lesson_id) => ({ user_id: uid, lesson_id }));
@@ -961,6 +1033,13 @@ end`;
       if (prof.data) {
         if (prof.data.daily_goal) saved.goal = prof.data.daily_goal;
         this.name = prof.data.name;
+        this.reminders = prof.data.reminders;
+        // Review: for each exercise, whichever side has reviewed it further.
+        for (const [id, r] of Object.entries(prof.data.review || {})) {
+          const mine = saved.review[id];
+          if (!mine || r.box > mine.box || (r.box === mine.box && r.due > mine.due)) saved.review[id] = r;
+        }
+        this.saveReview();
       }
       save();
     },
@@ -982,6 +1061,15 @@ end`;
       this.codeTimers[id] = setTimeout(() => {
         this.client.from("saved_code").upsert({ user_id: this.user.id, lesson_id: id, code, updated_at: new Date().toISOString() }).then(() => {});
       }, 1500);
+    },
+    saveReview() {
+      if (!this.user) return;
+      clearTimeout(this.reviewTimer);
+      this.reviewTimer = setTimeout(() => this.client.from("profiles").update({ review: saved.review }).eq("id", this.user.id).then(() => {}), 1000);
+    },
+    setReminders(on) {
+      this.reminders = on;
+      if (this.user) this.client.from("profiles").update({ reminders: on }).eq("id", this.user.id).then(() => toast(on ? "Reminders on." : "Reminders off."));
     },
     setGoal(n) {
       if (this.user) this.client.from("profiles").update({ daily_goal: n }).eq("id", this.user.id).then(() => {});
@@ -1097,11 +1185,13 @@ end`;
     view.innerHTML = '<div class="home narrow"><h1 class="page-title">Admin</h1><p class="muted">Loading…</p></div>';
     const c = account.client;
     const since = dayKey(addDays(new Date(), -89));
-    const [profiles, progress, activity, attempts] = await Promise.all([
+    const [profiles, progress, activity, attempts, questions, answers] = await Promise.all([
       c.from("profiles").select("id, email, name, created_at, last_seen").order("created_at", { ascending: false }).limit(5000),
       c.from("progress").select("user_id, lesson_id").limit(100000),
       c.from("activity").select("user_id, day, lessons, checks, runs").gte("day", since).limit(100000),
       c.from("attempts").select("user_id, lesson_id, passed").gte("at", parseDay(since).toISOString()).limit(100000),
+      c.from("questions").select("id, lesson_id, author, body, created_at").order("created_at", { ascending: false }).limit(50),
+      c.from("answers").select("question_id").limit(100000),
     ]);
     const failed = [profiles, progress, activity, attempts].find((r) => r.error);
     if (failed) { view.innerHTML = `<div class="home narrow"><h1 class="page-title">Admin</h1><p class="auth-msg bad">${esc(failed.error.message)}</p></div>`; return; }
@@ -1177,6 +1267,12 @@ end`;
       <div class="card table-wrap">${hard.length ? `<table class="data"><thead><tr><th>Lesson</th><th class="num">Checks</th><th class="num">Pass rate</th><th class="num">Tried</th><th class="num">Still stuck</th></tr></thead><tbody>
         ${hard.map((h) => `<tr><td><a href="#/lesson/${h.id}">${esc(h.id)} ${esc(byId.has(h.id) ? byId.get(h.id).title : "")}</a></td><td class="num">${h.tries}</td><td class="num">${Math.round(h.rate * 100)}%</td><td class="num">${h.tried.size}</td><td class="num">${h.stuck}</td></tr>`).join("")}
         </tbody></table>` : '<p class="muted">Not enough checks yet.</p>'}</div>
+      <h2 class="section-title">Latest questions</h2>
+      <div class="card">${(questions.data || []).length ? `<ul class="plain-list">${questions.data.map((q) => {
+        const n = (answers.data || []).filter((a) => a.question_id === q.id).length;
+        return `<li><a href="#/lesson/${q.lesson_id}">${esc(q.lesson_id)}</a> <b>${esc(q.author)}</b>: ${esc(q.body.slice(0, 140))}${q.body.length > 140 ? "…" : ""}
+          <span class="${n ? "muted" : "badge"} small">${n ? `${n} answer${n === 1 ? "" : "s"}` : "unanswered"}</span></li>`;
+      }).join("")}</ul>` : '<p class="muted">No questions yet.</p>'}</div>
       <h2 class="section-title">Learners</h2>
       <input id="user-filter" type="search" class="filter" placeholder="Filter by name or email" aria-label="Filter learners">
       <div class="card table-wrap"><table class="data"><thead><tr><th>Learner</th><th>Joined</th><th>Last active</th><th class="num">Lessons</th><th class="num">Streak</th></tr></thead>
@@ -1188,6 +1284,389 @@ end`;
     });
   }
 
+  // ==== spaced review ======================================================
+  //
+  // A solved exercise comes back for review: after a day, then 3, 7, 16,
+  // 35 and 80 days while it keeps being right, and back to a day when it
+  // isn't. Review means solving it again from the starting code.
+
+  const REVIEW_DAYS = [1, 3, 7, 16, 35, 80];
+  function schedule(id, right) {
+    const r = saved.review[id] || { box: 0 };
+    r.box = right ? Math.min(r.box + 1, REVIEW_DAYS.length) : 1;
+    r.due = dayKey(addDays(new Date(), REVIEW_DAYS[r.box - 1]));
+    saved.review[id] = r;
+    save();
+    account.saveReview();
+  }
+  const dueReviews = () => Object.entries(saved.review)
+    .filter(([id, r]) => byId.has(id) && r.due <= todayKey())
+    .sort((a, b) => (a[1].due < b[1].due ? -1 : 1))
+    .map(([id]) => id);
+
+  function reviewPage() {
+    crumbs([{ text: "Review" }]);
+    const due = dueReviews();
+    const later = Object.entries(saved.review).filter(([id, r]) => byId.has(id) && r.due > todayKey()).sort((a, b) => (a[1].due < b[1].due ? -1 : 1));
+    const item = (id, note) => `<li><a href="#/review/${id}"><b>${esc(id)}</b> ${esc(byId.get(id).title)}</a><span class="muted small"> ${note}</span></li>`;
+    view.innerHTML = `<div class="home narrow">
+      <h1 class="page-title">Review</h1>
+      <p class="muted">Solving an exercise again a few days later is what makes it stick. Each one you get right comes back after a longer gap: 1, 3, 7, 16, 35, then 80 days.</p>
+      ${due.length ? `<p><a class="btn primary" href="#/review/${due[0]}">Start reviewing (${due.length} due) →</a></p>
+        <div class="card"><div class="label">Due now</div><ul class="plain-list">${due.map((id) => item(id, "")).join("")}</ul></div>`
+        : '<div class="card"><p>Nothing to review today. 🎉 Solve exercises and they\'ll come back here.</p></div>'}
+      ${later.length ? `<h2 class="section-title">Coming up</h2><div class="card"><ul class="plain-list">${later.slice(0, 30).map(([id, r]) =>
+        item(id, `· ${parseDay(r.due).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`)).join("")}</ul></div>` : ""}
+    </div>`;
+  }
+
+  // ==== certificates =======================================================
+
+  const unitLessons = (u) => course.days.filter((d) => d.number >= u.first && d.number <= u.last).flatMap((d) => d.lessons);
+  const unitDone = (u) => unitLessons(u).every((l) => saved.done[l.id]);
+
+  function certificatePage(which) {
+    const unit = which === "course" ? null : course.units[Number(which) - 1];
+    if (which !== "course" && !unit) { location.hash = "#/me"; return; }
+    const list = unit ? unitLessons(unit) : lessons;
+    const finished = list.every((l) => saved.done[l.id]);
+    crumbs([{ text: "Your progress", href: "#/me" }, { text: "Certificate" }]);
+    if (!finished) {
+      const n = doneCount(list);
+      view.innerHTML = `<div class="home narrow"><h1 class="page-title">Certificate</h1>
+        <p>Finish every lesson in ${esc(unit ? unit.title : "the course")} to get this certificate. You've done ${n} of ${list.length}.</p>
+        <a class="btn primary" href="#/lesson/${nextUnfinished(list).id}">Keep going →</a></div>`;
+      return;
+    }
+    const name = saved.name || account.name || "";
+    const when = new Date().toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+    view.innerHTML = `<div class="home narrow">
+      <div class="cert-tools no-print">
+        <label>Your name on the certificate <input id="cert-name" value="${esc(name)}" maxlength="80" placeholder="Your name"></label>
+        <button class="btn primary" id="print" type="button">Print or save as PDF</button>
+      </div>
+      <div class="certificate">
+        <div class="cert-brand">Learn <span>Vyrn</span></div>
+        <div class="cert-kicker">Certificate of completion</div>
+        <div class="cert-name" id="cert-shown">${esc(name || "Your name")}</div>
+        <div class="cert-text">has completed ${unit ? `<b>${esc(unit.title)}</b> (days ${unit.first}–${unit.last})` : `all <b>${course.days.length} days</b>`} of the Learn Vyrn course: ${list.length} lessons and ${list.filter((l) => l.exercise).length} programming exercises.</div>
+        <div class="cert-date">${when}</div>
+      </div>
+    </div>`;
+    $("cert-name").addEventListener("input", (e) => {
+      saved.name = e.target.value;
+      save();
+      $("cert-shown").textContent = e.target.value || "Your name";
+    });
+    $("print").addEventListener("click", () => window.print());
+  }
+
+  // ==== sharing and the playground =========================================
+  //
+  // A shared program travels in the link itself (compressed), so nothing
+  // is stored anywhere.
+
+  const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const unb64url = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+  async function pack(code) {
+    const stream = new Blob([code]).stream().pipeThrough(new CompressionStream("deflate-raw"));
+    return b64url(new Uint8Array(await new Response(stream).arrayBuffer()));
+  }
+  async function unpack(text) {
+    const stream = new Blob([unb64url(text)]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+    return new Response(stream).text();
+  }
+  async function shareCode(code) {
+    const url = `${location.origin}${location.pathname}#/play/${await pack(code)}`;
+    try {
+      if (navigator.share && matchMedia("(pointer: coarse)").matches) await navigator.share({ title: "My Vyrn program", url });
+      else { await navigator.clipboard.writeText(url); toast("Link copied: anyone with it sees this program."); }
+    } catch (_) {
+      prompt("Copy this link:", url);
+    }
+  }
+  function toast(text) {
+    let t = $("toast");
+    if (!t) { t = document.createElement("div"); t.id = "toast"; t.setAttribute("role", "status"); document.body.appendChild(t); }
+    t.textContent = text;
+    t.classList.add("show");
+    clearTimeout(t.timer);
+    t.timer = setTimeout(() => t.classList.remove("show"), 2600);
+  }
+
+  // An editor (textarea over highlighted code) with Vyrn's indentation keys.
+  function editorHtml() {
+    return `<div class="editor">
+      <div class="gutter" id="gutter" aria-hidden="true">1</div>
+      <div class="stack">
+        <pre class="code" id="highlight" aria-hidden="true"></pre>
+        <textarea id="source" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" aria-label="Vyrn code"></textarea>
+      </div>
+    </div>`;
+  }
+  function wireEditor(onChange, onCtrlEnter) {
+    const source = $("source"), hl = $("highlight"), gutter = $("gutter");
+    const sync = () => { hl.scrollTop = source.scrollTop; hl.scrollLeft = source.scrollLeft; gutter.scrollTop = source.scrollTop; };
+    const refresh = () => {
+      hl.innerHTML = highlight(source.value) + "\n";
+      gutter.textContent = Array.from({ length: source.value.split("\n").length }, (_, i) => i + 1).join("\n");
+      sync();
+    };
+    const insert = (text) => {
+      const { selectionStart: a, selectionEnd: b, value } = source;
+      source.value = value.slice(0, a) + text + value.slice(b);
+      source.selectionStart = source.selectionEnd = a + text.length;
+      refresh();
+      onChange(source.value);
+    };
+    let escaped = false;
+    source.addEventListener("input", () => { refresh(); onChange(source.value); });
+    source.addEventListener("scroll", sync);
+    source.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); onCtrlEnter(); return; }
+      if (e.key === "Escape") { escaped = true; return; }
+      if (e.key === "Tab" && !escaped && !e.shiftKey) { e.preventDefault(); insert("    "); return; }
+      escaped = false;
+      if (e.key === "Enter") {
+        const before = source.value.slice(0, source.selectionStart);
+        const line = before.slice(before.lastIndexOf("\n") + 1);
+        let indent = line.match(/^\s*/)[0];
+        if (/:\s*(#.*)?$/.test(line) && !/^\s*#/.test(line)) indent += "    ";
+        e.preventDefault();
+        insert("\n" + indent);
+      }
+    });
+    return { source, refresh };
+  }
+
+  async function playPage(packed) {
+    crumbs([{ text: "Playground" }]);
+    let code = saved.play || 'main:\n    print("Hello from the playground!")\nend\n';
+    let shared = false;
+    if (packed) {
+      try { code = await unpack(packed); shared = true; } catch (_) { toast("That link is damaged; here is your own playground instead."); }
+    }
+    view.innerHTML = `<div class="play">
+      <section class="bench" aria-label="Playground">
+        <div class="bench-head">
+          <span class="file">${shared ? "shared.vyrn" : "playground.vyrn"}</span>
+          ${shared ? '<span class="badge info">Shared with you: your changes stay on this device</span>' : ""}
+          <button class="btn small ghost" id="share" type="button">Share</button>
+        </div>
+        ${editorHtml()}
+        <div class="actions-row">
+          <button class="btn primary" id="run" type="button">▶ Run</button>
+          <button class="btn ghost" id="stop" type="button" hidden>Stop</button>
+          <span class="keys"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> runs</span>
+        </div>
+        <details class="input-box play-input"><summary class="label">Input for <code>input()</code></summary><textarea id="stdin" rows="2" placeholder="One answer per line"></textarea></details>
+        <div class="console" id="console" aria-live="polite"><p class="placeholder">Write any Vyrn program and press Run. Share gives a link to it.</p></div>
+      </section>
+    </div>`;
+    const ed = wireEditor((v) => { if (!shared) { saved.play = v; save(); } }, () => run());
+    ed.source.value = code;
+    ed.refresh();
+    const runBtn = $("run"), stopBtn = $("stop"), out = $("console");
+    async function run() {
+      runBtn.disabled = true; stopBtn.hidden = false;
+      out.innerHTML = '<pre class="dim">Running…</pre>';
+      track("runs");
+      const input = $("stdin").value;
+      const r = await runner.run(ed.source.value, input && !input.endsWith("\n") ? input + "\n" : input);
+      runBtn.disabled = false; stopBtn.hidden = true;
+      out.innerHTML = `<div class="label">Output${r.ms ? ` <span class="dim">· ${r.ms.toFixed(0)} ms</span>` : ""}</div>
+        <pre>${r.output ? outputHtml(r.output.replace(/\n$/, "")) : '<span class="placeholder">The program printed nothing.</span>'}</pre>${filesHtml(r.files)}`;
+      if (r.ok) explainOffer(null, ed.source.value, r.output);
+      else explainOffer(out, ed.source.value, r.output);
+    }
+    runBtn.addEventListener("click", run);
+    stopBtn.addEventListener("click", () => runner.stop());
+    $("share").addEventListener("click", () => shareCode(ed.source.value));
+  }
+
+  // ==== questions under each lesson ========================================
+
+  async function loadQuestions(lessonId) {
+    const box = $("questions");
+    if (!box || !account.ready) return; // runs again once accounts are ready
+    const c = account.client;
+    const { data: qs, error } = await c.from("questions").select("id, user_id, author, body, created_at").eq("lesson_id", lessonId).order("created_at").limit(200);
+    if (error || !$("questions")) return;
+    const ids = qs.map((q) => q.id);
+    const { data: ans } = ids.length ? await c.from("answers").select("id, question_id, user_id, author, body, created_at").in("question_id", ids).order("created_at") : { data: [] };
+    const me = account.user ? account.user.id : null;
+    const canDelete = (row) => me && (row.user_id === me || account.admin);
+    const when = (t) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    const post = (row, kind) => `<div class="post">
+      <div class="post-head"><b>${esc(row.author)}</b><span class="muted small">${when(row.created_at)}</span>
+        ${canDelete(row) ? `<button class="link-btn small" data-delete="${kind}:${row.id}">Delete</button>` : ""}</div>
+      <div class="post-body">${inline(row.body).replace(/\n/g, "<br>")}</div></div>`;
+    box.innerHTML = `<h3>Questions about this lesson ${qs.length ? `<span class="muted small">(${qs.length})</span>` : ""}</h3>
+      ${qs.length ? "" : '<p class="muted">No questions yet. Stuck? Ask; other learners and the course admin can answer.</p>'}
+      ${qs.map((q) => `<div class="question">${post(q, "q")}
+        <div class="answers">${(ans || []).filter((a) => a.question_id === q.id).map((a) => post(a, "a")).join("")}
+          ${me ? `<form class="answer-form" data-question="${q.id}"><textarea name="body" rows="2" maxlength="4000" placeholder="Write an answer" required></textarea><button class="btn small">Answer</button></form>` : ""}
+        </div></div>`).join("")}
+      ${me ? `<form class="ask-form"><textarea name="body" rows="3" maxlength="4000" placeholder="Ask a question about this lesson. \`Backticks\` mark code." required></textarea><button class="btn small primary">Ask</button></form>`
+        : '<p><button class="btn small" id="ask-login" type="button">Log in to ask or answer</button></p>'}`;
+    const author = () => (account.name || account.user.email.split("@")[0]).slice(0, 80);
+    const refresh = () => loadQuestions(lessonId);
+    const ask = box.querySelector(".ask-form");
+    if (ask) ask.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const body = ask.body.value.trim();
+      if (!body) return;
+      const { error: err } = await c.from("questions").insert({ user_id: me, lesson_id: lessonId, author: author(), body });
+      if (err) toast(err.message); else refresh();
+    });
+    box.querySelectorAll(".answer-form").forEach((f) => f.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const body = f.body.value.trim();
+      if (!body) return;
+      const { error: err } = await c.from("answers").insert({ user_id: me, question_id: Number(f.dataset.question), author: author(), body });
+      if (err) toast(err.message); else refresh();
+    }));
+    box.querySelectorAll("[data-delete]").forEach((b) => b.addEventListener("click", async () => {
+      if (!confirm("Delete this?")) return;
+      const [kind, rowId] = b.dataset.delete.split(":");
+      await c.from(kind === "q" ? "questions" : "answers").delete().eq("id", Number(rowId));
+      refresh();
+    }));
+    const login = $("ask-login");
+    if (login) login.addEventListener("click", () => authDialog("signin"));
+  }
+
+  // ==== packages ===========================================================
+
+  async function packagesPage() {
+    crumbs([{ text: "Docs", href: "#/docs" }, { text: "Packages" }]);
+    view.innerHTML = '<div class="home narrow"><h1 class="page-title">Packages</h1><p class="muted">Loading…</p></div>';
+    let list = [];
+    try {
+      const r = await fetch("registry/index.json", { cache: "no-cache" });
+      list = (await r.json()).packages || [];
+    } catch (_) { /* shown as empty */ }
+    const card = (p) => {
+      const latest = (p.versions || []).slice(-1)[0];
+      return `<div class="pkg" data-q="${esc(`${p.name} ${p.description} ${(p.keywords || []).join(" ")}`.toLowerCase())}">
+        <div class="pkg-head"><b>${esc(p.name)}</b>${latest ? `<span class="badge info">${esc(latest)}</span>` : ""}<span class="muted small">${esc(p.license || "")}</span></div>
+        <p>${esc(p.description)}</p>
+        <code class="pkg-add">vyrn add ${esc(p.name)}</code>
+        <a class="small" href="https://${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}</a>
+        ${(p.keywords || []).length ? `<div class="muted small">${p.keywords.map(esc).join(" · ")}</div>` : ""}
+      </div>`;
+    };
+    view.innerHTML = `<div class="home narrow">
+      <h1 class="page-title">Packages</h1>
+      <p class="muted">Code other people have shared. Add one to your project with <code>vyrn add name</code>; find them from the terminal with <code>vyrn search words</code>.</p>
+      ${list.length ? `<input id="pkg-filter" class="filter" type="search" placeholder="Search ${list.length} package${list.length === 1 ? "" : "s"}" aria-label="Search packages"><div class="pkgs">${list.map(card).join("")}</div>`
+        : '<div class="card"><p><b>No packages yet.</b> Be the first to publish one.</p></div>'}
+      <h2 class="section-title">Publish yours</h2>
+      <div class="card prose-lite">
+        <ol>
+          <li>In your project's <code>vyrn.toml</code>, under <code>[package]</code>, set <code>version</code>, <code>description</code>, <code>repository</code> (such as <code>github.com/you/thing</code>), <code>keywords</code> and <code>license</code>.</li>
+          <li>Tag the version and push it: <code>git tag v1.0.0</code>, then <code>git push origin main v1.0.0</code>.</li>
+          <li>Fork <a href="https://github.com/Dmccottrell/Vyrn" target="_blank" rel="noopener">Vyrn's repository</a>, clone your fork next to your project, and from your project's folder run <code>vyrn publish --to ../Vyrn/registry</code>.</li>
+          <li>Commit, push, and open a pull request. Once it's merged, your package is here.</li>
+        </ol>
+        <p class="muted small">More in <a href="#/docs/packages">Packages</a> in the docs.</p>
+      </div>
+    </div>`;
+    const f = $("pkg-filter");
+    if (f) f.addEventListener("input", () => {
+      const q = f.value.toLowerCase();
+      document.querySelectorAll(".pkg").forEach((el) => { el.hidden = !el.dataset.q.includes(q); });
+    });
+  }
+
+  // ==== documentation ======================================================
+
+  let docs = null;
+  async function loadDocs() {
+    if (docs) return docs;
+    const embedded = $("docs-data") && $("docs-data").textContent.trim();
+    if (embedded) docs = JSON.parse(embedded);
+    else {
+      const r = await fetch("docs.json");
+      docs = r.ok ? await r.json() : [];
+    }
+    return docs;
+  }
+
+  async function docsPage(slug) {
+    crumbs([{ text: "Docs", href: "#/docs" }]);
+    const all = await loadDocs();
+    if (!slug) {
+      view.innerHTML = `<div class="home narrow"><h1 class="page-title">Vyrn documentation</h1>
+        <p class="muted">The language and its library, for reference. New to programming? The <a href="#/">course</a> is the place to start.</p>
+        <div class="doc-cards">${all.map((d) => `<a class="day-card" href="#/docs/${d.slug}"><span class="title">${esc(d.title)}</span><span class="muted small">${esc(d.blurb)}</span></a>`).join("")}
+          <a class="day-card" href="#/packages"><span class="title">Package registry</span><span class="muted small">Find and publish packages.</span></a></div></div>`;
+      return;
+    }
+    const doc = all.find((d) => d.slug === slug);
+    if (!doc) { location.hash = "#/docs"; return; }
+    crumbs([{ text: "Docs", href: "#/docs" }, { text: doc.title }]);
+    const blocks = [];
+    blocks.ids = true;
+    const body = markdown(doc.text.replace(/^# [^\n]*\n/, ""), blocks);
+    view.innerHTML = `<div class="docs">
+      <nav class="doc-nav" aria-label="Documentation">
+        ${all.map((d) => `<a href="#/docs/${d.slug}" class="${d.slug === slug ? "here" : ""}">${esc(d.title)}</a>`).join("")}
+        <a href="#/packages">Package registry</a>
+        <div class="doc-toc" id="toc"></div>
+      </nav>
+      <article class="prose doc-body" id="prose"><h1>${esc(doc.title)}</h1>${body}</article>
+    </div>`;
+    mountBlocks($("prose"), blocks, { desktop: [] });
+    const heads = [...$("prose").querySelectorAll("h3[id]")];
+    $("toc").innerHTML = heads.length ? `<div class="label">On this page</div>${heads.map((h) => `<button class="link-btn" data-target="${h.id}">${esc(h.textContent)}</button>`).join("")}` : "";
+    $("toc").querySelectorAll("[data-target]").forEach((b) => b.addEventListener("click", () => document.getElementById(b.dataset.target).scrollIntoView({ behavior: "smooth" })));
+    window.scrollTo(0, 0);
+  }
+
+  // ==== AI tutor: "Explain this" ===========================================
+  //
+  // After a failed check or an error, the learner can ask an AI tutor
+  // (api/explain.js, on the server) what went wrong. It explains and hints;
+  // it doesn't hand over the answer. Signed-in learners only, a few a day.
+
+  function explainOffer(container, code, output, lesson) {
+    if (!container || !account.ready) return;
+    const box = document.createElement("div");
+    box.className = "ai-box";
+    box.innerHTML = account.user
+      ? '<button class="btn small" type="button">✨ Explain this</button><span class="muted small"> The AI tutor says what went wrong, without giving the answer away.</span>'
+      : '<span class="muted small">✨ <button class="link-btn" type="button">Log in</button> to ask the AI tutor what went wrong.</span>';
+    container.appendChild(box);
+    const btn = box.querySelector("button");
+    if (!account.user) { btn.addEventListener("click", () => authDialog("signin")); return; }
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      box.innerHTML = '<div class="hint ai-answer"><b>AI tutor</b> <span class="dim">thinking…</span></div>';
+      const ex = lesson && lesson.exercise;
+      let text;
+      try {
+        const { data } = await account.client.auth.getSession();
+        const r = await fetch("api/explain", {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${data.session.access_token}` },
+          body: JSON.stringify({
+            code, output,
+            expected: ex ? ex.expect : null,
+            lesson: lesson ? `${lesson.id} ${lesson.title}` : null,
+            task: lesson ? lesson.text.slice(-1500) : null,
+          }),
+        });
+        const body = await r.json().catch(() => ({}));
+        text = r.ok ? body.answer : `<span class="err">${esc(body.error || "The AI tutor isn't available right now.")}</span>`;
+        if (r.ok) text = markdown(text, []);
+      } catch (_) {
+        text = '<span class="err">The AI tutor isn\'t available right now.</span>';
+      }
+      box.innerHTML = `<div class="hint ai-answer"><b>AI tutor</b>${text}</div>`;
+    });
+  }
+
   // ==== routing ============================================================
 
   function route() {
@@ -1195,6 +1674,12 @@ end`;
     const hash = location.hash.replace(/^#\/?/, "");
     let m;
     if ((m = hash.match(/^lesson\/([\d.]+)$/))) lessonPage(m[1]);
+    else if ((m = hash.match(/^review\/([\d.]+)$/))) lessonPage(m[1], true);
+    else if (hash === "review") reviewPage();
+    else if ((m = hash.match(/^certificate\/(course|\d+)$/))) certificatePage(m[1]);
+    else if ((m = hash.match(/^play(?:\/(.+))?$/))) playPage(m[1]);
+    else if (hash === "packages") packagesPage();
+    else if ((m = hash.match(/^docs(?:\/([\w-]+))?$/))) docsPage(m[1]);
     else if (hash === "me") mePage();
     else if (hash === "admin") adminPage();
     else if ((m = hash.match(/^day\/(\d+)$/))) {
@@ -1203,6 +1688,12 @@ end`;
       home();
     } else home();
     renderOverall();
+    renderStreak();
+    const section = hash.split("/")[0];
+    document.querySelectorAll(".mainnav a").forEach((l) => {
+      const target = l.getAttribute("href").replace(/^#\/?/, "");
+      l.classList.toggle("here", target === section || (!target && /^(|lesson|day)$/.test(section)));
+    });
     view.focus({ preventScroll: true });
   }
 

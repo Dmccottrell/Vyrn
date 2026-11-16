@@ -58,25 +58,28 @@ are not in the registry are added by URL the same way:
    git push origin main v1.0.0
    ```
 
-3. Fork the registry (`github.com/dmccottrell/vyrn-registry`), clone your
-   fork next to your package, and from the package's folder:
+3. Fork Vyrn's repository (`github.com/Dmccottrell/Vyrn`), whose
+   `registry` folder is the registry, clone your fork next to your
+   package, and from the package's folder:
 
    ```bash
-   vyrn publish --to ../vyrn-registry
+   vyrn publish --to ../Vyrn/registry
    ```
 
    It runs `vyrn check` and your tests, makes sure the tag exists, and adds
-   the entry to the registry's `index.json`. Commit that and open a pull
+   the entry to `registry/index.json`. Commit that and open a pull
    request. Without `--to`, it writes `registry-entry.json` for you to
    paste in.
 
 ## How the registry works
 
-The registry is one file, `index.json`, in a git repository. It maps names
-to repositories and lists their versions; no code is stored there, and no
-server runs. Every pull request is checked by `check.vyrn` (names, URLs and
-version tags). `tools/registry-template/` in this repository is the
-registry's starting point.
+The registry is one file, `registry/index.json` in Vyrn's repository,
+published by the Learn Vyrn website and listed on its Packages page. It
+maps names to repositories and lists their versions; no code is stored
+there, and no server runs. CI checks every change with
+`registry/check.vyrn` (names, URLs and version tags).
+`tools/registry-template/` is the starting point for a registry of your
+own (a company's, say).
 
 `VYRN_REGISTRY` points `vyrn` at another index, a URL or a file, for a
 private or company registry. Without a network, `vyrn search` uses the copy

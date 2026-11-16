@@ -869,7 +869,7 @@ fn publish(args: &[String]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
             println!(
-                "{} {tag} is ready. Its registry entry is in {}.\n\nTo publish it, add the entry to index.json in {} (fork it and open a pull request),\nor with a clone of the registry:\n\n    vyrn publish --to path/to/vyrn-registry",
+                "{} {tag} is ready. Its registry entry is in {}.\n\nTo publish it, add the entry to registry/index.json in {} (fork it and open a pull request),\nor with a clone of that repository:\n\n    vyrn publish --to path/to/Vyrn/registry",
                 m.name,
                 path.display(),
                 registry::DEFAULT_REGISTRY_REPO

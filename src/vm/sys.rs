@@ -344,6 +344,18 @@ mod imp {
         DISK.with(|d| *d.borrow_mut() = Disk::default());
     }
 
+    /// Every file, in the order of their paths: what a run wrote, for the
+    /// host to show (pictures, charts, CSV files).
+    pub fn files() -> Vec<(String, Vec<u8>)> {
+        DISK.with(|d| {
+            d.borrow()
+                .files
+                .iter()
+                .map(|(k, (b, _))| (k.clone(), b.clone()))
+                .collect()
+        })
+    }
+
     use std::cell::Cell;
     use std::time::Duration;
 
