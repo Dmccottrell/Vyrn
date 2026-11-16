@@ -69,3 +69,14 @@ self-contained page (about 6 MB), which works even opened from disk.
 Pages on every push to `main` that changes the course, the site or Vyrn.
 In the repository's Settings, under Pages, set the source to "GitHub
 Actions" once.
+
+## Vercel
+
+`site/public` is a built copy of the site, committed so Vercel can serve
+it as a static site with no build step (the Vercel project's root
+directory is `site/public`). After changing the course, the site or Vyrn,
+rebuild it and commit:
+
+```bash
+node site/build.mjs build/course/course.json runtime/wasm/target/wasm32-unknown-unknown/release/vyrn_wasm.wasm site/public
+```
